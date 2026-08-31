@@ -1,0 +1,50 @@
+import { DatabaseSync } from "node:sqlite";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
+/**
+ * Thin wrapper around node:sqlite. Chosen for the MVP over Postgres/better-sqlite3
+ * for zero external dependencies and zero native builds — see
+ * /docs/TECHNICAL_DECISIONS.md (TD-11). Every write that must be atomic with a
+ * read (task claiming) uses a single SQL statement with a WHERE guard rather
+ * than relying on this wrapper for locking.
+ */
+export function openDatabase(path: string): DatabaseSync {
+  const db = new DatabaseSync(path);
+  db.exec("PRAGMA journal_mode = WAL;");
+  db.exec("PRAGMA foreign_keys = ON;");
+  runMigrations(db);
+  return db;
+}
+
+function runMigrations(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS _migrations (
+      name TEXT PRIMARY KEY,
+      applied_at TEXT NOT NULL
+    );
+  `);
+
+  const migrationsDir = join(__dirname, "migrations");
+  const files = ["001_init.sql", "002_cancellation.sql", "003_auth.sql", "004_github.sql"]; // explicit, ordered list — avoids fs.readdir ordering surprises
+
+  const applied = new Set(
+    db
+      .prepare("SELECT name FROM _migrations")
+      .all()
+      .map((row) => (row as { name: string }).name),
+  );
+
+  for (const file of files) {
+    if (applied.has(file)) continue;
+    const sql = readFileSync(join(migrationsDir, file), "utf-8");
+    db.exec(sql);
+    db.prepare("INSERT INTO _migrations (name, applied_at) VALUES (?, ?)").run(
+      file,
+      new Date().toISOString(),
+    );
+  }
+}
