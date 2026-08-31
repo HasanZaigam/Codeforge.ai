@@ -8,7 +8,7 @@ import type { ProjectRepository } from "../persistence/repositories/project-repo
 import type { AgentRunRepository } from "../persistence/repositories/agent-run-repository.js";
 import type { HumanInputRepository } from "../persistence/repositories/human-input-repository.js";
 import type { WorkspaceRepository } from "../persistence/repositories/workspace-repository.js";
-import type { CodingEngineRegistry } from "../coding-engine/coding-engine.js";
+import { EngineExecutionError, type CodingEngineRegistry } from "../coding-engine/coding-engine.js";
 import type { WorkspaceProvider } from "../workspace/workspace-provider.js";
 import type { SourceControlProvider, SourceControlProviderRegistry } from "../source-control/source-control-provider.js";
 import { runValidation } from "../validation/validation-runner.js";
@@ -476,8 +476,31 @@ export class Orchestrator {
       }
       this.agentRunRepo.complete(runId, "failed", null, String(err), null, now());
       this.eventRepo.append(task.id, "AGENT_FAILED", { runId, role, error: String(err) }, now());
+      this.logAgentFailure(task, engine.key, role, attemptNumber, err);
       throw err;
     }
+  }
+
+  /**
+   * Worker-terminal-visible failure summary (see /docs/CODING_ENGINE.md
+   * "Retry behavior" and "Observability"): the per-attempt retry log lines
+   * already come from the adapter itself (it's the only layer that knows
+   * about individual retry attempts — see OpenCodeAdapter.run()); this is
+   * the one line logged once per *agent invocation* (i.e. once per
+   * self-fix/reviewer attempt) so `AGENT_FAILED`/`TASK_FAILED` are never
+   * silent in the worker's terminal. Never logs `err` itself as an object —
+   * only its already-sanitized `.message` (adapters never put secrets in
+   * error messages, see coding-engine adapters' documented security
+   * boundary) — so nothing here can leak a raw stack trace containing
+   * environment/process details.
+   */
+  private logAgentFailure(task: Task, engineKey: string, role: AgentRole, attemptNumber: number, err: unknown): void {
+    const meta = err instanceof EngineExecutionError ? err.meta : null;
+    console.error(
+      `[orchestrator] task ${task.id} ("${task.title}") — ${role} failed on self-fix attempt ${attemptNumber} ` +
+        `[engine=${engineKey}${meta ? `, invocationAttempts=${meta.attempts}, retryable=${meta.retryable}, classification=${meta.classification}` : ""}]: ` +
+        (err instanceof Error ? err.message : String(err)),
+    );
   }
 
   private async runValidationStep(

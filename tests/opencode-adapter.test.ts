@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, writeFile, chmod, rm } from "node:fs/promises";
+import { existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -98,6 +99,77 @@ test("2 & 3. command invocation & correct cwd: executes with proper arguments an
 
   await rm(dir, { recursive: true, force: true });
   await rm(workspaceDir, { recursive: true, force: true });
+});
+
+test("3b. the exact configured model (google/gemini-3.1-flash-lite) is passed to the real opencode invocation via --model", async () => {
+  const script = `
+    import { writeFileSync } from "node:fs";
+    writeFileSync(process.env.TEST_REPORT_FILE, JSON.stringify({ args: process.argv.slice(2) }));
+    console.log(JSON.stringify({ result: "ok" }));
+  `;
+  const { execPath, dir } = await createMockExecutable(script);
+  const reportFile = join(dir, "report.json");
+  const workspaceDir = await mkdtemp(join(tmpdir(), "opencode-ws-"));
+
+  const adapter = new OpenCodeAdapter({
+    executablePath: execPath,
+    model: "google/gemini-3.1-flash-lite",
+    env: { ...process.env, TEST_REPORT_FILE: reportFile },
+  });
+
+  await adapter.run({
+    role: "implementer",
+    context: makeContextBundle(),
+    workspacePath: workspaceDir,
+    timeoutMs: 5000,
+    signal: new AbortController().signal,
+  });
+
+  const captured = JSON.parse(readFileSync(reportFile, "utf-8"));
+  const modelFlagIndex = captured.args.indexOf("--model");
+  assert.ok(modelFlagIndex !== -1, "--model flag must be present");
+  assert.equal(captured.args[modelFlagIndex + 1], "google/gemini-3.1-flash-lite", "the value immediately after --model must be exactly the configured model string, unmodified");
+
+  await rm(dir, { recursive: true, force: true });
+  await rm(workspaceDir, { recursive: true, force: true });
+});
+
+test("3c. OPENCODE_MODEL env var (not just the constructor option) resolves to the exact model passed to opencode — the actual production wiring (env-platform.ts)", async () => {
+  const script = `
+    import { writeFileSync } from "node:fs";
+    writeFileSync(process.env.TEST_REPORT_FILE, JSON.stringify({ args: process.argv.slice(2) }));
+    console.log(JSON.stringify({ result: "ok" }));
+  `;
+  const { execPath, dir } = await createMockExecutable(script);
+  const reportFile = join(dir, "report.json");
+  const workspaceDir = await mkdtemp(join(tmpdir(), "opencode-ws-"));
+
+  const originalEnvModel = process.env.OPENCODE_MODEL;
+  process.env.OPENCODE_MODEL = "google/gemini-3.1-flash-lite";
+  try {
+    // No `model` option passed — must fall back to reading OPENCODE_MODEL from process.env at
+    // construction time, exactly as env-platform.ts's resolveEngineFromEnv() does for the real
+    // api/worker processes.
+    const adapter = new OpenCodeAdapter({ executablePath: execPath, env: { ...process.env, TEST_REPORT_FILE: reportFile } });
+
+    await adapter.run({
+      role: "implementer",
+      context: makeContextBundle(),
+      workspacePath: workspaceDir,
+      timeoutMs: 5000,
+      signal: new AbortController().signal,
+    });
+
+    const captured = JSON.parse(readFileSync(reportFile, "utf-8"));
+    const modelFlagIndex = captured.args.indexOf("--model");
+    assert.ok(modelFlagIndex !== -1);
+    assert.equal(captured.args[modelFlagIndex + 1], "google/gemini-3.1-flash-lite");
+  } finally {
+    if (originalEnvModel === undefined) delete process.env.OPENCODE_MODEL;
+    else process.env.OPENCODE_MODEL = originalEnvModel;
+    await rm(dir, { recursive: true, force: true });
+    await rm(workspaceDir, { recursive: true, force: true });
+  }
 });
 
 test("4 & 5. role mapping and context passing: builds implementer vs reviewer prompts", async () => {
@@ -333,6 +405,51 @@ test("11 & 12. environment sanitization & no GitHub credential exposure", async 
   await rm(workspaceDir, { recursive: true, force: true });
 });
 
+test("12b. workspace isolation regression: PWD is forced to the real workspace directory, never inherited from the caller's own PWD", async () => {
+  // Regression test for a real bug found via live smoke-testing (2026-09-01): spawn({cwd}) changes
+  // the OS-level working directory of the child, but does NOT update an inherited PWD env var. When
+  // this test process's own PWD (the platform repo) was passed through unchanged, OpenCode's own
+  // directory resolution (used by its bash tool) trusted that stale PWD over the real cwd — so a
+  // real task run ended up reading/writing files in THIS platform repository instead of the
+  // isolated task workspace. See buildCleanEnvironment() in opencode-adapter.ts.
+  const script = `
+    import { writeFileSync } from "node:fs";
+    writeFileSync(process.env.TEST_REPORT_FILE, JSON.stringify({ PWD: process.env.PWD, cwd: process.cwd() }));
+    console.log(JSON.stringify({ result: "OK" }));
+  `;
+  const { execPath, dir } = await createMockExecutable(script);
+  const reportFile = join(dir, "pwd-report.json");
+  const workspaceDir = await mkdtemp(join(tmpdir(), "opencode-ws-"));
+
+  // Simulate the real bug precisely: the caller's own environment has a PWD pointing somewhere
+  // completely different from the workspace being executed against (e.g. the worker process's
+  // own launch directory).
+  const callerEnv: NodeJS.ProcessEnv = { ...process.env, PWD: "/some/totally/different/caller/directory", TEST_REPORT_FILE: reportFile };
+  const adapter = new OpenCodeAdapter({ executablePath: execPath, env: callerEnv });
+
+  await adapter.run({
+    role: "implementer",
+    context: makeContextBundle(),
+    workspacePath: workspaceDir,
+    timeoutMs: 5000,
+    signal: new AbortController().signal,
+  });
+
+  const { readFileSync, realpathSync } = await import("node:fs");
+  const captured = JSON.parse(readFileSync(reportFile, "utf-8"));
+  const realWorkspacePath = realpathSync(workspaceDir);
+
+  assert.equal(captured.cwd, realWorkspacePath, "the OS-level cwd must be the real workspace (this always worked)");
+  // Compared via realpath on both sides — path.resolve() (used to set PWD) doesn't resolve
+  // symlinks the way the OS's own getcwd() does (e.g. macOS's /var -> /private/var), so a lexical
+  // string comparison would false-positive-fail here even though both point at the same directory.
+  assert.equal(realpathSync(captured.PWD), realWorkspacePath, "PWD must resolve to the real workspace, never the caller's own stale PWD");
+  assert.notEqual(captured.PWD, "/some/totally/different/caller/directory");
+
+  await rm(dir, { recursive: true, force: true });
+  await rm(workspaceDir, { recursive: true, force: true });
+});
+
 test("14 & 15. Implementer and Reviewer invocation via Orchestrator: full task lifecycle with OpenCode", async () => {
   // Mock OpenCode that fixes the add.js bug on implementer role, and approves on reviewer role
   const script = `
@@ -426,21 +543,45 @@ test("14 & 15. Implementer and Reviewer invocation via Orchestrator: full task l
 });
 
 test("16. configuration selection: CODING_ENGINE selects engine appropriately", async () => {
+  // Regression: this test previously called buildPlatformFromEnv() with no DB_PATH/WORKSPACES_ROOT
+  // override, so it fell through to the production default `./.data/platform.sqlite` — a path
+  // relative to whatever directory `npm test` happens to be run from, whose parent directory
+  // openDatabase() does NOT create (that's the caller's job — see api/server.ts and
+  // worker/run-worker.ts, which both `mkdir(dirname(dbPath), {recursive:true})` first). That made
+  // this test non-hermetic: it only passed by coincidence when `.data/` already existed from an
+  // unrelated real run, and it wrote to the *same* file a live api/worker process might have open.
+  // Every other test in this suite isolates into its own mkdtemp() directory; this one now does too.
+  const root = await mkdtemp(join(tmpdir(), "opencode-config-test-"));
   const origEnv = process.env.CODING_ENGINE;
+  const origDbPath = process.env.DB_PATH;
+  const origWorkspacesRoot = process.env.WORKSPACES_ROOT;
+  process.env.DB_PATH = join(root, "platform.sqlite");
+  process.env.WORKSPACES_ROOT = join(root, "workspaces");
+
+  const platforms: Array<{ db: { close: () => void } }> = [];
   try {
     process.env.CODING_ENGINE = "opencode";
     const p1 = buildPlatformFromEnv();
     assert.ok(p1);
+    platforms.push(p1);
 
     process.env.CODING_ENGINE = "claude-code";
     const p2 = buildPlatformFromEnv();
     assert.ok(p2);
+    platforms.push(p2);
 
     process.env.CODING_ENGINE = "fixture";
     const p3 = buildPlatformFromEnv();
     assert.ok(p3);
+    platforms.push(p3);
   } finally {
+    for (const p of platforms) p.db.close();
     process.env.CODING_ENGINE = origEnv;
+    if (origDbPath === undefined) delete process.env.DB_PATH;
+    else process.env.DB_PATH = origDbPath;
+    if (origWorkspacesRoot === undefined) delete process.env.WORKSPACES_ROOT;
+    else process.env.WORKSPACES_ROOT = origWorkspacesRoot;
+    await rm(root, { recursive: true, force: true });
   }
 });
 
@@ -465,4 +606,432 @@ test("17. OpenCode unavailable behavior: non-existent executable throws EngineEx
   );
 
   await rm(workspaceDir, { recursive: true, force: true });
+});
+
+// -----------------------------------------------------------------------
+// Retry behavior for transient provider failures (Gemini 503, etc.) — see
+// /docs/CODING_ENGINE.md "Retry behavior" and engine-failure-classifier.ts.
+// -----------------------------------------------------------------------
+
+const GEMINI_503_ERROR = JSON.stringify({
+  type: "error",
+  error: {
+    name: "APIError",
+    data: {
+      message: "This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.",
+      statusCode: 503,
+      isRetryable: true,
+      responseBody: { error: { code: 503, message: "This model is currently experiencing high demand.", status: "UNAVAILABLE" } },
+      metadata: { url: "https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:streamGenerateContent?alt=sse" },
+    },
+  },
+});
+
+const RATE_LIMIT_429_ERROR = JSON.stringify({
+  type: "error",
+  error: {
+    name: "APIError",
+    data: {
+      message: "Rate limit exceeded, please slow down.",
+      statusCode: 429,
+      isRetryable: true,
+      metadata: { url: "https://api.openai.com/v1/chat/completions" },
+    },
+  },
+});
+
+const AUTH_401_ERROR = JSON.stringify({
+  type: "error",
+  error: {
+    name: "APIError",
+    data: {
+      message: "Invalid API key provided.",
+      statusCode: 401,
+      isRetryable: false,
+      metadata: { url: "https://api.anthropic.com/v1/messages" },
+    },
+  },
+});
+
+const MALFORMED_400_ERROR = JSON.stringify({
+  type: "error",
+  error: {
+    name: "APIError",
+    data: {
+      message: "Invalid model specified: gemini-99-does-not-exist.",
+      statusCode: 400,
+      isRetryable: false,
+      metadata: { url: "https://generativelanguage.googleapis.com/v1beta/models/foo" },
+    },
+  },
+});
+
+/** A mock `opencode` that always exits 1 with `errorJson`, tracking how many times it was invoked via a counter file. */
+async function createAlwaysFailingExecutable(errorJson: string): Promise<{ execPath: string; dir: string; counterFile: string }> {
+  const script = `
+    import { readFileSync, writeFileSync, existsSync } from "node:fs";
+    const counterFile = process.env.ATTEMPT_COUNTER_FILE;
+    const n = (existsSync(counterFile) ? parseInt(readFileSync(counterFile, "utf-8"), 10) : 0) + 1;
+    writeFileSync(counterFile, String(n));
+    console.log(${JSON.stringify(errorJson)});
+    process.exit(1);
+  `;
+  const { execPath, dir } = await createMockExecutable(script);
+  return { execPath, dir, counterFile: join(dir, "attempts.txt") };
+}
+
+/** A mock `opencode` that fails with `errorJson` for the first `failCount` invocations, then succeeds. */
+async function createEventuallySucceedingExecutable(errorJson: string, failCount: number): Promise<{ execPath: string; dir: string; counterFile: string }> {
+  const script = `
+    import { readFileSync, writeFileSync, existsSync } from "node:fs";
+    const counterFile = process.env.ATTEMPT_COUNTER_FILE;
+    const n = (existsSync(counterFile) ? parseInt(readFileSync(counterFile, "utf-8"), 10) : 0) + 1;
+    writeFileSync(counterFile, String(n));
+    if (n <= ${failCount}) {
+      console.log(${JSON.stringify(errorJson)});
+      process.exit(1);
+    }
+    console.log(JSON.stringify({ result: "Succeeded after retrying" }));
+  `;
+  const { execPath, dir } = await createMockExecutable(script);
+  return { execPath, dir, counterFile: join(dir, "attempts.txt") };
+}
+
+function readCounter(counterFile: string): number {
+  return existsSync(counterFile) ? parseInt(readFileSync(counterFile, "utf-8"), 10) : 0;
+}
+
+test("18. retryable 503 (Gemini, isRetryable=true): retries and eventually succeeds", async () => {
+  const { execPath, dir, counterFile } = await createEventuallySucceedingExecutable(GEMINI_503_ERROR, 2);
+  const adapter = new OpenCodeAdapter({
+    executablePath: execPath,
+    env: { ...process.env, ATTEMPT_COUNTER_FILE: counterFile },
+    maxRetries: 3,
+    retryBaseDelayMs: 5,
+    retryMaxDelayMs: 20,
+  });
+  const workspaceDir = await mkdtemp(join(tmpdir(), "opencode-ws-"));
+
+  const res = await adapter.run({
+    role: "implementer",
+    context: makeContextBundle(),
+    workspacePath: workspaceDir,
+    timeoutMs: 5000,
+    signal: new AbortController().signal,
+  });
+
+  assert.equal(res.result.status, "completed");
+  assert.equal(res.result.summary, "Succeeded after retrying");
+  assert.equal(readCounter(counterFile), 3, "should have spawned 3 times: 2 failures + 1 success");
+
+  await rm(dir, { recursive: true, force: true });
+  await rm(workspaceDir, { recursive: true, force: true });
+});
+
+test("18b. retryable 429 (rate limit): retries and eventually succeeds", async () => {
+  const { execPath, dir, counterFile } = await createEventuallySucceedingExecutable(RATE_LIMIT_429_ERROR, 1);
+  const adapter = new OpenCodeAdapter({
+    executablePath: execPath,
+    env: { ...process.env, ATTEMPT_COUNTER_FILE: counterFile },
+    maxRetries: 3,
+    retryBaseDelayMs: 5,
+    retryMaxDelayMs: 20,
+  });
+  const workspaceDir = await mkdtemp(join(tmpdir(), "opencode-ws-"));
+
+  const res = await adapter.run({
+    role: "implementer",
+    context: makeContextBundle(),
+    workspacePath: workspaceDir,
+    timeoutMs: 5000,
+    signal: new AbortController().signal,
+  });
+
+  assert.equal(res.result.status, "completed");
+  assert.equal(readCounter(counterFile), 2);
+
+  await rm(dir, { recursive: true, force: true });
+  await rm(workspaceDir, { recursive: true, force: true });
+});
+
+// Exact message text as actually returned by live Gemini during a real e2e verification run
+// (2026-08-31) — a free-tier quota-exhaustion 429 that explicitly asks for a ~9s wait.
+const QUOTA_429_ERROR_SHORT_WAIT = JSON.stringify({
+  type: "error",
+  error: {
+    name: "APIError",
+    data: {
+      message: "You exceeded your current quota, please check your plan and billing details.\nPlease retry in 9.0s.",
+      statusCode: 429,
+      isRetryable: true,
+      metadata: { url: "https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:streamGenerateContent?alt=sse" },
+    },
+  },
+});
+
+test("18c. a provider's own suggested wait time (Gemini quota 429: 'Please retry in 9.0s') is respected, not just plain exponential backoff", async () => {
+  const { execPath, dir, counterFile } = await createEventuallySucceedingExecutable(QUOTA_429_ERROR_SHORT_WAIT, 1);
+  const adapter = new OpenCodeAdapter({
+    executablePath: execPath,
+    env: { ...process.env, ATTEMPT_COUNTER_FILE: counterFile },
+    maxRetries: 1,
+    retryBaseDelayMs: 1, // tiny plain backoff — without honoring the provider hint this would retry almost instantly
+    retryMaxDelayMs: 15_000, // large enough to fit the suggested ~9s without being capped
+  });
+  const workspaceDir = await mkdtemp(join(tmpdir(), "opencode-ws-"));
+
+  const start = Date.now();
+  const res = await adapter.run({
+    role: "implementer",
+    context: makeContextBundle(),
+    workspacePath: workspaceDir,
+    timeoutMs: 15_000,
+    signal: new AbortController().signal,
+  });
+  const elapsedMs = Date.now() - start;
+
+  assert.equal(res.result.status, "completed");
+  assert.ok(elapsedMs >= 8900, `expected the retry to wait out close to the provider's suggested 9.0s, only waited ${elapsedMs}ms`);
+
+  await rm(dir, { recursive: true, force: true });
+  await rm(workspaceDir, { recursive: true, force: true });
+});
+
+test("18d. a provider's suggested wait time is still capped at retryMaxDelayMs — a provider can't force an unbounded wait", async () => {
+  const { execPath, dir, counterFile } = await createEventuallySucceedingExecutable(QUOTA_429_ERROR_SHORT_WAIT, 1); // suggests ~9s
+  const adapter = new OpenCodeAdapter({
+    executablePath: execPath,
+    env: { ...process.env, ATTEMPT_COUNTER_FILE: counterFile },
+    maxRetries: 1,
+    retryBaseDelayMs: 1,
+    retryMaxDelayMs: 200, // far below the suggested 9s
+  });
+  const workspaceDir = await mkdtemp(join(tmpdir(), "opencode-ws-"));
+
+  const start = Date.now();
+  await adapter.run({
+    role: "implementer",
+    context: makeContextBundle(),
+    workspacePath: workspaceDir,
+    timeoutMs: 15_000,
+    signal: new AbortController().signal,
+  });
+  const elapsedMs = Date.now() - start;
+
+  assert.ok(elapsedMs < 3000, `retryMaxDelayMs=200 must cap the wait even though the provider suggested ~9s, took ${elapsedMs}ms`);
+
+  await rm(dir, { recursive: true, force: true });
+  await rm(workspaceDir, { recursive: true, force: true });
+});
+
+test("19. retry exhaustion: a persistently-failing retryable 503 fails with a clear, attempt-counted message, not just 'exit code 1'", async () => {
+  const { execPath, dir, counterFile } = await createAlwaysFailingExecutable(GEMINI_503_ERROR);
+  const adapter = new OpenCodeAdapter({
+    executablePath: execPath,
+    env: { ...process.env, ATTEMPT_COUNTER_FILE: counterFile },
+    maxRetries: 2,
+    retryBaseDelayMs: 5,
+    retryMaxDelayMs: 20,
+  });
+  const workspaceDir = await mkdtemp(join(tmpdir(), "opencode-ws-"));
+
+  await assert.rejects(
+    () =>
+      adapter.run({
+        role: "implementer",
+        context: makeContextBundle(),
+        workspacePath: workspaceDir,
+        timeoutMs: 5000,
+        signal: new AbortController().signal,
+      }),
+    (err: unknown) => {
+      assert.ok(err instanceof EngineExecutionError);
+      assert.equal(err.meta?.attempts, 3, "1 initial + 2 retries");
+      assert.equal(err.meta?.retryable, true);
+      assert.equal(err.meta?.classification, "server_unavailable");
+      assert.ok(err.message.includes("after 3 attempts"), err.message);
+      assert.ok(err.message.includes("Gemini"), err.message);
+      assert.ok(err.message.includes("retryable HTTP 503"), err.message);
+      assert.ok(err.message.includes("UNAVAILABLE"), err.message);
+      return true;
+    },
+  );
+  assert.equal(readCounter(counterFile), 3, "should have spawned exactly maxRetries+1 times, never more");
+
+  await rm(dir, { recursive: true, force: true });
+  await rm(workspaceDir, { recursive: true, force: true });
+});
+
+test("20. non-retryable authentication failure (401 invalid API key): fails immediately, no retries", async () => {
+  const { execPath, dir, counterFile } = await createAlwaysFailingExecutable(AUTH_401_ERROR);
+  const adapter = new OpenCodeAdapter({
+    executablePath: execPath,
+    env: { ...process.env, ATTEMPT_COUNTER_FILE: counterFile },
+    maxRetries: 3,
+    retryBaseDelayMs: 5,
+    retryMaxDelayMs: 20,
+  });
+  const workspaceDir = await mkdtemp(join(tmpdir(), "opencode-ws-"));
+
+  await assert.rejects(
+    () =>
+      adapter.run({
+        role: "implementer",
+        context: makeContextBundle(),
+        workspacePath: workspaceDir,
+        timeoutMs: 5000,
+        signal: new AbortController().signal,
+      }),
+    (err: unknown) => {
+      assert.ok(err instanceof EngineExecutionError);
+      assert.equal(err.meta?.attempts, 1, "must not retry an auth failure");
+      assert.equal(err.meta?.retryable, false);
+      assert.equal(err.meta?.classification, "auth");
+      return true;
+    },
+  );
+  assert.equal(readCounter(counterFile), 1, "an auth failure must never be retried, even though maxRetries=3");
+
+  await rm(dir, { recursive: true, force: true });
+  await rm(workspaceDir, { recursive: true, force: true });
+});
+
+test("21. non-retryable malformed request (400 invalid model): fails immediately, no retries", async () => {
+  const { execPath, dir, counterFile } = await createAlwaysFailingExecutable(MALFORMED_400_ERROR);
+  const adapter = new OpenCodeAdapter({
+    executablePath: execPath,
+    env: { ...process.env, ATTEMPT_COUNTER_FILE: counterFile },
+    maxRetries: 3,
+    retryBaseDelayMs: 5,
+    retryMaxDelayMs: 20,
+  });
+  const workspaceDir = await mkdtemp(join(tmpdir(), "opencode-ws-"));
+
+  await assert.rejects(
+    () =>
+      adapter.run({
+        role: "implementer",
+        context: makeContextBundle(),
+        workspacePath: workspaceDir,
+        timeoutMs: 5000,
+        signal: new AbortController().signal,
+      }),
+    (err: unknown) => {
+      assert.ok(err instanceof EngineExecutionError);
+      assert.equal(err.meta?.attempts, 1);
+      assert.equal(err.meta?.retryable, false);
+      assert.equal(err.meta?.classification, "invalid_request");
+      return true;
+    },
+  );
+  assert.equal(readCounter(counterFile), 1);
+
+  await rm(dir, { recursive: true, force: true });
+  await rm(workspaceDir, { recursive: true, force: true });
+});
+
+test("22. cancellation during retry backoff stops immediately — no further spawn, rejects with EngineCancelledError", async () => {
+  const { execPath, dir, counterFile } = await createAlwaysFailingExecutable(GEMINI_503_ERROR);
+  const adapter = new OpenCodeAdapter({
+    executablePath: execPath,
+    env: { ...process.env, ATTEMPT_COUNTER_FILE: counterFile },
+    maxRetries: 5,
+    retryBaseDelayMs: 3000, // deliberately long — the abort below must preempt this wait, not outlast it
+    retryMaxDelayMs: 3000,
+  });
+  const workspaceDir = await mkdtemp(join(tmpdir(), "opencode-ws-"));
+  const controller = new AbortController();
+
+  const promise = adapter.run({
+    role: "implementer",
+    context: makeContextBundle(),
+    workspacePath: workspaceDir,
+    timeoutMs: 10_000,
+    signal: controller.signal,
+  });
+
+  // Give the first (failing) attempt time to actually run and enter the backoff wait, then cancel.
+  setTimeout(() => controller.abort(), 300);
+
+  const start = Date.now();
+  await assert.rejects(promise, (err: unknown) => {
+    assert.ok(err instanceof EngineCancelledError);
+    return true;
+  });
+  const elapsedMs = Date.now() - start;
+
+  assert.ok(elapsedMs < 2000, `cancellation should preempt the 3000ms backoff wait, took ${elapsedMs}ms`);
+  assert.equal(readCounter(counterFile), 1, "must not have spawned a second attempt after cancellation");
+
+  await rm(dir, { recursive: true, force: true });
+  await rm(workspaceDir, { recursive: true, force: true });
+});
+
+test("23. orchestrator: retry exhaustion lands the task in FAILED with exactly one AgentRun/AGENT_FAILED, no duplicate branch/commit/PR", async () => {
+  const { execPath, dir, counterFile } = await createAlwaysFailingExecutable(GEMINI_503_ERROR);
+  const adapter = new OpenCodeAdapter({
+    executablePath: execPath,
+    env: { ...process.env, ATTEMPT_COUNTER_FILE: counterFile },
+    maxRetries: 1,
+    retryBaseDelayMs: 5,
+    retryMaxDelayMs: 20,
+  });
+
+  const root = await mkdtemp(join(tmpdir(), "opencode-retry-orch-"));
+  const platform = buildPlatform({
+    dbPath: join(root, "platform.sqlite"),
+    workspacesRoot: join(root, "workspaces"),
+    engine: adapter,
+    ownerId: "opencode-retry-worker",
+  });
+
+  const repoPath = await createFixtureRepo(root);
+  const now = new Date().toISOString();
+  const user = { id: randomUUID(), tenantId: "default", email: "retry-tester@example.com", name: "Tester", passwordHash: "", createdAt: now };
+  platform.users.insert(user);
+  const project: Project = {
+    id: randomUUID(),
+    tenantId: "default",
+    ownerId: user.id,
+    name: "Retry Fixture",
+    repoUrl: repoPath,
+    defaultBranch: "main",
+    codingEngine: "opencode",
+    sourceControlProvider: "local-git",
+    owner: null,
+    repo: null,
+    commands: { test: "node test.js" },
+    createdAt: now,
+    updatedAt: now,
+  };
+  platform.projects.insert(project);
+
+  const task = createTask(platform.tasks, platform.taskEvents, {
+    tenantId: "default",
+    projectId: project.id,
+    title: "Task that will exhaust retries",
+    goal: "Fix add(1, 2) to return 3",
+    createdBy: null,
+  });
+
+  const executedTask = await platform.orchestrator.executeTask(task.id);
+
+  assert.equal(executedTask.status, "FAILED");
+  assert.equal(executedTask.taskRecord.pullRequest, null, "no PR should ever be created for a task that never got past the Implementer");
+
+  const runs = platform.agentRuns.listForTask(task.id);
+  assert.equal(runs.length, 1, "the low-level retries happened inside one CodingEngine.run() call — only one AgentRun row for this attempt");
+  assert.equal(runs[0]?.status, "failed");
+
+  const events = platform.taskEvents.listForTask(task.id).map((e) => e.type);
+  assert.equal(events.filter((t) => t === "AGENT_FAILED").length, 1);
+  assert.equal(events.filter((t) => t === "AGENT_STARTED").length, 1);
+  assert.ok(events.includes("TASK_FAILED"));
+  assert.ok(!events.includes("PULL_REQUEST_CREATED"));
+  assert.ok(!events.includes("BRANCH_PUSHED"));
+
+  assert.equal(readCounter(counterFile), 2, "1 initial + 1 retry (maxRetries=1), never more");
+
+  await rm(dir, { recursive: true, force: true });
+  await rm(root, { recursive: true, force: true });
 });

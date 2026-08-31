@@ -29,10 +29,18 @@ function resolveEngineFromEnv(): CodingEngine {
   if (key === "fixture") {
     // Deterministic, no external CLI/credentials — see claude-code-adapter.ts's documented
     // boundary. Intended for local development/demo only, never set in a real deployment.
+    console.log("[config] coding engine=fixture (deterministic, no live model)");
     return createSelfFixDemoEngine();
   }
   if (key === "claude-code" || key === "claude") {
+    console.log("[config] coding engine=claude-code");
     return new ClaudeCodeAdapter();
   }
+  // Startup-visible, secret-free: shows exactly which model every task invocation will request —
+  // see /docs/CODING_ENGINE.md "Configuration" for why this exists (a wrong/stale model, e.g. an
+  // unset OPENCODE_MODEL silently falling back to opencode's own default, was previously only
+  // discoverable by reading a live task's failure output).
+  const model = process.env.OPENCODE_MODEL?.trim();
+  console.log(`[config] coding engine=opencode model=${model || "(unset — opencode's own default, see OPENCODE_MODEL)"}`);
   return new OpenCodeAdapter();
 }

@@ -66,8 +66,13 @@ export class Worker {
     await Promise.allSettled(
       candidates.map(async (task) => {
         this.inFlight.add(task.id);
+        // Terminal-visible per Step 9's observability requirement (/docs/CODING_ENGINE.md
+        // "Observability"): without this, a failing task was silent in the worker's own
+        // terminal — only the database's TaskEvent log showed anything happened at all.
+        console.log(`[worker] picked up task ${task.id} ("${task.title}") [status=${task.status}]`);
         try {
-          await this.orchestrator.executeTask(task.id);
+          const result = await this.orchestrator.executeTask(task.id);
+          console.log(`[worker] task ${task.id} finished with status ${result.status}`);
         } catch (err) {
           this.onTaskError(task.id, err);
         } finally {

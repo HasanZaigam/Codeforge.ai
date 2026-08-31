@@ -30,10 +30,23 @@ export class EngineTimeoutError extends Error {
   }
 }
 
+export interface EngineFailureMetadata {
+  /** How many total invocation attempts were made before giving up (1 = failed on the first try, no retry). */
+  attempts: number;
+  /** Whether the underlying failure was classified as transient/retryable — false if it failed fast on purpose. */
+  retryable: boolean;
+  /** Coarse failure category (e.g. "rate_limit", "server_unavailable", "auth") — see engine-failure-classifier.ts. */
+  classification: string;
+}
+
 export class EngineExecutionError extends Error {
-  constructor(role: AgentRole, cause: unknown) {
-    super(`Coding engine invocation (${role}) failed: ${String(cause)}`);
+  /** Present only when the adapter performed structured failure classification (currently: OpenCodeAdapter). */
+  readonly meta: EngineFailureMetadata | null;
+
+  constructor(role: AgentRole, cause: unknown, meta: EngineFailureMetadata | null = null) {
+    super(`Coding engine invocation (${role}) failed${meta ? ` after ${meta.attempts} attempt${meta.attempts === 1 ? "" : "s"}` : ""}: ${String(cause)}`);
     this.name = "EngineExecutionError";
+    this.meta = meta;
   }
 }
 

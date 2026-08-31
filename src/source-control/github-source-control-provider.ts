@@ -33,7 +33,8 @@ export class GitHubSourceControlProvider implements SourceControlProvider {
 
   async resolveCloneCredential(project: Project, _signal: AbortSignal): Promise<GitCredential> {
     const token = this.tokenFor(project);
-    return { header: `Authorization: Bearer ${token}` };
+    const basic = Buffer.from(`x-access-token:${token}`).toString("base64");
+    return { header: `Authorization: Basic ${basic}` };
   }
 
   async commitAll(_project: Project, workspacePath: string, message: string, signal: AbortSignal): Promise<string> {
@@ -42,7 +43,9 @@ export class GitHubSourceControlProvider implements SourceControlProvider {
 
   async push(project: Project, workspacePath: string, branch: string, signal: AbortSignal): Promise<void> {
     if (signal.aborted) throw new CancellationError();
-    const credential = { header: `Authorization: Bearer ${this.tokenFor(project)}` };
+    const token = this.tokenFor(project);
+    const basic = Buffer.from(`x-access-token:${token}`).toString("base64");
+    const credential = { header: `Authorization: Basic ${basic}` };
     const env = { ...process.env, ...gitCredentialEnv(credential) };
     try {
       await execFileAsync("git", ["push", "-u", "origin", branch], { cwd: workspacePath, signal, env });
@@ -96,5 +99,7 @@ export class GitHubSourceControlProvider implements SourceControlProvider {
 /** Strips anything that looks like an Authorization header value out of an error message before it's ever persisted to a TaskEvent. Defense in depth — the token is never in argv or env-dump form in these errors, but this guards against a future refactor accidentally introducing that. */
 function sanitize(err: unknown): string {
   const message = err instanceof Error ? err.message : String(err);
-  return message.replace(/authorization:\s*bearer\s+\S+/gi, "authorization: bearer [redacted]");
+  return message
+    .replace(/authorization:\s*bearer\s+\S+/gi, "authorization: bearer [redacted]")
+    .replace(/authorization:\s*basic\s+\S+/gi, "authorization: basic [redacted]");
 }

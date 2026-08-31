@@ -1,17 +1,37 @@
 import { spawn } from "node:child_process";
+import { resolve as resolvePath } from "node:path";
 import type { CodingEngine, EngineInvocationRequest, EngineInvocationResult } from "./coding-engine.js";
 import { EngineCancelledError, EngineExecutionError, EngineTimeoutError } from "./coding-engine.js";
 import { buildImplementerPrompt, buildReviewerPrompt } from "./prompt-builder.js";
 import { terminateGracefully } from "../process/terminate-gracefully.js";
+import { classifyEngineFailure } from "./engine-failure-classifier.js";
+import { computeBackoffDelayMs, sleepUnlessAborted } from "./retry-backoff.js";
 import type { CostMetadata, Finding, NeedsInputDraft, StepResult } from "../domain/types.js";
 
 export const MAX_LOG_EXCERPT_CHARS = 4000;
+
+/** Bounds so an env var/caller can't accidentally configure a near-infinite or near-zero-delay retry loop. */
+const MAX_ALLOWED_RETRIES = 8;
+const MAX_ALLOWED_DELAY_MS = 5 * 60 * 1000;
 
 export interface OpenCodeAdapterOptions {
   executablePath?: string;
   model?: string;
   extraArgs?: string[];
   env?: NodeJS.ProcessEnv;
+  /**
+   * Retries AFTER the first attempt for transient/retryable provider
+   * failures (HTTP 429/500/502/503/504, or an explicit `isRetryable: true`
+   * from the provider) — see engine-failure-classifier.ts. Default 3 (so up
+   * to 4 total attempts). Non-retryable failures (auth, invalid
+   * model/request) never retry regardless of this value. Configurable via
+   * `OPENCODE_MAX_RETRIES`, clamped to [0, 8] — see /docs/CODING_ENGINE.md.
+   */
+  maxRetries?: number;
+  /** Base delay for exponential backoff between retries. Default 1000ms. Configurable via `OPENCODE_RETRY_BASE_DELAY_MS`. */
+  retryBaseDelayMs?: number;
+  /** Upper bound on any single backoff delay. Default 20000ms. Configurable via `OPENCODE_RETRY_MAX_DELAY_MS`. */
+  retryMaxDelayMs?: number;
 }
 
 /** Sensitive environment variable patterns/keys that must never enter the OpenCode child process. */
@@ -46,28 +66,89 @@ export class OpenCodeAdapter implements CodingEngine {
   private readonly model?: string;
   private readonly extraArgs: string[];
   private readonly customEnv?: NodeJS.ProcessEnv;
+  private readonly maxRetries: number;
+  private readonly retryBaseDelayMs: number;
+  private readonly retryMaxDelayMs: number;
 
   constructor(options: OpenCodeAdapterOptions = {}) {
     this.executablePath = options.executablePath ?? process.env.OPENCODE_BIN_PATH ?? "opencode";
     this.model = options.model ?? process.env.OPENCODE_MODEL;
     this.extraArgs = options.extraArgs ?? [];
     this.customEnv = options.env;
+    this.maxRetries = clamp(options.maxRetries ?? envInt("OPENCODE_MAX_RETRIES", 3), 0, MAX_ALLOWED_RETRIES);
+    this.retryBaseDelayMs = clamp(options.retryBaseDelayMs ?? envInt("OPENCODE_RETRY_BASE_DELAY_MS", 1000), 0, MAX_ALLOWED_DELAY_MS);
+    this.retryMaxDelayMs = clamp(options.retryMaxDelayMs ?? envInt("OPENCODE_RETRY_MAX_DELAY_MS", 20_000), this.retryBaseDelayMs, MAX_ALLOWED_DELAY_MS);
   }
 
+  /**
+   * Retries a transient provider failure (Gemini/OpenAI/etc. 429/500/502/503/504,
+   * or an explicit `isRetryable: true`) with bounded exponential backoff +
+   * full jitter, entirely beneath the CodingEngine.run() boundary — the
+   * Orchestrator awaits this once and sees either a success or one final
+   * EngineExecutionError, so retries never create extra AgentRun rows,
+   * branches, commits, or PRs (those all happen only after run() resolves).
+   * A non-retryable failure (auth, invalid model/request) or exhausted
+   * retries fails fast. See /docs/CODING_ENGINE.md "Retry behavior" and
+   * engine-failure-classifier.ts.
+   */
   async run(request: EngineInvocationRequest): Promise<EngineInvocationResult> {
     const prompt =
       request.role === "implementer"
         ? buildImplementerPrompt(request.context)
         : buildReviewerPrompt(request.context);
 
-    const { stdout, stderr } = await this.spawnOpenCode(prompt, request);
-    return this.parseResult(stdout, stderr, request);
+    const totalAttempts = this.maxRetries + 1;
+    for (let attempt = 1; attempt <= totalAttempts; attempt++) {
+      const { stdout, stderr, code } = await this.spawnOnce(prompt, request);
+
+      if (code === 0) {
+        return this.parseResult(stdout, stderr, request);
+      }
+
+      const classification = classifyEngineFailure(stdout, stderr, code);
+      const isLastAttempt = attempt === totalAttempts;
+
+      if (!classification.retryable || isLastAttempt) {
+        console.error(
+          `[opencode] model=${this.model ?? "(unset)"} ${request.role} attempt ${attempt}/${totalAttempts} failed permanently ` +
+            `(category=${classification.category}, retryable=${classification.retryable}): ${classification.reason}`,
+        );
+        throw new EngineExecutionError(request.role, classification.reason, {
+          attempts: attempt,
+          retryable: classification.retryable,
+          classification: classification.category,
+        });
+      }
+
+      // Respect the provider's own suggested wait (e.g. Gemini's "Please retry in 48.88s" on a
+      // quota-exhaustion 429) when it gave one — retrying sooner than that just re-hits the same
+      // still-exhausted quota. Still capped at retryMaxDelayMs so a provider can't force an
+      // unbounded wait; see /docs/CODING_ENGINE.md "Retry behavior".
+      const backoffDelayMs = computeBackoffDelayMs(attempt, this.retryBaseDelayMs, this.retryMaxDelayMs);
+      const delayMs = classification.suggestedDelayMs !== null ? Math.min(Math.max(backoffDelayMs, classification.suggestedDelayMs), this.retryMaxDelayMs) : backoffDelayMs;
+      console.warn(
+        `[opencode] model=${this.model ?? "(unset)"} ${request.role} attempt ${attempt}/${totalAttempts} failed transiently ` +
+          `(category=${classification.category}) — retrying in ${delayMs}ms` +
+          `${classification.suggestedDelayMs !== null ? ` (provider suggested ${classification.suggestedDelayMs}ms)` : ""}: ${classification.reason}`,
+      );
+      await sleepUnlessAborted(delayMs, request.signal, () => new EngineCancelledError(request.role));
+    }
+
+    // Unreachable: the loop above always either returns or throws before exhausting totalAttempts.
+    throw new EngineExecutionError(request.role, "retry loop exited without a result");
   }
 
-  private spawnOpenCode(
+  /**
+   * Spawns `opencode run` exactly once and resolves with its raw
+   * stdout/stderr/exit code — even on a non-zero exit — so the retry loop in
+   * run() can classify the failure. Only spawn-level failures (binary
+   * missing, timeout, cancellation) reject directly; those are never
+   * retried here (see run()'s per-attempt handling above).
+   */
+  private spawnOnce(
     prompt: string,
     request: EngineInvocationRequest,
-  ): Promise<{ stdout: string; stderr: string }> {
+  ): Promise<{ stdout: string; stderr: string; code: number | null }> {
     if (request.signal.aborted) {
       return Promise.reject(new EngineCancelledError(request.role));
     }
@@ -82,7 +163,7 @@ export class OpenCodeAdapter implements CodingEngine {
       }
       args.push(prompt);
 
-      const cleanEnv = this.buildCleanEnvironment();
+      const cleanEnv = this.buildCleanEnvironment(request.workspacePath);
 
       let child;
       try {
@@ -126,20 +207,33 @@ export class OpenCodeAdapter implements CodingEngine {
           // Exited due to our cancellation handler
           return;
         }
-        if (code !== 0) {
-          const detail = stderr.slice(-2000) || stdout.slice(-2000) || `exit code ${code}`;
-          reject(new EngineExecutionError(request.role, `exit code ${code}: ${detail}`));
-          return;
-        }
-        resolve({ stdout, stderr });
+        // Non-zero exit resolves (not rejects) here — classification and the retry/fail-fast
+        // decision happen one level up, in run(), which needs the raw output either way.
+        resolve({ stdout, stderr, code });
       });
     });
   }
 
   /**
-   * Sanitizes process.env to ensure platform secrets never enter the coding engine child process.
+   * Sanitizes process.env to ensure platform secrets never enter the coding
+   * engine child process — AND forces `PWD` to match the real workspace
+   * directory `spawn()`'s `cwd` option is about to set.
+   *
+   * Critical isolation fix: `spawn({cwd})` changes the OS-level working
+   * directory of the child process, but does NOT update an inherited `PWD`
+   * env var — so without this, the child inherited the *worker process's own*
+   * stale `PWD` (the platform repo's own directory, since that's where
+   * `node .../run-worker.ts` was launched from). OpenCode's own directory
+   * resolution (used by its `bash` tool and its project/context detection)
+   * was observed, in a real live run, trusting that stale `PWD` over the
+   * actual OS cwd — causing it to read and write files in the PLATFORM
+   * REPOSITORY itself instead of the isolated task workspace (see
+   * /docs/SECURITY_ARCHITECTURE.md "Isolation model" and
+   * /docs/CODING_ENGINE.md "Workspace isolation" for why this must never
+   * happen). Reproduced directly, fixed by this line, and covered by a
+   * regression test — see tests/opencode-adapter.test.ts.
    */
-  private buildCleanEnvironment(): NodeJS.ProcessEnv {
+  private buildCleanEnvironment(workspacePath: string): NodeJS.ProcessEnv {
     const baseEnv = this.customEnv ?? process.env;
     const clean: NodeJS.ProcessEnv = {};
 
@@ -151,6 +245,8 @@ export class OpenCodeAdapter implements CodingEngine {
       if (key.startsWith("AWS_") || key.startsWith("JENKINS_")) continue;
       clean[key] = value;
     }
+
+    clean.PWD = resolvePath(workspacePath);
 
     return clean;
   }
@@ -288,4 +384,16 @@ export class OpenCodeAdapter implements CodingEngine {
       }
     }
   }
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max);
+}
+
+/** Reads a positive integer env var, falling back to `fallback` if unset, empty, or not a valid non-negative integer. */
+function envInt(key: string, fallback: number): number {
+  const raw = process.env[key];
+  if (!raw) return fallback;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : fallback;
 }
