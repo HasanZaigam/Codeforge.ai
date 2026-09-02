@@ -78,6 +78,7 @@ export type TaskEventType =
   | "RETRY_STARTED"
   | "REVIEW_STARTED"
   | "REVIEW_COMPLETED"
+  | "REVIEW_CHANGES_REQUESTED"
   | "NEEDS_INPUT_RAISED"
   | "NEEDS_INPUT_ANSWERED"
   | "TASK_MOVED_TO_REVIEW"
@@ -94,7 +95,10 @@ export type TaskEventType =
   | "COMMIT_CREATED"
   | "BRANCH_PUSHED"
   | "PULL_REQUEST_CREATED"
-  | "SOURCE_CONTROL_FAILED";
+  | "SOURCE_CONTROL_FAILED"
+  | "HUMAN_REVIEW_DETECTED"
+  | "HUMAN_REVIEW_CHANGES_REQUESTED"
+  | "HUMAN_REVIEW_APPROVED";
 
 export interface TaskEventDTO {
   id: string;
@@ -133,10 +137,54 @@ export interface TaskReport {
   filesChanged: number;
   checks: Array<{ name: string; passed: boolean }>;
   reviewFindings: Array<{ severity: string; category: string; summary: string }>;
+  /** The Reviewer's own prose assessment (Markdown) — shown alongside reviewFindings, which stay empty unless the engine emits structured findings. */
+  reviewSummary: string | null;
   confidence: "high" | "medium" | "low" | null;
   status: string;
   pullRequest: { url: string | null; number: number | null; branch: string | null; baseBranch: string } | null;
   commitSha: string | null;
+  /** Present only when status is FAILED. */
+  failureReason: string | null;
+  agentRuns: AgentRunHistoryItemDTO[];
+  durations: ExecutionDurationsDTO;
+  recoveredFromCrash: boolean;
+  failureContext: FailureContextDTO | null;
+}
+
+export type AgentRunTrigger = "initial" | "self_fix_retry" | "ai_review_fix" | "human_review_fix" | "review";
+export type AgentRunStatus = "running" | "completed" | "failed" | "timeout" | "cancelled" | "interrupted";
+
+export interface AgentRunHistoryItemDTO {
+  id: string;
+  role: "implementer" | "reviewer";
+  attemptNumber: number;
+  status: AgentRunStatus;
+  trigger: AgentRunTrigger;
+  startedAt: string;
+  completedAt: string | null;
+  summary: string | null;
+  filesChanged: string[];
+  confidence: "high" | "medium" | "low" | null;
+  findings: Array<{ severity: string; category: string; summary: string }> | null;
+  verdict: "approved" | "rejected" | null;
+  error: string | null;
+  humanReviewFeedback: { reviewerLogin: string; comments: string } | null;
+  resumedAfterInterruption: boolean;
+}
+
+export interface ExecutionDurationsDTO {
+  totalMs: number | null;
+  implementationMs: number | null;
+  reviewMs: number | null;
+  validationMs: number | null;
+  waitingForHumanReviewMs: number | null;
+}
+
+export interface FailureContextDTO {
+  stage: string;
+  failedRole: "implementer" | "reviewer" | null;
+  attemptNumber: number | null;
+  recoveredFromCrash: boolean;
 }
 
 interface CreateProjectCommon {

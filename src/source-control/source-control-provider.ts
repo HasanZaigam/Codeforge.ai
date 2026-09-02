@@ -1,4 +1,4 @@
-import type { GitCredential, Project, PullRequestRef } from "../domain/types.js";
+import type { GitCredential, HumanReviewFeedbackItem, Project, PullRequestRef } from "../domain/types.js";
 
 export type { GitCredential, PullRequestRef };
 
@@ -50,6 +50,17 @@ export interface SourceControlProvider {
    * double-guarded against duplicate PRs on crash/retry.
    */
   openPullRequest(project: Project, request: OpenPullRequestRequest, signal: AbortSignal): Promise<PullRequestRef>;
+
+  /**
+   * Reads current human feedback (reviews + conversation comments) on `pr` —
+   * the source for the human review feedback loop (see
+   * /docs/TASK_LIFECYCLE.md "Human review feedback loop"). Returns the full
+   * current set every call; the Orchestrator is responsible for diffing
+   * against already-processed ids (see TaskRecord.processedHumanFeedbackIds)
+   * — this keeps the provider itself stateless and safe to call repeatedly.
+   * A provider with no PR-review concept (e.g. local-git) returns `[]`.
+   */
+  listPullRequestFeedback(project: Project, pr: PullRequestRef, signal: AbortSignal): Promise<HumanReviewFeedbackItem[]>;
 }
 
 export class UnknownSourceControlProviderError extends Error {

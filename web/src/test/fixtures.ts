@@ -1,4 +1,4 @@
-import type { HumanInputRequestDTO, ProjectDTO, TaskDTO, TaskEventDTO, TaskReport } from "../api/index.js";
+import type { AgentRunHistoryItemDTO, HumanInputRequestDTO, ProjectDTO, TaskDTO, TaskEventDTO, TaskReport } from "../api/index.js";
 
 export function makeProject(overrides: Partial<ProjectDTO> = {}): ProjectDTO {
   return {
@@ -50,6 +50,27 @@ export function makeEvent(overrides: Partial<TaskEventDTO> = {}): TaskEventDTO {
   };
 }
 
+export function makeAgentRunHistoryItem(overrides: Partial<AgentRunHistoryItemDTO> = {}): AgentRunHistoryItemDTO {
+  return {
+    id: "run-1",
+    role: "implementer",
+    attemptNumber: 1,
+    status: "completed",
+    trigger: "initial",
+    startedAt: "2026-01-01T00:00:00.000Z",
+    completedAt: "2026-01-01T00:00:30.000Z",
+    summary: "Fixed the bug.",
+    filesChanged: ["src/add.js"],
+    confidence: "high",
+    findings: null,
+    verdict: null,
+    error: null,
+    humanReviewFeedback: null,
+    resumedAfterInterruption: false,
+    ...overrides,
+  };
+}
+
 export function makeInputRequest(overrides: Partial<HumanInputRequestDTO> = {}): HumanInputRequestDTO {
   return {
     id: "input-1",
@@ -80,10 +101,16 @@ export function makeReport(overrides: Partial<TaskReport> = {}): TaskReport {
       { name: "test", passed: true },
     ],
     reviewFindings: [],
+    reviewSummary: null,
     confidence: "high",
     status: "Ready for review",
     pullRequest: null,
     commitSha: null,
+    failureReason: null,
+    agentRuns: [],
+    durations: { totalMs: null, implementationMs: null, reviewMs: null, validationMs: null, waitingForHumanReviewMs: null },
+    recoveredFromCrash: false,
+    failureContext: null,
     ...overrides,
   };
 }

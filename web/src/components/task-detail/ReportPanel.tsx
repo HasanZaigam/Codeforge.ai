@@ -1,6 +1,9 @@
 import type { TaskDTO, TaskReport } from "../../api/index.js";
 import { EmptyState } from "../common/EmptyState.js";
+import { Markdown } from "../common/Markdown.js";
 import { formatAbsolute } from "../../lib/time.js";
+import { DurationStats } from "./DurationStats.js";
+import { AgentRunHistory } from "./AgentRunHistory.js";
 
 /**
  * Shows only evidence the backend actually reports — never fabricated
@@ -17,6 +20,7 @@ export function ReportPanel({ task, report }: { task: TaskDTO; report: TaskRepor
   const isDone = task.status === "DONE";
   const isReview = task.status === "REVIEW";
   const isCancelled = task.status === "CANCELLED";
+  const isFailed = task.status === "FAILED";
 
   return (
     <div className="stack">
@@ -45,10 +49,44 @@ export function ReportPanel({ task, report }: { task: TaskDTO; report: TaskRepor
           </p>
         </div>
       )}
+      {isFailed && (
+        <div className="card card-padded" style={{ borderColor: "var(--tone-danger-text)" }}>
+          <h2 style={{ color: "var(--tone-danger-text)", marginBottom: 8 }}>Failed</h2>
+          {report.failureContext && (
+            <p className="text-muted" style={{ marginBottom: 8 }}>
+              Failed at: <strong>{report.failureContext.stage}</strong>
+              {report.failureContext.failedRole && (
+                <>
+                  {" "}
+                  — <span style={{ textTransform: "capitalize" }}>{report.failureContext.failedRole}</span>
+                  {report.failureContext.attemptNumber && `, attempt ${report.failureContext.attemptNumber}`}
+                </>
+              )}
+            </p>
+          )}
+          {report.failureReason ? (
+            <Markdown text={report.failureReason} />
+          ) : (
+            <p className="text-muted">No failure reason was recorded.</p>
+          )}
+        </div>
+      )}
+
+      {report.recoveredFromCrash && (
+        <div className="card card-padded" style={{ borderColor: "var(--tone-attention-text)" }}>
+          <h2 style={{ color: "var(--tone-attention-text)", marginBottom: 8, fontSize: "0.95rem" }}>Recovered from a crash</h2>
+          <p className="text-muted">
+            Execution was interrupted at least once (e.g. a worker process restart) and automatically resumed — see "Agent runs"
+            below for exactly which attempt was interrupted and which one resumed it. No work was lost or duplicated.
+          </p>
+        </div>
+      )}
+
+      <DurationStats durations={report.durations} />
 
       <div className="section">
         <h2>What changed</h2>
-        <p>{report.whatChanged}</p>
+        <Markdown text={report.whatChanged} />
         <p className="text-muted" style={{ marginTop: 8 }}>
           {report.filesChanged} file{report.filesChanged === 1 ? "" : "s"} changed
           {report.commitSha && ` · commit ${report.commitSha.slice(0, 7)}`}
@@ -104,7 +142,11 @@ export function ReportPanel({ task, report }: { task: TaskDTO; report: TaskRepor
           </p>
         )}
         {report.reviewFindings.length === 0 ? (
-          <p className="text-muted">No concerns raised.</p>
+          report.reviewSummary ? (
+            <Markdown text={report.reviewSummary} />
+          ) : (
+            <p className="text-muted">No concerns raised.</p>
+          )
         ) : (
           <div className="findings-list">
             {report.reviewFindings.map((finding, i) => (
@@ -116,6 +158,23 @@ export function ReportPanel({ task, report }: { task: TaskDTO; report: TaskRepor
             ))}
           </div>
         )}
+      </div>
+
+      <div className="section">
+        <details className="execution-details" open={report.agentRuns.length > 0 && report.agentRuns.length <= 3}>
+          <summary>
+            <h2 style={{ display: "inline" }}>Execution details</h2>
+          </summary>
+          <div className="execution-details-body">
+            {task.branchName && (
+              <p className="text-muted" style={{ fontSize: "0.85rem" }}>
+                Branch: <code>{task.branchName}</code>
+              </p>
+            )}
+            <h3 style={{ fontSize: "0.85rem", marginTop: 12, marginBottom: 8 }}>Agent runs</h3>
+            <AgentRunHistory runs={report.agentRuns} />
+          </div>
+        </details>
       </div>
     </div>
   );

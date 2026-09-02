@@ -30,6 +30,35 @@ Every request to `/projects/*` and `/tasks/*` requires a valid session, presente
 
 Every project and task is scoped to the authenticated user who owns it (`User -> owns -> Project -> tasks` — see [AUTHENTICATION.md](./AUTHENTICATION.md) "Authorization model"). Attempting to read or act on another user's project or task returns **`404`, not `403`** — the API never confirms that a resource exists to a caller who isn't allowed to see it. `GET /projects` and `GET /projects/:id/tasks` return only the caller's own resources; there is no "list everything" endpoint.
 
+### Route classification
+
+Every route this API exposes, classified by who may call it. **PUBLIC** = no session required. **AUTHENTICATED** = any valid session; the resource is implicitly scoped to the caller (there is no id to check ownership *of*). **OWNER-ONLY** = valid session *and* `assertProjectAccess`/`assertTaskAccess` (404, not 403, for a resource that exists but isn't the caller's — see above). **INTERNAL** = never reachable over HTTP at all.
+
+| Route | Classification |
+|---|---|
+| `GET /health` | PUBLIC |
+| `POST /auth/register` | PUBLIC |
+| `POST /auth/login` | PUBLIC |
+| `POST /auth/logout` | AUTHENTICATED |
+| `GET /auth/me` | AUTHENTICATED |
+| `GET /projects` | AUTHENTICATED (returns only the caller's own projects — no "list everything") |
+| `POST /projects` | AUTHENTICATED (created project is always owned by the caller) |
+| `GET /projects/:projectId` | OWNER-ONLY |
+| `GET /projects/:projectId/tasks` | OWNER-ONLY |
+| `POST /projects/:projectId/tasks` | OWNER-ONLY |
+| `GET /tasks/:taskId` | OWNER-ONLY |
+| `GET /tasks/:taskId/events` | OWNER-ONLY |
+| `GET /tasks/:taskId/report` | OWNER-ONLY (includes the execution-history fields — `agentRuns`, `durations`, `failureContext` — added since the observability milestone; they ride on this same check, no separate authorization surface) |
+| `GET /tasks/:taskId/input` | OWNER-ONLY |
+| `POST /tasks/:taskId/input` | OWNER-ONLY |
+| `POST /tasks/:taskId/cancel` | OWNER-ONLY |
+| `POST /tasks/:taskId/check-review-feedback` | OWNER-ONLY |
+| `GET /integrations/github` | AUTHENTICATED (the caller's own connection status) |
+| `POST /integrations/github` | AUTHENTICATED |
+| `DELETE /integrations/github` | AUTHENTICATED |
+
+**INTERNAL**: the worker (`src/worker/`) is the only "internal" execution path in this system, and it is not a route at all — it calls `Orchestrator.executeTask()`/`checkHumanReviewFeedback()` directly, in the same process, never through Express or a session. There is no HTTP endpoint that exposes worker-only capabilities to a browser/API client, and no endpoint the worker itself needs to authenticate against — see [AUTHENTICATION.md](./AUTHENTICATION.md) "The worker doesn't authenticate — and shouldn't."
+
 ## Response envelope
 
 Success responses wrap the payload in a named key (`{ "project": {...} }`, `{ "tasks": [...] }`) rather than returning a bare object/array — keeps the contract extensible (pagination metadata, etc. can be added alongside the data key without a breaking change).
@@ -166,13 +195,45 @@ interface TaskReport {
   filesChanged: number;
   checks: Array<{ name: string; passed: boolean }>;         // from the latest validation run
   reviewFindings: Array<{ severity: string; category: string; summary: string }>;
+  reviewSummary: string | null;                              // the Reviewer's own prose (Markdown) — present alongside reviewFindings, which stay empty unless the engine emits structured findings
   confidence: "high" | "medium" | "low" | null;             // from the independent Reviewer, not the Implementer
   status: string;                                            // "Ready for review" | "Done" | "Needs input" | "Failed" | "In progress" | "Cancelled"
   pullRequest: { url: string | null; number: number | null; branch: string | null; baseBranch: string } | null;
   commitSha: string | null;
+  failureReason: string | null;                              // present only when status is FAILED — see TASK_LIFECYCLE.md "Review/fix cycle" for the exhausted-review-cycle case
+  agentRuns: AgentRunHistoryItem[];                          // every AgentRun for this task, in order — see "Execution history" below
+  durations: {                                                // every value derived from existing timestamps — null if not yet computable, never estimated
+    totalMs: number | null;
+    implementationMs: number | null;
+    reviewMs: number | null;
+    validationMs: number | null;
+    waitingForHumanReviewMs: number | null;
+  };
+  recoveredFromCrash: boolean;                                // true iff any AgentRun for this task was ever left "interrupted" (a crash-recovery resume happened)
+  failureContext: { stage: string; failedRole: "implementer" | "reviewer" | null; attemptNumber: number | null; recoveredFromCrash: boolean } | null; // present only when status is FAILED
+}
+
+interface AgentRunHistoryItem {
+  id: string;
+  role: "implementer" | "reviewer";
+  attemptNumber: number;
+  status: "running" | "completed" | "failed" | "timeout" | "cancelled" | "interrupted";
+  trigger: "initial" | "self_fix_retry" | "ai_review_fix" | "human_review_fix" | "review"; // what caused this specific attempt
+  startedAt: string;
+  completedAt: string | null;
+  summary: string | null;
+  filesChanged: string[];
+  confidence: "high" | "medium" | "low" | null;
+  findings: Array<{ severity: string; category: string; summary: string }> | null; // reviewer role only
+  verdict: "approved" | "rejected" | null;                    // reviewer role only — derived the same way the Orchestrator itself derives it
+  error: string | null;                                       // sanitized failure message — never a raw stack trace
+  humanReviewFeedback: { reviewerLogin: string; comments: string } | null; // present only on a human-review-triggered fix run
+  resumedAfterInterruption: boolean;                          // true iff the immediately preceding attempt of the same role was left "interrupted"
 }
 ```
-Available at any task status; before `REVIEW` it reflects whatever evidence exists so far. `pullRequest` is non-null only once the platform has actually opened/found a real PR — see [GITHUB_INTEGRATION.md](./GITHUB_INTEGRATION.md); the platform never auto-merges, so its presence always means "opened, awaiting your review on GitHub," never "done."
+Available at any task status; before `REVIEW` it reflects whatever evidence exists so far. `pullRequest` is non-null only once the platform has actually opened/found a real PR — see [GITHUB_INTEGRATION.md](./GITHUB_INTEGRATION.md); the platform never auto-merges, so its presence always means "opened, awaiting your review on GitHub," never "done." A rejected Reviewer verdict does not immediately fail the task — see TASK_LIFECYCLE.md "Review/fix cycle" for the bounded self-correction loop this triggers first.
+
+**Execution history** (`agentRuns`, `durations`, `recoveredFromCrash`, `failureContext`) is a second *view* over the same `AgentRun`/`TaskEvent` rows the rest of this response is already built from — see [TASK_LIFECYCLE.md](./TASK_LIFECYCLE.md) "Execution history and observability". These fields were added to this existing response rather than a new endpoint, and are purely additive — any client reading only the original fields is unaffected.
 
 ### `GET /tasks/:taskId/input`
 `{ "input": HumanInputRequestDTO | null }` — `null` if the task has no open `NEEDS_INPUT` question right now.
@@ -204,6 +265,13 @@ Requests cancellation. No request body required. Returns `200` with `{ "task": T
 - **`404 NOT_FOUND`**: unknown task id.
 
 The frontend never kills a process or touches a workspace directly — this endpoint (via `TaskService.cancelTask` → `Orchestrator.requestCancellation`) is the only sanctioned way to stop a task, and it's a domain command, not a status write.
+
+### `POST /tasks/:taskId/check-review-feedback` *(human review feedback loop)*
+On-demand check for new human GitHub PR review feedback on a `REVIEW` task — the same operation the worker's own poll loop already runs automatically every tick, exposed here so a developer doesn't have to wait for the next poll interval. No request body. Returns `200` with `{ "task": TaskDTO }`.
+
+- A no-op (task unchanged) unless the task is `REVIEW`, has a Pull Request, and its PR has feedback not already processed — safe to call repeatedly. See [TASK_LIFECYCLE.md](./TASK_LIFECYCLE.md) "Human review feedback loop".
+- A GitHub `CHANGES_REQUESTED` review resumes the task (`status` becomes `WORKING`, same as any other in-progress execution) and runs a fix cycle back to `REVIEW` — poll `GET /tasks/:id` the same way as after any other action that resumes execution.
+- An approval or a plain comment is recorded but leaves the task in `REVIEW` unchanged — the platform never auto-merges.
 
 ### `GET /integrations/github` *(added in Step 7)*
 The caller's own GitHub connection status: `{ "connected": boolean, "githubLogin": string | null, "connectedAt": string | null }`. Never includes the token.

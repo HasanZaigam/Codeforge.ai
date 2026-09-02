@@ -144,11 +144,41 @@ export class TaskRepository {
     return result.changes > 0;
   }
 
-  /** Releases the execution lease without changing status (step finished or task paused). */
-  releaseLock(id: string, now: string): void {
+  /**
+   * Atomically transitions a REVIEW task to WORKING and takes an execution
+   * lease on it — the claim guard for the human review feedback loop (see
+   * Orchestrator.checkHumanReviewFeedback). Mirrors claimTodo's pattern:
+   * a single UPDATE with a WHERE guard, so two concurrent pollers (or
+   * worker processes) racing on the same task's PR feedback can never both
+   * win and both start a fix cycle. Returns true iff this call won the claim.
+   */
+  claimReviewForHumanFeedback(id: string, ownerId: string, leaseMs: number, now: string): boolean {
+    const leaseExpires = new Date(new Date(now).getTime() + leaseMs).toISOString();
+    const result = this.db
+      .prepare(
+        `UPDATE tasks
+         SET status = 'WORKING', lock_owner = ?, lock_expires_at = ?, updated_at = ?
+         WHERE id = ? AND status = 'REVIEW'
+           AND (lock_expires_at IS NULL OR lock_expires_at < ?)`,
+      )
+      .run(ownerId, leaseExpires, now, id, now);
+    return result.changes > 0;
+  }
+
+  /**
+   * Releases the execution lease without changing status (step finished or
+   * task paused) — owner-guarded: only clears the lease if `ownerId` is
+   * still the current holder. Without this guard, a process that has
+   * already lost its lease (see `claimWorking`, `LeaseLostError`) finishing
+   * its own cleanup afterward would unconditionally null out whichever
+   * *other* process's lease is now legitimately active, effectively
+   * un-claiming a task out from under its real current owner. A mismatched
+   * release is a safe, silent no-op — the real owner's lease is untouched.
+   */
+  releaseLock(id: string, ownerId: string, now: string): void {
     this.db
-      .prepare("UPDATE tasks SET lock_owner = NULL, lock_expires_at = NULL, updated_at = ? WHERE id = ?")
-      .run(now, id);
+      .prepare("UPDATE tasks SET lock_owner = NULL, lock_expires_at = NULL, updated_at = ? WHERE id = ? AND lock_owner = ?")
+      .run(now, id, ownerId);
   }
 
   /**

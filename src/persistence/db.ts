@@ -16,6 +16,14 @@ export function openDatabase(path: string): DatabaseSync {
   const db = new DatabaseSync(path);
   db.exec("PRAGMA journal_mode = WAL;");
   db.exec("PRAGMA foreign_keys = ON;");
+  // WAL lets concurrent readers proceed without blocking on a writer, but SQLite still only ever
+  // allows one writer at a time — without a busy timeout, a second process's write arriving while
+  // another write transaction is in progress fails immediately with SQLITE_BUSY (the default is 0,
+  // i.e. no wait at all) instead of waiting briefly for the lock to clear. With two worker processes
+  // (or a worker and the API process) sharing one file, both write reasonably often (claims, lease
+  // renewals, task_events, AgentRun rows), so a transient overlap is a real, expected occurrence,
+  // not a bug — it must be waited out, not surfaced as an error. See /docs/TECHNICAL_DECISIONS.md.
+  db.exec("PRAGMA busy_timeout = 5000;");
   runMigrations(db);
   return db;
 }
@@ -29,7 +37,7 @@ function runMigrations(db: DatabaseSync): void {
   `);
 
   const migrationsDir = join(__dirname, "migrations");
-  const files = ["001_init.sql", "002_cancellation.sql", "003_auth.sql", "004_github.sql"]; // explicit, ordered list — avoids fs.readdir ordering surprises
+  const files = ["001_init.sql", "002_cancellation.sql", "003_auth.sql", "004_github.sql", "005_concurrency.sql"]; // explicit, ordered list — avoids fs.readdir ordering surprises
 
   const applied = new Set(
     db

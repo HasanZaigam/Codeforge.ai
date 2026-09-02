@@ -29,6 +29,8 @@ function makeContextBundle(overrides: Partial<ContextBundle> = {}): ContextBundl
     projectConventionPointer: "See conventions in README.md",
     lastFailure: null,
     reviewEvidence: null,
+    reviewerFeedback: null,
+    humanReviewFeedback: null,
     ...overrides,
   };
 }
@@ -254,6 +256,147 @@ test("6 & 13. StepResult conversion: handles JSON stream, cost, findings, needs_
   assert.ok(firstFinding);
   assert.equal(firstFinding.category, "correctness");
   assert.equal(firstFinding.severity, "concern");
+
+  await rm(dir, { recursive: true, force: true });
+  await rm(workspaceDir, { recursive: true, force: true });
+});
+
+test("6b. real (live-captured) OpenCode event shape: the model's natural-language answer (part.text on type:'text') becomes the summary, not the raw event stream", async () => {
+  // Exact NDJSON shape as actually emitted by a real `opencode run --format json` invocation
+  // against live Gemini (captured 2026-09-01, task ab150e03...) — step_start/tool_use/step_finish
+  // noise interleaved with the one type:"text" record that carries the real answer at `part.text`.
+  // Before this fix, none of these records had a top-level result/summary/text/message/content
+  // field, so parseResult() fell through to dumping the ENTIRE raw stream as the "summary" — this
+  // is the exact bug reported as "huge raw JSON blobs" in the UI and GitHub PR.
+  const realEventLines = [
+    { type: "step_start", timestamp: 1, sessionID: "ses_1", part: { id: "prt_1", messageID: "msg_1", sessionID: "ses_1", snapshot: "abc", type: "step-start" } },
+    {
+      type: "tool_use",
+      timestamp: 2,
+      sessionID: "ses_1",
+      part: {
+        type: "tool",
+        tool: "bash",
+        callID: "call_1",
+        state: { status: "completed", input: { command: "ls -F" }, output: "README.md.bak\nindex.js\n", metadata: {} },
+        title: "ls -F",
+        id: "prt_2",
+        sessionID: "ses_1",
+        messageID: "msg_1",
+      },
+    },
+    {
+      type: "tool_use",
+      timestamp: 3,
+      sessionID: "ses_1",
+      part: {
+        type: "tool",
+        tool: "write",
+        callID: "call_2",
+        state: {
+          status: "completed",
+          input: { filePath: "__WORKSPACE__/README.md", content: "# Simple Project\n" },
+          metadata: {},
+        },
+        title: "README.md",
+        id: "prt_3",
+        sessionID: "ses_1",
+        messageID: "msg_1",
+      },
+    },
+    { type: "step_finish", timestamp: 4, sessionID: "ses_1", part: { id: "prt_4", reason: "tool-calls", snapshot: "abc", messageID: "msg_1", sessionID: "ses_1", type: "step-finish", tokens: { total: 100, input: 90, output: 10 }, cost: 0.001 } },
+    { type: "step_start", timestamp: 5, sessionID: "ses_1", part: { id: "prt_5", messageID: "msg_2", sessionID: "ses_1", snapshot: "def", type: "step-start" } },
+    {
+      type: "text",
+      timestamp: 6,
+      sessionID: "ses_1",
+      part: {
+        id: "prt_6",
+        messageID: "msg_2",
+        sessionID: "ses_1",
+        type: "text",
+        text: "The `README.md` file has been created. I have verified the project by running `node index.js`, which output `hello` as expected.",
+        time: { start: 6, end: 6 },
+      },
+    },
+    { type: "step_finish", timestamp: 7, sessionID: "ses_1", part: { id: "prt_7", reason: "stop", snapshot: "def", messageID: "msg_2", sessionID: "ses_1", type: "step-finish", tokens: { total: 50, input: 45, output: 5 }, cost: 0.0005 } },
+  ];
+
+  const workspaceDir = await mkdtemp(join(tmpdir(), "opencode-ws-"));
+  const lines = realEventLines.map((l) => JSON.stringify(l).replace("__WORKSPACE__", workspaceDir));
+  const script = lines.map((l) => `console.log(${JSON.stringify(l)});`).join("\n");
+  const { execPath, dir } = await createMockExecutable(script);
+
+  const adapter = new OpenCodeAdapter({ executablePath: execPath });
+  const res = await adapter.run({
+    role: "implementer",
+    context: makeContextBundle(),
+    workspacePath: workspaceDir,
+    timeoutMs: 5000,
+    signal: new AbortController().signal,
+  });
+
+  assert.equal(res.result.status, "completed");
+  assert.equal(
+    res.result.summary,
+    "The `README.md` file has been created. I have verified the project by running `node index.js`, which output `hello` as expected.",
+    "summary must be exactly the model's natural-language text, not the raw event stream",
+  );
+  assert.ok(!res.result.summary.includes("step_start"), "must never contain raw event type names");
+  assert.ok(!res.result.summary.includes("sessionID"), "must never contain internal session/message IDs");
+  assert.ok(!res.result.summary.includes("snapshot"), "must never contain internal snapshot hashes");
+  assert.deepEqual(res.result.filesChanged, ["README.md"], "the write-tool call must be extracted as a changed file, relative to the workspace");
+
+  await rm(dir, { recursive: true, force: true });
+  await rm(workspaceDir, { recursive: true, force: true });
+});
+
+test("6c. multiple write/edit tool calls across a run all contribute to filesChanged, deduped and sorted", async () => {
+  const workspaceDir = await mkdtemp(join(tmpdir(), "opencode-ws-"));
+  const mk = (tool: string, filePath: string) =>
+    JSON.stringify({ type: "tool_use", part: { tool, state: { input: { filePath } } } });
+  const rawScript = [
+    `console.log(${JSON.stringify(mk("write", join(workspaceDir, "src/b.ts")))});`,
+    `console.log(${JSON.stringify(mk("edit", join(workspaceDir, "src/a.ts")))});`,
+    `console.log(${JSON.stringify(mk("write", join(workspaceDir, "src/a.ts")))}); // same file edited twice — must not duplicate`,
+    `console.log(${JSON.stringify(mk("bash", "irrelevant"))}); // non-file-mutating tool — must be ignored`,
+    `console.log(${JSON.stringify(JSON.stringify({ result: "Refactored two files." }))});`,
+  ].join("\n");
+
+  const { execPath, dir } = await createMockExecutable(rawScript);
+  const adapter = new OpenCodeAdapter({ executablePath: execPath });
+  const res = await adapter.run({
+    role: "implementer",
+    context: makeContextBundle(),
+    workspacePath: workspaceDir,
+    timeoutMs: 5000,
+    signal: new AbortController().signal,
+  });
+
+  assert.deepEqual(res.result.filesChanged, ["src/a.ts", "src/b.ts"]);
+  assert.equal(res.result.summary, "Refactored two files.");
+
+  await rm(dir, { recursive: true, force: true });
+  await rm(workspaceDir, { recursive: true, force: true });
+});
+
+test("6d. structured JSON parsed but no natural-language summary anywhere: synthesizes a useful placeholder from filesChanged, never dumps raw JSON", async () => {
+  const workspaceDir = await mkdtemp(join(tmpdir(), "opencode-ws-"));
+  const mk = (tool: string, filePath: string) => JSON.stringify({ type: "tool_use", part: { tool, state: { input: { filePath } } } });
+  const script = [`console.log(${JSON.stringify(mk("write", join(workspaceDir, "README.md")))});`].join("\n");
+  const { execPath, dir } = await createMockExecutable(script);
+  const adapter = new OpenCodeAdapter({ executablePath: execPath });
+
+  const res = await adapter.run({
+    role: "implementer",
+    context: makeContextBundle(),
+    workspacePath: workspaceDir,
+    timeoutMs: 5000,
+    signal: new AbortController().signal,
+  });
+
+  assert.equal(res.result.summary, "Modified README.md.");
+  assert.ok(!res.result.summary.includes("{\"type\""), "must never contain a raw JSON event");
 
   await rm(dir, { recursive: true, force: true });
   await rm(workspaceDir, { recursive: true, force: true });

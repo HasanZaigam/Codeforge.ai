@@ -20,6 +20,8 @@ const EMPTY_TASK_RECORD: TaskRecord = {
   selfFixAttempts: 0,
   workingEpisodes: 0,
   pullRequest: null,
+  processedHumanFeedbackIds: [],
+  pendingHumanReviewFeedback: null,
 };
 
 /** The only place a Task row is created — keeps FR-3's contract (goal in, executable task out) in one place. */

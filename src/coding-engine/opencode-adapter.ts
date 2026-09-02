@@ -252,8 +252,28 @@ export class OpenCodeAdapter implements CodingEngine {
   }
 
   /**
-   * Translates OpenCode output (JSON stream, single JSON, or structured text)
-   * into the platform's standardized StepResult shape.
+   * Translates OpenCode's native NDJSON event stream into the platform's
+   * standardized StepResult shape — the ONLY place that happens (see
+   * /docs/CODING_ENGINE.md "Output handling"). This is the human-readable
+   * boundary: `StepResult.summary` is what `TaskReport.whatChanged` and the
+   * GitHub PR's "Implementation summary" both consume downstream, so a bug
+   * here surfaces as raw JSON in both the UI and the PR — not two separate
+   * bugs, one root cause. See engine-failure-classifier.ts for the (separate)
+   * failure-path parsing.
+   *
+   * OpenCode's real event shape (observed live, not guessed — see
+   * tests/opencode-adapter.test.ts): each NDJSON line has a top-level `type`
+   * and a nested `part`. The model's actual natural-language answer lives at
+   * `part.text` on `type: "text"` records — NOT at any top-level string
+   * field — which is why naively looking for `record.text`/`record.message`
+   * always missed it and fell through to dumping the entire raw stream.
+   * File edits show up as `type: "tool_use"` records where `part.tool` is a
+   * file-mutating tool (`write`/`edit`/`patch`) and `part.state.input`
+   * carries the path — previously never extracted at all (`filesChanged`
+   * was hardcoded to `[]`).
+   *
+   * Legacy flat shapes (`{"result": "..."}` etc.) are still honored for
+   * back-compat with anything that doesn't emit the `type`/`part` shape.
    */
   private parseResult(
     stdout: string,
@@ -263,13 +283,16 @@ export class OpenCodeAdapter implements CodingEngine {
     const combinedLogs = stdout + (stderr ? `\n--- STDERR ---\n${stderr}` : "");
     const logExcerpt = combinedLogs.slice(-MAX_LOG_EXCERPT_CHARS);
 
-    let summary = "";
+    let resultField: string | null = null;
+    const textSegments: string[] = [];
+    const genericSegments: string[] = [];
     let isError = false;
     let cost: CostMetadata | null = null;
+    let confidence: StepResult["confidence"] = null;
     let needsInput: NeedsInputDraft | null = null;
     const findings: Finding[] = [];
+    const filesChanged = new Set<string>();
 
-    // Attempt to parse JSON Lines or single JSON output
     const lines = stdout.split("\n").map((l) => l.trim()).filter(Boolean);
     let parsedAnyJson = false;
 
@@ -278,9 +301,15 @@ export class OpenCodeAdapter implements CodingEngine {
         try {
           const parsed = JSON.parse(line);
           parsedAnyJson = true;
-          this.extractFromJsonRecord(parsed, {
-            setSummary: (s) => {
-              if (s) summary = summary ? `${summary}\n${s}` : s;
+          this.extractFromJsonRecord(parsed, request.workspacePath, {
+            setResultField: (s) => {
+              if (s) resultField = s;
+            },
+            addTextSegment: (s) => {
+              if (s) textSegments.push(s);
+            },
+            addGenericSegment: (s) => {
+              if (s) genericSegments.push(s);
             },
             setError: (e) => {
               if (e) isError = true;
@@ -288,11 +317,17 @@ export class OpenCodeAdapter implements CodingEngine {
             setCost: (c) => {
               cost = { ...cost, ...c };
             },
+            setConfidence: (c) => {
+              confidence = c;
+            },
             setNeedsInput: (n) => {
               needsInput = n;
             },
             addFinding: (f) => {
               findings.push(f);
+            },
+            addFileChanged: (f) => {
+              filesChanged.add(f);
             },
           });
         } catch {
@@ -301,21 +336,32 @@ export class OpenCodeAdapter implements CodingEngine {
       }
     }
 
-    if (!parsedAnyJson) {
-      // Non-JSON fallback: full stdout text is the summary
+    // Priority: an explicit final `result`/`summary` field (most authoritative) > the model's own
+    // natural-language `text` events (the real OpenCode shape) > generic legacy text/message
+    // fields (e.g. informational "step" chatter) > raw stdout (only for genuinely non-JSON output)
+    // > a synthesized placeholder. NEVER the raw NDJSON event stream itself — that was the bug.
+    let summary: string;
+    if (resultField) {
+      summary = resultField;
+    } else if (textSegments.length > 0) {
+      summary = textSegments.join("\n\n").trim();
+    } else if (genericSegments.length > 0) {
+      summary = genericSegments.join("\n").trim();
+    } else if (!parsedAnyJson) {
       summary = stdout.trim() || stderr.trim() || "(no output returned)";
-    }
-
-    if (!summary) {
-      summary = stdout.trim() || "(no summary returned)";
+    } else {
+      summary =
+        filesChanged.size > 0
+          ? `Modified ${[...filesChanged].sort().join(", ")}.`
+          : "(the coding engine completed without producing a natural-language summary)";
     }
 
     const result: StepResult = {
       status: isError ? "blocked" : needsInput ? "needs_input" : "completed",
       summary,
-      filesChanged: [],
+      filesChanged: [...filesChanged].sort(),
       diffRef: null,
-      confidence: null,
+      confidence,
       findings,
       needsInput,
     };
@@ -327,26 +373,48 @@ export class OpenCodeAdapter implements CodingEngine {
     };
   }
 
+  /** Tool names OpenCode uses for file-mutating operations — see parseResult()'s doc comment. */
+  private static readonly FILE_MUTATING_TOOLS = new Set(["write", "edit", "patch"]);
+
   private extractFromJsonRecord(
     record: Record<string, unknown>,
+    workspacePath: string,
     accum: {
-      setSummary: (s: string) => void;
+      setResultField: (s: string) => void;
+      addTextSegment: (s: string) => void;
+      addGenericSegment: (s: string) => void;
       setError: (e: boolean) => void;
       setCost: (c: CostMetadata) => void;
+      setConfidence: (c: StepResult["confidence"]) => void;
       setNeedsInput: (n: NeedsInputDraft) => void;
       addFinding: (f: Finding) => void;
+      addFileChanged: (f: string) => void;
     },
   ): void {
+    // Real OpenCode shape: {"type": "text", "part": {"type": "text", "text": "..."}}
+    const part = record.part && typeof record.part === "object" ? (record.part as Record<string, unknown>) : null;
+    if (record.type === "text" && part && typeof part.text === "string") {
+      accum.addTextSegment(part.text);
+    }
+    // Real OpenCode shape: {"type": "tool_use", "part": {"tool": "write", "state": {"input": {"filePath": "..."}}}}
+    if (record.type === "tool_use" && part && typeof part.tool === "string" && OpenCodeAdapter.FILE_MUTATING_TOOLS.has(part.tool.toLowerCase())) {
+      const state = part.state && typeof part.state === "object" ? (part.state as Record<string, unknown>) : null;
+      const input = state?.input && typeof state.input === "object" ? (state.input as Record<string, unknown>) : null;
+      const filePath = input && (typeof input.filePath === "string" ? input.filePath : typeof input.path === "string" ? input.path : null);
+      if (filePath) accum.addFileChanged(toRelativeWorkspacePath(filePath, workspacePath));
+    }
+
+    // Legacy/back-compat flat shapes (FixtureCodingEngine-style test doubles, other engines' JSON).
     if (typeof record.result === "string") {
-      accum.setSummary(record.result);
+      accum.setResultField(record.result);
     } else if (typeof record.summary === "string") {
-      accum.setSummary(record.summary);
+      accum.setResultField(record.summary);
     } else if (typeof record.text === "string") {
-      accum.setSummary(record.text);
+      accum.addGenericSegment(record.text);
     } else if (typeof record.message === "string") {
-      accum.setSummary(record.message);
+      accum.addGenericSegment(record.message);
     } else if (typeof record.content === "string") {
-      accum.setSummary(record.content);
+      accum.addGenericSegment(record.content);
     }
 
     if (record.is_error === true || record.error) {
@@ -361,6 +429,10 @@ export class OpenCodeAdapter implements CodingEngine {
     if (typeof record.output_tokens === "number") costMeta.outputTokens = record.output_tokens;
     if (Object.keys(costMeta).length > 0) {
       accum.setCost(costMeta);
+    }
+
+    if (record.confidence === "high" || record.confidence === "medium" || record.confidence === "low") {
+      accum.setConfidence(record.confidence);
     }
 
     if (record.needs_input && typeof record.needs_input === "object") {
@@ -384,6 +456,15 @@ export class OpenCodeAdapter implements CodingEngine {
       }
     }
   }
+}
+
+/** Converts an absolute file path inside the workspace to a path relative to it, for human-readable display — falls back to the original path if it isn't actually inside the workspace. */
+function toRelativeWorkspacePath(filePath: string, workspacePath: string): string {
+  const absoluteWorkspace = resolvePath(workspacePath);
+  const absoluteFile = resolvePath(filePath);
+  if (absoluteFile === absoluteWorkspace) return ".";
+  if (absoluteFile.startsWith(absoluteWorkspace + "/")) return absoluteFile.slice(absoluteWorkspace.length + 1);
+  return filePath;
 }
 
 function clamp(value: number, min: number, max: number): number {

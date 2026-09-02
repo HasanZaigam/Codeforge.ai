@@ -266,7 +266,11 @@ a {
 
 .project-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  /* auto-fit (not auto-fill): with few projects, unused tracks collapse to 0 instead of sitting
+     there as invisible empty columns — that reserved-but-empty space was what made 1-2 project
+     cards look stranded in a huge blank area. Capped at 320px so a lone card still reads as a
+     card, not a full-width stretched banner. */
+  grid-template-columns: repeat(auto-fit, minmax(260px, 320px));
   gap: var(--space-4);
 }
 
@@ -277,6 +281,9 @@ a {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
+  /* Grid items default to min-width: auto (content-based), which silently defeats the repo URL's
+     text-overflow: ellipsis below by letting the card grow to fit the whole unbroken URL. */
+  min-width: 0;
 }
 
 .project-card:hover {
@@ -346,16 +353,27 @@ a {
 /* Kanban board */
 
 .board {
-  display: flex;
+  /* CSS Grid, not a fixed-width flex row: `repeat(auto-fit, minmax(...))` shares the container's
+     actual width evenly across however many columns exist (5 in the common case, up to 7 with
+     FAILED/CANCELLED) instead of each column claiming a fixed 280px regardless of what's
+     available — five fixed-280px columns (1400px+) never fit inside the page's own
+     --max-content-width (1200px), which is why REVIEW/DONE were pushed off-screen. The 180px
+     floor is deliberately tight: at the page's own max content width (1200px, minus padding ≈
+     1152px), 5 columns need >= ~218px each to avoid wrapping (1152px − 4×16px gap, divided by 5) —
+     a rounder 220px+ floor would still force the common 5-column board to wrap on its own widest
+     page. Below this floor, auto-fit wraps to additional rows instead of overflowing — see
+     TECHNICAL_DECISIONS.md TD-23 (revised) and UI_ARCHITECTURE.md "Responsive strategy". A
+     horizontal scrollbar remains as a defensive fallback (e.g. many FAILED/CANCELLED tasks
+     pushing the column count unusually high on a narrow viewport), never the primary mechanism. */
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: var(--space-4);
   overflow-x: auto;
   padding-bottom: var(--space-3);
-  scroll-snap-type: x proximity;
 }
 
 .board-column {
-  flex: 0 0 280px;
-  scroll-snap-align: start;
+  min-width: 0; /* grid items default to min-width: auto (content-based), which would otherwise force each column wide enough to fit its longest unbroken task text */
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
@@ -390,10 +408,9 @@ a {
 
 @media (max-width: 720px) {
   .board {
-    scroll-snap-type: x mandatory;
-  }
-  .board-column {
-    flex-basis: 88vw;
+    /* A lower floor than the desktop 220px so two columns can still sit side by side on a
+       narrower viewport instead of immediately dropping to one-per-row. */
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
   }
 }
 
@@ -416,6 +433,7 @@ a {
 .task-card h4 {
   font-size: 0.95rem;
   line-height: 1.3;
+  overflow-wrap: break-word;
 }
 
 .task-card .description {
@@ -425,6 +443,7 @@ a {
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
+  overflow-wrap: break-word;
 }
 
 .task-card .activity {
@@ -589,6 +608,11 @@ a {
   font-size: 0.9rem;
 }
 
+.timeline-item .detail {
+  font-size: 0.78rem;
+  color: var(--color-text-muted);
+}
+
 .timeline-item .time {
   font-size: 0.78rem;
   color: var(--color-text-muted);
@@ -680,6 +704,145 @@ a {
 }
 .check-row.failed {
   border-color: var(--tone-danger-bg);
+}
+
+/* Agent run history */
+
+.agent-run-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.agent-run-item {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.agent-run-item-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  font-size: 0.85rem;
+}
+
+.agent-run-role {
+  font-weight: 600;
+}
+
+.agent-run-timing {
+  font-size: 0.8rem;
+  margin: 0;
+}
+
+.human-review-feedback {
+  border-left: 2px solid var(--tone-info-text);
+  padding-left: var(--space-3);
+}
+
+.agent-run-error summary {
+  cursor: pointer;
+  font-size: 0.82rem;
+  color: var(--color-text-muted);
+}
+
+.agent-run-error p {
+  font-size: 0.82rem;
+  color: var(--tone-danger-text);
+  margin-top: var(--space-1);
+  white-space: pre-wrap;
+}
+
+/* Execution details */
+
+.execution-details summary {
+  cursor: pointer;
+  list-style: revert;
+}
+
+.execution-details-body {
+  margin-top: var(--space-3);
+}
+
+/* Duration stats */
+
+.duration-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+}
+
+.duration-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.duration-stat .value {
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.duration-stat .label {
+  font-size: 0.78rem;
+  color: var(--color-text-muted);
+}
+
+/* Markdown-rendered agent output (implementation summaries, review notes — see Markdown.tsx) */
+
+.markdown h3,
+.markdown h4,
+.markdown h5,
+.markdown h6 {
+  margin: var(--space-4) 0 var(--space-2);
+  font-size: 0.95rem;
+}
+.markdown h3:first-child,
+.markdown h4:first-child,
+.markdown p:first-child,
+.markdown ul:first-child,
+.markdown ol:first-child {
+  margin-top: 0;
+}
+.markdown p {
+  margin: 0 0 var(--space-3);
+  line-height: 1.55;
+}
+.markdown ul,
+.markdown ol {
+  margin: 0 0 var(--space-3);
+  padding-left: var(--space-5);
+  line-height: 1.55;
+}
+.markdown li {
+  margin-bottom: var(--space-1);
+}
+.markdown code {
+  background: var(--tone-neutral-bg);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-size: 0.87em;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}
+.markdown pre.markdown-code {
+  background: var(--tone-neutral-bg);
+  border-radius: var(--radius-md);
+  padding: var(--space-3) var(--space-4);
+  overflow-x: auto;
+  margin: 0 0 var(--space-3);
+}
+.markdown pre.markdown-code code {
+  background: none;
+  padding: 0;
+  font-size: 0.85rem;
+}
+.markdown a {
+  color: var(--color-primary);
 }
 
 /* Utility */

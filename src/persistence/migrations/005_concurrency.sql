@@ -1,0 +1,13 @@
+-- Production-grade worker concurrency hardening (see /docs/TECHNICAL_DECISIONS.md).
+--
+-- Defense-in-depth, not the primary defense: attemptNumber uniqueness per (task, role) is already
+-- an intended invariant, enforced in the common case by Orchestrator.nextAttemptNumber() counting
+-- real persisted rows and by the lease mechanism ensuring only one process is ever supposed to be
+-- advancing a given task. This constraint exists for the narrow race window between "a worker's
+-- lease heartbeat fails to renew" and "that worker's own throwIfCancelled() checkpoint notices and
+-- stops" — during that window, two processes could theoretically both insert an AgentRun for the
+-- same (task, role, attemptNumber). Rather than a silent, hard-to-detect data-integrity issue, the
+-- second insert now fails loudly (a real SQL constraint violation), which the existing
+-- executeTask()/checkHumanReviewFeedback() catch-all already turns into a clean, safe FAILED —
+-- never silent corruption.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_runs_task_role_attempt ON agent_runs(task_id, role, attempt_number);

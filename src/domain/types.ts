@@ -43,6 +43,27 @@ export interface TaskRecord {
    * the Orchestrator never calls openPullRequest again for this task.
    */
   pullRequest: PullRequestRef | null;
+  /**
+   * Identifiers (see HumanReviewFeedbackItem.id) of GitHub PR reviews/comments
+   * already acted on — the idempotency guard for the human review feedback
+   * loop (see /docs/TASK_LIFECYCLE.md "Human review feedback loop"). A
+   * repeated poll of the same PR must never trigger a second fix cycle for
+   * feedback already recorded here.
+   */
+  processedHumanFeedbackIds: string[];
+  /**
+   * Set the moment a human-feedback fix cycle is claimed (REVIEW ->
+   * WORKING), before any work starts; cleared the moment that cycle ends
+   * (success, NEEDS_INPUT, or failure) — never left set on any status other
+   * than WORKING. This is what lets `executeTask` tell, after a crash and
+   * restart, that a re-claimed WORKING task must resume the human review
+   * feedback fix cycle (not the original implement/validate/review
+   * pipeline) — see /docs/TASK_LIFECYCLE.md "Crash recovery". Durable by
+   * construction: it's part of the same persisted TaskRecord as everything
+   * else here, so it survives a process crash exactly like `pullRequest` or
+   * `branchName` already do.
+   */
+  pendingHumanReviewFeedback: HumanReviewFeedback | null;
 }
 
 export interface Decision {
@@ -98,6 +119,7 @@ export type TaskEventType =
   | "RETRY_STARTED"
   | "REVIEW_STARTED"
   | "REVIEW_COMPLETED"
+  | "REVIEW_CHANGES_REQUESTED"
   | "NEEDS_INPUT_RAISED"
   | "NEEDS_INPUT_ANSWERED"
   | "TASK_MOVED_TO_REVIEW"
@@ -114,7 +136,10 @@ export type TaskEventType =
   | "COMMIT_CREATED"
   | "BRANCH_PUSHED"
   | "PULL_REQUEST_CREATED"
-  | "SOURCE_CONTROL_FAILED";
+  | "SOURCE_CONTROL_FAILED"
+  | "HUMAN_REVIEW_DETECTED"
+  | "HUMAN_REVIEW_CHANGES_REQUESTED"
+  | "HUMAN_REVIEW_APPROVED";
 
 export interface TaskEvent {
   id: string;
@@ -229,6 +254,36 @@ export interface PullRequestRef {
   url: string | null;
 }
 
+// ---------------------------------------------------------------------------
+// Human review feedback (human-in-the-loop PR review, see TASK_LIFECYCLE.md
+// "Human review feedback loop")
+// ---------------------------------------------------------------------------
+
+/**
+ * One piece of human feedback read from the task's PR — a submitted review
+ * (with a verdict) or a plain conversation comment. Deliberately small: not
+ * a generic GitHub API model, just enough to drive the fix cycle and dedupe
+ * repeated polls. `id` is stable and provider-namespaced (e.g. "review:123",
+ * "comment:456") so it never collides across kinds.
+ */
+export interface HumanReviewFeedbackItem {
+  id: string;
+  kind: "review" | "comment";
+  /** Only reviews carry a verdict; a plain comment is null. */
+  verdict: "approved" | "changes_requested" | "commented" | null;
+  body: string;
+  authorLogin: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** What actually reaches the Implementer — see ContextBundle.humanReviewFeedback. */
+export interface HumanReviewFeedback {
+  reviewerLogin: string;
+  /** The actionable review's own body, plus any other new comment bodies appended. */
+  comments: string;
+}
+
 /**
  * An ephemeral, opaque, per-operation credential a SourceControlProvider
  * hands to the Workspace layer for cloning a private repository — never
@@ -310,10 +365,29 @@ export interface ContextBundle {
   priorDecisions: Decision[];
   repoPath: string;
   projectConventionPointer: string;
-  /** Present only when this is a retry within the self-fix loop. */
+  /** Present only when this is a retry within the self-fix loop (a validation failure, not a Reviewer rejection). */
   lastFailure: ValidationResult | null;
   /** Present only for role = "reviewer". */
   reviewEvidence: ReviewEvidence | null;
+  /**
+   * Present only when this is an Implementer retry triggered by an independent
+   * Reviewer rejection (the review/fix cycle) — distinct from `lastFailure`,
+   * which is a validation-gate failure. Mutually exclusive with `lastFailure`
+   * in practice: a review/fix retry follows a *passing* validation run, so
+   * there is no validation failure to report alongside it. See
+   * /docs/TASK_LIFECYCLE.md "Review/fix cycle".
+   */
+  reviewerFeedback: ReviewResult | null;
+  /**
+   * Present only when this is an Implementer retry triggered by a human's
+   * GitHub PR review requesting changes (the human review feedback loop) —
+   * distinct from both `lastFailure` and `reviewerFeedback`. Mutually
+   * exclusive with both in practice: a human feedback retry only ever
+   * happens after the task has already reached REVIEW (a passing validation
+   * run and an approved independent review). See /docs/TASK_LIFECYCLE.md
+   * "Human review feedback loop".
+   */
+  humanReviewFeedback: HumanReviewFeedback | null;
 }
 
 export interface ReviewEvidence {

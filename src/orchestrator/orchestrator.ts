@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import type { AgentRole, ContextBundle, HumanAnswer, Project, ReviewResult, StepResult, Task, ValidationResult, Workspace } from "../domain/types.js";
+import type { AgentRole, ContextBundle, HumanAnswer, HumanReviewFeedback, Project, ReviewResult, StepResult, Task, ValidationResult, Workspace } from "../domain/types.js";
 import { transition, canTransition, InvalidTransitionError } from "../domain/task-state-machine.js";
-import { CancellationError } from "../domain/errors.js";
+import { CancellationError, LeaseLostError } from "../domain/errors.js";
 import type { TaskRepository } from "../persistence/repositories/task-repository.js";
 import type { TaskEventRepository } from "../persistence/repositories/task-event-repository.js";
 import type { ProjectRepository } from "../persistence/repositories/project-repository.js";
@@ -14,9 +14,17 @@ import type { SourceControlProvider, SourceControlProviderRegistry } from "../so
 import { runValidation } from "../validation/validation-runner.js";
 import { buildImplementerContext, buildReviewerContext } from "./context-builder.js";
 import { deriveReviewResult } from "../review/reviewer.js";
+import { buildHumanReviewFeedback, deriveHumanReviewOutcome } from "../review/human-review-feedback.js";
 import { buildPullRequestDescription, buildPullRequestTitle } from "./pull-request-content.js";
-import { assertNonTrivial, fromExhaustedReview, fromExhaustedSelfFix, fromImplementerDraft, toHumanInputRequest, type NeedsInputRecordInput } from "./needs-input.js";
+import { assertNonTrivial, describeReviewCycleExhaustion, fromExhaustedSelfFix, fromImplementerDraft, toHumanInputRequest, type NeedsInputRecordInput } from "./needs-input.js";
 import { DEFAULT_ORCHESTRATOR_CONFIG, type OrchestratorConfig } from "./config.js";
+// The Orchestrator is otherwise provider-agnostic (see SourceControlProvider), but distinguishing
+// "surface this clearly" (auth/permission) from "quietly retry next poll" (transient/rate-limited)
+// for a read failure genuinely needs to know which kind of failure this was. The only real remote
+// provider today is GitHub, and the classifier's own fallback treats any non-GitHub-typed error as
+// transient — safe/inert for local-git, whose listPullRequestFeedback never actually throws. See
+// /docs/GITHUB_INTEGRATION.md "Human review feedback ingestion" and TECHNICAL_DECISIONS.md.
+import { classifyGitHubError } from "../integrations/github/error-classifier.js";
 
 export class NotFoundError extends Error {
   constructor(kind: string, id: string) {
@@ -80,12 +88,26 @@ export class Orchestrator {
       // starting a fresh implementer/validation pass just to interrupt it a moment later.
       if (this.taskRepo.isCancelRequested(taskId)) {
         task = await this.finalizeCancellation(this.requireTask(taskId), this.workspaceRepo.findByTaskId(taskId));
+      } else if (task.taskRecord.pendingHumanReviewFeedback) {
+        // Crash recovery: this WORKING task was originally claimed for a human review feedback fix
+        // cycle (see checkHumanReviewFeedback), not from TODO — a process crash mid-cycle leaves
+        // `pendingHumanReviewFeedback` set (persisted before any work started), and the next
+        // executeTask() call (this one, possibly in a different process) must resume that exact
+        // cycle, never the original implement/validate/review pipeline. See
+        // /docs/TASK_LIFECYCLE.md "Crash recovery".
+        task = await this.withCancellation(taskId, (signal) => this.runHumanFeedbackFixCycle(taskId, signal));
       } else {
         task = await this.withCancellation(taskId, (signal) => this.runWorkingEpisode(task, signal));
       }
     } catch (err) {
       if (err instanceof CancellationError) {
         task = await this.finalizeCancellation(this.requireTask(taskId), this.workspaceRepo.findByTaskId(taskId));
+      } else if (err instanceof LeaseLostError) {
+        // Another process's claim won — see withCancellation's heartbeat and LeaseLostError's own
+        // doc comment for why this must NOT touch task status or the workspace: whoever now holds
+        // the lease may be actively, legitimately using both. Just stop and observe current state.
+        console.error(`[orchestrator] task ${taskId} — lost the execution lease to another process mid-run; stopping without touching task state.`);
+        task = this.requireTask(taskId);
       } else {
         // Only genuine platform/infra failures land here — model judgment calls are always
         // routed to NEEDS_INPUT via raiseNeedsInput(), never thrown.
@@ -96,7 +118,7 @@ export class Orchestrator {
         this.eventRepo.append(taskId, "TASK_FAILED", { error: String(err) }, now());
       }
     } finally {
-      this.taskRepo.releaseLock(taskId, now());
+      this.taskRepo.releaseLock(taskId, this.ownerId, now());
     }
     return this.requireTask(taskId);
   }
@@ -216,6 +238,112 @@ export class Orchestrator {
     return orphaned.map((t) => t.id);
   }
 
+  /**
+   * Polls a REVIEW task's PR for new human feedback (see
+   * SourceControlProvider.listPullRequestFeedback) and, if a "changes
+   * requested" review is found, runs a bounded fix cycle in the SAME
+   * workspace/branch before returning the task to REVIEW — see
+   * /docs/TASK_LIFECYCLE.md "Human review feedback loop". A no-op for any
+   * task that isn't REVIEW with a PR already opened. Safe to call
+   * repeatedly/concurrently for the same taskId: at most one call wins the
+   * REVIEW->WORKING claim (claimReviewForHumanFeedback), and every feedback
+   * item is recorded in `processedHumanFeedbackIds` before it can trigger a
+   * second fix cycle — see requirement "duplicate GitHub feedback is
+   * ignored".
+   */
+  async checkHumanReviewFeedback(taskId: string): Promise<Task> {
+    const now = () => new Date().toISOString();
+    let task = this.requireTask(taskId);
+    if (task.status !== "REVIEW" || !task.taskRecord.pullRequest) return task;
+
+    const project = this.requireProject(task.projectId);
+    const scProvider = this.sourceControlProviders.resolve(project.sourceControlProvider);
+
+    let items;
+    try {
+      items = await scProvider.listPullRequestFeedback(project, task.taskRecord.pullRequest, new AbortController().signal);
+    } catch (err) {
+      // A transient/rate-limited read failure must never fail the task itself — the next poll
+      // retries, and a server log line is enough (no permanent audit-trail entry for something
+      // expected to self-heal). An auth/permission/other failure is a real, likely-persistent
+      // problem (e.g. a revoked GitHub token) — that needs to be *visible*, not just logged, so it
+      // doesn't silently poll-and-fail forever with nothing for a developer to see. Reuses the
+      // existing SOURCE_CONTROL_FAILED event (same one commit/push/PR-creation failures already
+      // use) rather than inventing a new event type — see /docs/GITHUB_INTEGRATION.md.
+      const reason = err instanceof Error ? err.message : String(err);
+      const classification = classifyGitHubError(err);
+      console.error(`[orchestrator] task ${taskId} — failed to fetch human review feedback (${classification.category}): ${reason}`);
+      if (classification.category !== "retryable_transient" && classification.category !== "rate_limited") {
+        this.eventRepo.append(task.id, "SOURCE_CONTROL_FAILED", { step: "check_review_feedback", error: reason }, now());
+      }
+      return task;
+    }
+
+    const alreadyProcessed = new Set(task.taskRecord.processedHumanFeedbackIds);
+    const outcome = deriveHumanReviewOutcome(items, alreadyProcessed);
+    if (outcome.newItems.length === 0) return task; // nothing new — safe, idempotent no-op
+
+    if (!outcome.changesRequested) {
+      // Approvals and/or plain comments only — nothing actionable. Per requirement: preserve REVIEW,
+      // never auto-merge, never invent a new terminal state. Still mark processed so a repeated poll
+      // doesn't keep re-detecting the same approval/comment.
+      this.eventRepo.append(taskId, "HUMAN_REVIEW_DETECTED", { newItemCount: outcome.newItems.length }, now());
+      if (outcome.approvals.length > 0) {
+        this.eventRepo.append(taskId, "HUMAN_REVIEW_APPROVED", { reviewer: outcome.approvals.at(-1)!.authorLogin }, now());
+      }
+      task.taskRecord.processedHumanFeedbackIds = [...alreadyProcessed, ...outcome.newItems.map((i) => i.id)];
+      this.taskRepo.save(task, now());
+      return this.requireTask(taskId);
+    }
+
+    // Actionable: claim the task (REVIEW -> WORKING) before doing anything else — this is the
+    // single atomic guard against two concurrent pollers both starting a fix cycle.
+    if (!this.taskRepo.claimReviewForHumanFeedback(taskId, this.ownerId, this.config.taskLeaseMs, now())) {
+      return this.requireTask(taskId); // lost the race — another process is already handling this
+    }
+
+    task = this.requireTask(taskId);
+    const feedback = buildHumanReviewFeedback(outcome.changesRequested, outcome.newItems);
+    // Marked processed AND persisted as the pending fix (`pendingHumanReviewFeedback`) immediately
+    // after winning the claim, before the fix cycle runs — a crash or cancellation mid-fix must
+    // never leave this feedback re-triggerable on the next poll, and must let a restarted process
+    // resume this exact cycle (see executeTask's dispatch and runHumanFeedbackFixCycle below).
+    task.taskRecord.processedHumanFeedbackIds = [...alreadyProcessed, ...outcome.newItems.map((i) => i.id)];
+    task.taskRecord.pendingHumanReviewFeedback = feedback;
+    this.taskRepo.save(task, now());
+    this.eventRepo.append(taskId, "HUMAN_REVIEW_DETECTED", { newItemCount: outcome.newItems.length }, now());
+    // Emitted exactly once, here — not inside runHumanFeedbackFixCycle — so a crash-recovery
+    // re-entry into that method (which can happen multiple times for the same cycle) never
+    // duplicates it. See /docs/TASK_LIFECYCLE.md "Crash recovery".
+    this.eventRepo.append(taskId, "HUMAN_REVIEW_CHANGES_REQUESTED", { reviewer: feedback.reviewerLogin }, now());
+
+    try {
+      if (this.taskRepo.isCancelRequested(taskId)) {
+        task = await this.finalizeCancellation(this.requireTask(taskId), this.workspaceRepo.findByTaskId(taskId));
+      } else {
+        task = await this.withCancellation(taskId, (signal) => this.runHumanFeedbackFixCycle(taskId, signal));
+      }
+    } catch (err) {
+      if (err instanceof CancellationError) {
+        task = await this.finalizeCancellation(this.requireTask(taskId), this.workspaceRepo.findByTaskId(taskId));
+      } else if (err instanceof LeaseLostError) {
+        // See executeTask's identical branch and LeaseLostError's own doc comment — never touch
+        // task status or the workspace here; another process now legitimately owns both.
+        console.error(`[orchestrator] task ${taskId} — lost the execution lease to another process mid-run; stopping without touching task state.`);
+        task = this.requireTask(taskId);
+      } else {
+        task = this.requireTask(taskId);
+        task.status = transition(task.status, "infra_failure");
+        task.completedAt = now();
+        this.taskRepo.save(task, now());
+        this.eventRepo.append(taskId, "TASK_FAILED", { error: String(err) }, now());
+      }
+    } finally {
+      this.taskRepo.releaseLock(taskId, this.ownerId, now());
+    }
+    return this.requireTask(taskId);
+  }
+
   // -------------------------------------------------------------------------
   // Cancellation internals
   // -------------------------------------------------------------------------
@@ -232,15 +360,48 @@ export class Orchestrator {
    */
   private async withCancellation<T>(taskId: string, work: (signal: AbortSignal) => Promise<T>): Promise<T> {
     const controller = new AbortController();
+    let leaseLost = false;
     const watcher = setInterval(() => {
       if (!controller.signal.aborted && this.taskRepo.isCancelRequested(taskId)) {
         controller.abort();
       }
     }, this.config.cancellationPollIntervalMs);
+    // Renews this process's execution lease periodically for as long as `work` is genuinely still
+    // running — without this, an episode whose total wall-clock time exceeds `taskLeaseMs` (easily
+    // possible across multiple self-fix/review cycles) would look orphaned to
+    // recoverOrphanedTasks/claimWorking even though nothing crashed, letting a second process
+    // reclaim and double-execute the same task. See /docs/TASK_LIFECYCLE.md "Crash recovery".
+    //
+    // If renewal ever fails (claimWorking returns false), this process no longer holds the lease —
+    // another process's claim won, most likely because this one crashed/stalled long enough for the
+    // lease to genuinely expire and someone else recovered it. Aborting here stops this process's
+    // own work at its next checkpoint (throwIfCancelled), and `leaseLost` tells the catch below to
+    // treat WHATEVER comes out of `work()` afterward (a CancellationError from our own abort, or any
+    // other error/success racing it) as "lease lost," never as this process's own outcome to act on
+    // — see LeaseLostError's own doc comment for why touching task state here would be actively
+    // dangerous to whichever process now legitimately owns the lease.
+    const heartbeat = setInterval(() => {
+      if (controller.signal.aborted) return;
+      const renewed = this.taskRepo.claimWorking(taskId, this.ownerId, this.config.taskLeaseMs, new Date().toISOString());
+      if (!renewed) {
+        leaseLost = true;
+        controller.abort();
+      }
+    }, this.config.leaseHeartbeatIntervalMs);
     try {
-      return await work(controller.signal);
+      const result = await work(controller.signal);
+      // Even a clean success is not this process's to act on if the lease was lost right at the
+      // very end (e.g. the last checkpoint passed just before renewal failed) — the result itself
+      // may be racing whatever the new lease holder is doing. Discard it the same way a mid-flight
+      // failure is discarded.
+      if (leaseLost) throw new LeaseLostError();
+      return result;
+    } catch (err) {
+      if (leaseLost) throw new LeaseLostError();
+      throw err;
     } finally {
       clearInterval(watcher);
+      clearInterval(heartbeat);
     }
   }
 
@@ -316,7 +477,7 @@ export class Orchestrator {
     // ---- self-fix loop: implement -> validate -> (diagnose+fix) -> validate ----
     for (;;) {
       this.throwIfCancelled(signal);
-      const attemptNumber = task.taskRecord.selfFixAttempts + 1;
+      const attemptNumber = this.nextAttemptNumber(task.id, "implementer");
       const context = buildImplementerContext(task, project, workspace.path, lastValidation);
       const step = await this.runAgent(task, project, engine, "implementer", context, attemptNumber, signal);
 
@@ -341,12 +502,19 @@ export class Orchestrator {
     this.throwIfCancelled(signal);
     await this.prepareChanges(task, project, scProvider, workspace.path, workspace.branch, signal);
 
-    // ---- independent review loop ----
-    let rejections = 0;
+    // ---- independent review loop (review/fix cycle) ----
+    // Invariants preserved across every cycle (see /docs/TASK_LIFECYCLE.md "Review/fix cycle" and
+    // /docs/GITHUB_INTEGRATION.md "PR idempotency"): one workspace (`workspace`, provisioned once
+    // above), one branch (`workspace.branch`), one PR (ensurePullRequest's own idempotency guard).
+    // A rejection re-runs only the Implementer + validation + commit/push — never re-provisions the
+    // workspace, never creates a second branch, never opens a second PR.
+    let cycles = 0;
     for (;;) {
       this.throwIfCancelled(signal);
+      const reviewAttemptNumber = this.nextAttemptNumber(task.id, "reviewer");
+      this.eventRepo.append(task.id, "REVIEW_STARTED", { attemptNumber: reviewAttemptNumber }, now());
       const reviewContext = buildReviewerContext(task, project, workspace.path, lastImplementerResult, lastValidation);
-      const reviewStep = await this.runAgent(task, project, engine, "reviewer", reviewContext, rejections + 1, signal);
+      const reviewStep = await this.runAgent(task, project, engine, "reviewer", reviewContext, reviewAttemptNumber, signal);
       const review = deriveReviewResult(reviewStep);
       this.eventRepo.append(task.id, "REVIEW_COMPLETED", { verdict: review.verdict, findings: review.findings }, now());
 
@@ -368,9 +536,11 @@ export class Orchestrator {
         return this.requireTask(task.id);
       }
 
-      rejections += 1;
-      if (rejections > this.config.maxReviewerRejections) {
-        return this.raiseNeedsInput(task, fromExhaustedReview(review, rejections));
+      cycles += 1;
+      this.eventRepo.append(task.id, "REVIEW_CHANGES_REQUESTED", { cycle: cycles, findings: review.findings, summary: review.summary }, now());
+
+      if (cycles > this.config.maxReviewerRejections) {
+        return this.failTask(task, describeReviewCycleExhaustion(review, cycles));
       }
 
       task.taskRecord.decisions.push({
@@ -381,8 +551,11 @@ export class Orchestrator {
       this.taskRepo.save(task, now());
 
       this.throwIfCancelled(signal);
-      const attemptNumber = task.taskRecord.selfFixAttempts + 1;
-      const fixContext = buildImplementerContext(task, project, workspace.path, lastValidation);
+      const attemptNumber = this.nextAttemptNumber(task.id, "implementer");
+      // reviewerFeedback (not lastFailure): this fix follows a *passing* validation run — the
+      // Implementer needs the Reviewer's findings, not a stale/misleading "validation failed"
+      // framing. See context-builder.ts's buildImplementerContext doc comment.
+      const fixContext = buildImplementerContext(task, project, workspace.path, null, review);
       const fixStep = await this.runAgent(task, project, engine, "implementer", fixContext, attemptNumber, signal);
       if (fixStep.status === "needs_input" && fixStep.needsInput) {
         return this.raiseNeedsInput(task, fromImplementerDraft(fixStep.needsInput));
@@ -399,6 +572,74 @@ export class Orchestrator {
     }
   }
 
+  /**
+   * The human review feedback loop's own fix cycle — deliberately narrower
+   * than the AI review/fix cycle in runWorkingEpisode: implement -> validate
+   * -> commit -> push -> REVIEW, with no independent-review step in between
+   * (the human who requested the changes is the one who will look again on
+   * GitHub). Reuses the task's existing workspace/branch — never
+   * re-provisions, never re-runs prepareChanges's PR step (the PR already
+   * exists and stays open; pushing new commits to its branch is what
+   * "updates" it). See /docs/TASK_LIFECYCLE.md "Human review feedback loop".
+   *
+   * Crash-safe by construction: reads the feedback to act on from
+   * `task.taskRecord.pendingHumanReviewFeedback` (persisted by the caller —
+   * checkHumanReviewFeedback — before this ever starts) rather than taking
+   * it as a parameter, so a restarted process calling this via executeTask's
+   * recovery dispatch resumes with exactly the same feedback, not a fresh
+   * (or missing) one. See /docs/TASK_LIFECYCLE.md "Crash recovery".
+   */
+  private async runHumanFeedbackFixCycle(taskId: string, signal: AbortSignal): Promise<Task> {
+    const now = () => new Date().toISOString();
+    let task = this.requireTask(taskId);
+    const feedback = task.taskRecord.pendingHumanReviewFeedback;
+    if (!feedback) {
+      throw new Error(`Task ${taskId} has no pending human review feedback to resume`);
+    }
+    const project = this.requireProject(task.projectId);
+    const scProvider = this.sourceControlProviders.resolve(project.sourceControlProvider);
+    const workspace = this.workspaceRepo.findByTaskId(taskId);
+    if (!workspace) {
+      throw new Error(`Task ${taskId} has no workspace to resume for human review feedback`);
+    }
+
+    this.throwIfCancelled(signal);
+
+    const attemptNumber = this.nextAttemptNumber(taskId, "implementer");
+    const context = buildImplementerContext(task, project, workspace.path, null, null, feedback);
+    const engine = this.engines.resolve(project.codingEngine);
+    const step = await this.runAgent(task, project, engine, "implementer", context, attemptNumber, signal);
+    if (step.status === "needs_input" && step.needsInput) {
+      task = this.requireTask(taskId);
+      task.taskRecord.pendingHumanReviewFeedback = null;
+      return this.raiseNeedsInput(task, fromImplementerDraft(step.needsInput));
+    }
+
+    task = this.requireTask(taskId);
+    const validation = await this.runValidationStep(task, workspace.path, project.commands, signal);
+    task.taskRecord.selfFixAttempts = attemptNumber;
+    this.taskRepo.save(task, now());
+
+    if (validation.status !== "passed") {
+      // Same escalation path an ordinary self-fix exhaustion uses — a human-requested fix that
+      // itself fails validation is exactly as unresolved as any other unfixed failure.
+      task.taskRecord.pendingHumanReviewFeedback = null;
+      return this.raiseNeedsInput(task, fromExhaustedSelfFix(validation.checks, attemptNumber));
+    }
+
+    this.throwIfCancelled(signal);
+    await this.prepareChanges(task, project, scProvider, workspace.path, workspace.branch, signal);
+
+    this.throwIfCancelled(signal);
+    task = this.requireTask(taskId);
+    task.status = transition(task.status, "gates_passed");
+    task.taskRecord.selfFixAttempts = 0;
+    task.taskRecord.pendingHumanReviewFeedback = null;
+    this.taskRepo.save(task, now());
+    this.eventRepo.append(taskId, "TASK_MOVED_TO_REVIEW", { trigger: "human_review_feedback" }, now());
+    return this.requireTask(taskId);
+  }
+
   private async provisionWorkspace(
     task: Task,
     project: Project,
@@ -407,6 +648,14 @@ export class Orchestrator {
     signal: AbortSignal,
   ) {
     const now = () => new Date().toISOString();
+    // Crash-recovery re-entry: WorkspaceProvider.provision() is itself idempotent (see its own doc
+    // comment) and would just return this same row — but skip calling it (and emitting
+    // WORKSPACE_CREATED/BRANCH_CREATED again) entirely, since nothing was actually (re-)created.
+    // See /docs/TASK_LIFECYCLE.md "Crash recovery".
+    const existing = this.workspaceRepo.findByTaskId(task.id);
+    if (existing && existing.status === "ready") {
+      return existing;
+    }
     try {
       const credential = await scProvider.resolveCloneCredential(project, signal);
       const workspace = await this.workspaceProvider.provision(
@@ -427,6 +676,23 @@ export class Orchestrator {
       this.eventRepo.append(task.id, "WORKSPACE_FAILED", { error: String(err) }, now());
       throw err;
     }
+  }
+
+  /**
+   * The next AgentRun.attemptNumber for `role` on this task — derived from
+   * the actual persisted count of prior AgentRun rows (of any status,
+   * including `interrupted`/`failed` ones from a crash), not a separately
+   * tracked in-memory-then-persisted counter. This is what makes attempt
+   * numbering crash-safe: a counter like the old `selfFixAttempts + cycles`
+   * arithmetic only advances at certain checkpoints (e.g. after a validation
+   * run completes), so a crash between "AgentRun inserted" and that
+   * checkpoint left the next real attempt computing the SAME number as the
+   * interrupted one — two AgentRun rows with an identical (role,
+   * attemptNumber). Counting real rows is correct by construction regardless
+   * of when a crash happens. See /docs/TASK_LIFECYCLE.md "Crash recovery".
+   */
+  private nextAttemptNumber(taskId: string, role: AgentRole): number {
+    return this.agentRunRepo.listForTask(taskId).filter((r) => r.role === role).length + 1;
   }
 
   private async runAgent(
@@ -596,6 +862,28 @@ export class Orchestrator {
       this.eventRepo.append(task.id, "SOURCE_CONTROL_FAILED", { step: "open_pull_request", error: String(err) }, now());
       throw err;
     }
+  }
+
+  /**
+   * Fails a task cleanly with a clear, human-readable reason — used when the
+   * review/fix cycle exhausts its configured budget (see
+   * OrchestratorConfig.maxReviewerRejections) without ever reaching an
+   * approved verdict. Deliberately FAILED, not NEEDS_INPUT: a Reviewer that
+   * keeps finding new issues after repeated fix attempts within budget is a
+   * bounded, evidence-backed failure to stop and report, not an open-ended
+   * question — see /docs/TASK_LIFECYCLE.md "Review/fix cycle". Reuses the
+   * same `infra_failure` transition and `TASK_FAILED` event the top-level
+   * executeTask() catch block already uses for every other platform-level
+   * failure, so this is visible through the exact same task/report/event
+   * mechanisms — no new TaskStatus, no new failure-reporting path.
+   */
+  private failTask(task: Task, reason: string): Task {
+    const now = new Date().toISOString();
+    task.status = transition(task.status, "infra_failure");
+    task.completedAt = now;
+    this.taskRepo.save(task, now);
+    this.eventRepo.append(task.id, "TASK_FAILED", { error: reason }, now);
+    return this.requireTask(task.id);
   }
 
   private raiseNeedsInput(task: Task, record: NeedsInputRecordInput): Task {

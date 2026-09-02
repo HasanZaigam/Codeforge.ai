@@ -328,6 +328,27 @@ test("a user cannot submit human input for another user's task", async () => {
   }
 });
 
+test("a user cannot trigger human-review feedback processing for another user's task", async () => {
+  const h = await setupHarness("cross-review-feedback");
+  try {
+    const owner = await registerClient(h.baseUrl, "owner");
+    const stranger = await registerClient(h.baseUrl, "stranger");
+    const project = await createProject(owner, h.repoPath);
+    const { task } = await json<{ task: { id: string } }>(
+      await owner.fetch(`/projects/${project.id}/tasks`, { method: "POST", body: JSON.stringify({ title: "T", description: "D" }) }),
+    );
+
+    const res = await stranger.fetch(`/tasks/${task.id}/check-review-feedback`, { method: "POST" });
+    assert.equal(res.status, 404);
+
+    // The owner, meanwhile, can call it (a safe no-op for a task that isn't REVIEW yet).
+    const ownerRes = await owner.fetch(`/tasks/${task.id}/check-review-feedback`, { method: "POST" });
+    assert.equal(ownerRes.status, 200);
+  } finally {
+    await teardown(h);
+  }
+});
+
 test("unauthenticated requests are rejected across the protected surface", async () => {
   const h = await setupHarness("unauth-surface");
   try {
@@ -348,6 +369,7 @@ test("unauthenticated requests are rejected across the protected surface", async
       () => anon(`/tasks/${task.id}/report`),
       () => anon(`/tasks/${task.id}/input`),
       () => anon(`/tasks/${task.id}/cancel`, { method: "POST" }),
+      () => anon(`/tasks/${task.id}/check-review-feedback`, { method: "POST" }),
     ]) {
       const res = await call();
       assert.equal(res.status, 401, `expected 401 for an unauthenticated call`);

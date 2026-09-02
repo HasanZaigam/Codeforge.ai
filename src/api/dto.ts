@@ -89,6 +89,7 @@ const ACTIVITY_LABELS: Partial<Record<TaskEventType, string>> = {
   RETRY_STARTED: "Retrying after a failed check",
   REVIEW_STARTED: "Independent review in progress",
   REVIEW_COMPLETED: "Independent review finished",
+  REVIEW_CHANGES_REQUESTED: "Reviewer requested changes — fixing",
   NEEDS_INPUT_RAISED: "Waiting for your input",
   NEEDS_INPUT_ANSWERED: "Resuming after your answer",
   TASK_MOVED_TO_REVIEW: "Ready for your review",
@@ -106,6 +107,9 @@ const ACTIVITY_LABELS: Partial<Record<TaskEventType, string>> = {
   BRANCH_PUSHED: "Pushed to GitHub",
   PULL_REQUEST_CREATED: "Opened a Pull Request",
   SOURCE_CONTROL_FAILED: "Source control operation failed",
+  HUMAN_REVIEW_DETECTED: "New feedback found on the Pull Request",
+  HUMAN_REVIEW_CHANGES_REQUESTED: "Changes requested on GitHub — fixing",
+  HUMAN_REVIEW_APPROVED: "Approved on GitHub",
 };
 
 function deriveCurrentActivity(task: Task, latestEvent: TaskEvent | undefined): string {

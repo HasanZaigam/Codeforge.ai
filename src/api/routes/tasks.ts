@@ -83,5 +83,16 @@ export function tasksRouter(services: ApplicationServices, taskEvents: TaskEvent
     }),
   );
 
+  router.post(
+    "/tasks/:taskId/check-review-feedback",
+    asyncHandler(async (req, res) => {
+      // On-demand equivalent of the worker's own automatic poll (see /docs/TASK_LIFECYCLE.md
+      // "Human review feedback loop") — safe to call repeatedly, a no-op unless there's new,
+      // unprocessed human feedback on the task's PR.
+      const task = await services.tasks.checkReviewFeedback(req.params.taskId!, req.user!.id);
+      res.json({ task: toTaskDTO(task, latestEventFor(taskEvents, task.id)) });
+    }),
+  );
+
   return router;
 }

@@ -41,9 +41,9 @@ describe("ProjectBoardPage", () => {
     expect(screen.getByText("Review task")).toBeInTheDocument();
     expect(screen.getByText("Done task")).toBeInTheDocument();
 
-    // Structural responsive check: the board is a single horizontally-scrolling
-    // container of columns rather than a layout that would break on narrow
-    // viewports (see /docs/UI_ARCHITECTURE.md "Responsive strategy").
+    // Structural responsive check: the board renders one column per status as a responsive grid
+    // that shares the available width (wrapping rather than overflowing on narrow viewports) — see
+    // /docs/UI_ARCHITECTURE.md "Responsive strategy" and TECHNICAL_DECISIONS.md TD-23 (revised).
     expect(document.querySelector(".board")).toBeInTheDocument();
     expect(document.querySelectorAll(".board-column").length).toBe(5);
   });

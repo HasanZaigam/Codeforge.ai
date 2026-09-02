@@ -48,20 +48,21 @@ export function fromExhaustedSelfFix(failedChecks: CheckResult[], attempts: numb
   };
 }
 
-/** Built when the Reviewer rejects the change more times than the configured budget allows. */
-export function fromExhaustedReview(lastReview: ReviewResult, rejections: number): NeedsInputRecordInput {
-  return {
-    discovered: `The independent Reviewer rejected the implementation ${rejections} time(s). Latest findings: ${lastReview.findings
-      .map((f) => `[${f.severity}/${f.category}] ${f.summary}`)
-      .join("; ") || "(none itemized)"}.`,
-    attempted: [lastReview.summary],
-    blocker: "The self-fix loop could not produce a change the independent Reviewer approves within the configured retry budget.",
-    question: "Should the implementer keep trying with different guidance, or does this need a human decision on the approach?",
-    options: [
-      { label: "Give more specific guidance", description: "Answer with the missing requirement or preferred approach." },
-      { label: "Accept current state with caveats", description: "Move forward despite open Reviewer findings, noted in the report." },
-    ],
-  };
+/**
+ * Built when the review/fix cycle exhausts its configured budget (see
+ * `OrchestratorConfig.maxReviewerRejections`) without the Reviewer ever
+ * approving. Unlike an exhausted self-fix loop or an Implementer-signaled
+ * ambiguity, this is NOT routed to NEEDS_INPUT — a Reviewer that keeps
+ * finding new issues after repeated fix attempts is a bounded failure the
+ * task fails cleanly out of, with the evidence preserved, rather than an
+ * open-ended question for a human to answer. See
+ * /docs/TASK_LIFECYCLE.md "Review/fix cycle" and TECHNICAL_DECISIONS.md.
+ */
+export function describeReviewCycleExhaustion(lastReview: ReviewResult, cycles: number): string {
+  const findingsText = lastReview.findings.length
+    ? lastReview.findings.map((f) => `[${f.severity}/${f.category}] ${f.summary}`).join("; ")
+    : lastReview.summary;
+  return `Independent review rejected the implementation after ${cycles} fix attempt${cycles === 1 ? "" : "s"}, reaching the configured review/fix cycle limit. Latest findings: ${findingsText}`;
 }
 
 export function toHumanInputRequest(

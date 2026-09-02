@@ -80,4 +80,17 @@ export class TaskService {
     assertTaskAccess(this.tasks, this.projects, taskId, actorId);
     return this.orchestrator.requestCancellation(taskId, actorId);
   }
+
+  /**
+   * On-demand check for new human GitHub PR review feedback on a REVIEW
+   * task — the same operation the worker's own poll loop runs
+   * automatically (see Worker.tick), exposed here so a developer doesn't
+   * have to wait for the next poll interval. A no-op for anything other
+   * than a REVIEW task with a PR and new feedback — see
+   * Orchestrator.checkHumanReviewFeedback.
+   */
+  async checkReviewFeedback(taskId: string, actorId: string): Promise<Task> {
+    assertTaskAccess(this.tasks, this.projects, taskId, actorId);
+    return this.orchestrator.checkHumanReviewFeedback(taskId);
+  }
 }

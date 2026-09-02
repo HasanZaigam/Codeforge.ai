@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
 import type { OpenPullRequestRequest, SourceControlProvider } from "./source-control-provider.js";
-import type { GitCredential, Project, PullRequestRef } from "../domain/types.js";
+import type { GitCredential, HumanReviewFeedbackItem, Project, PullRequestRef } from "../domain/types.js";
 import { CancellationError } from "../domain/errors.js";
 import { commitAllLocal } from "./git-commit.js";
 
@@ -48,5 +48,10 @@ export class LocalGitSourceControlProvider implements SourceControlProvider {
 
   async openPullRequest(_project: Project, _request: OpenPullRequestRequest, _signal: AbortSignal): Promise<PullRequestRef> {
     return { provider: this.key, id: randomUUID(), number: null, url: null };
+  }
+
+  /** No PR-review concept for a plain local git remote (see class doc) — always empty. */
+  async listPullRequestFeedback(_project: Project, _pr: PullRequestRef, _signal: AbortSignal): Promise<HumanReviewFeedbackItem[]> {
+    return [];
   }
 }

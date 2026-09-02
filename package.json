@@ -10,7 +10,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --import tsx --test tests/**/*.test.ts",
+    "test": "node --import tsx --test --test-isolation=none tests/**/*.test.ts",
     "demo": "tsx src/cli/demo.ts",
     "api": "tsx src/api/server.ts",
     "worker": "tsx src/worker/run-worker.ts",

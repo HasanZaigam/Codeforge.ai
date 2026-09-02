@@ -13,3 +13,22 @@ export class CancellationError extends Error {
     this.name = "CancellationError";
   }
 }
+
+/**
+ * Thrown only by `Orchestrator.withCancellation`'s own lease heartbeat, when
+ * it discovers this process no longer holds the execution lease it started
+ * with (another process's claim won — see TaskRepository.claimWorking).
+ * Deliberately distinct from `CancellationError`: a human never asked for
+ * this to stop, and — critically — the task must NOT be finalized as
+ * CANCELLED or have its workspace torn down, because whoever now holds the
+ * lease may be actively, legitimately using both. The only safe reaction is
+ * to stop doing anything further and let the current lease holder's own
+ * execution be authoritative. See /docs/TASK_LIFECYCLE.md "Worker
+ * concurrency and lease loss".
+ */
+export class LeaseLostError extends Error {
+  constructor(message = "Execution lease was lost to another process") {
+    super(message);
+    this.name = "LeaseLostError";
+  }
+}

@@ -24,10 +24,16 @@ export function buildPullRequestDescription(
 
   const findingsSection = review.findings.length
     ? review.findings.map((f) => `- **${f.severity}** (${f.category}): ${f.summary}`).join("\n")
-    : "No concerns raised.";
+    : "None";
+
+  // The Reviewer's own prose (StepResult.summary, now real Markdown — see opencode-adapter.ts
+  // "Output handling") is real analysis and shouldn't be silently discarded just because it isn't
+  // structured findings — but only shown when there ARE no structured findings, so the two never
+  // say the same thing twice.
+  const reviewerNotes = !review.findings.length && review.summary.trim() ? `\n\n${review.summary.trim()}` : "";
 
   return [
-    "## Task",
+    "# Task",
     task.goal,
     "",
     "## Implementation summary",
@@ -37,8 +43,9 @@ export function buildPullRequestDescription(
     checksSection,
     "",
     "## Independent review",
-    `Confidence: ${review.confidence}`,
-    findingsSection,
+    `**Verdict:** ${review.verdict === "approved" ? "Approved" : "Changes requested"}`,
+    "",
+    `**Findings:** ${findingsSection}${reviewerNotes}`,
     "",
     "---",
     `_Opened automatically by AI Developer for this task. A human review and merge decision is still required — nothing here is merged automatically._`,

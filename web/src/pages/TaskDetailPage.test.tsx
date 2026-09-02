@@ -2,7 +2,7 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderApp } from "../test/render.js";
-import { makeEvent, makeInputRequest, makeReport, makeTask } from "../test/fixtures.js";
+import { makeAgentRunHistoryItem, makeEvent, makeInputRequest, makeReport, makeTask } from "../test/fixtures.js";
 import { tasksApi, humanInputApi } from "../api/index.js";
 
 vi.mock("../api/tasks.js", () => ({
@@ -108,6 +108,76 @@ describe("TaskDetailPage", () => {
     expect(screen.getByText("No concerns raised.")).toBeInTheDocument();
   });
 
+  it("shows a clean failure reason (e.g. an exhausted review/fix cycle) when a task is FAILED", async () => {
+    mockedTasksApi.get.mockResolvedValue(makeTask({ status: "FAILED", completedAt: "2026-01-01T00:20:00.000Z" }));
+    mockedTasksApi.getReport.mockResolvedValue(
+      makeReport({
+        status: "Failed",
+        failureReason:
+          "Independent review rejected the implementation after 3 fix attempts, reaching the configured review/fix cycle limit. Latest findings: [blocker/correctness] still missing error handling",
+      }),
+    );
+
+    renderApp("/tasks/task-1");
+
+    await waitFor(() => expect(screen.getByText(/reaching the configured review\/fix cycle limit/)).toBeInTheDocument());
+    expect(screen.getByRole("heading", { name: "Failed" })).toBeInTheDocument();
+  });
+
+  it("renders a Markdown 'What changed' summary as real formatted elements — headings, lists, inline code — not raw text", async () => {
+    mockedTasksApi.get.mockResolvedValue(makeTask({ status: "REVIEW" }));
+    mockedTasksApi.getReport.mockResolvedValue(
+      makeReport({
+        status: "Ready for review",
+        whatChanged: "Created `README.md` with:\n\n- project overview\n- development instructions",
+        filesChanged: 1,
+      }),
+    );
+
+    renderApp("/tasks/task-1");
+
+    await waitFor(() => expect(screen.getByText("development instructions")).toBeInTheDocument());
+    expect(screen.getByText("README.md").tagName).toBe("CODE");
+    expect(screen.getAllByRole("listitem")).toHaveLength(2);
+  });
+
+  it("never renders raw agent execution event JSON as the task summary, even if it somehow reached the report", async () => {
+    mockedTasksApi.get.mockResolvedValue(makeTask({ status: "REVIEW" }));
+    mockedTasksApi.getReport.mockResolvedValue(
+      makeReport({
+        status: "Ready for review",
+        // A defense-in-depth check: the backend fix (opencode-adapter.ts) is what stops this from
+        // happening in the first place, but the UI must still never *interpret* stray JSON-looking
+        // text as anything other than inert text — see Markdown.test.tsx for the component-level
+        // version of this guarantee.
+        whatChanged: '{"type":"step_start","sessionID":"ses_abc123","timestamp":1788198798610}',
+      }),
+    );
+
+    renderApp("/tasks/task-1");
+
+    await waitFor(() => expect(screen.getByText(/step_start/)).toBeInTheDocument());
+    // It renders as plain inert text, not as any kind of structured/interactive element.
+    const el = screen.getByText(/step_start/);
+    expect(el.tagName).toBe("P");
+  });
+
+  it("shows the reviewer's own readable assessment when there are no structured findings, instead of only a generic 'No concerns raised'", async () => {
+    mockedTasksApi.get.mockResolvedValue(makeTask({ status: "REVIEW" }));
+    mockedTasksApi.getReport.mockResolvedValue(
+      makeReport({
+        status: "Ready for review",
+        reviewFindings: [],
+        reviewSummary: "I verified the README accurately reflects the codebase and found no issues.",
+      }),
+    );
+
+    renderApp("/tasks/task-1");
+
+    await waitFor(() => expect(screen.getByText(/I verified the README accurately reflects the codebase/)).toBeInTheDocument());
+    expect(screen.queryByText("No concerns raised.")).not.toBeInTheDocument();
+  });
+
   it("handles a failed task load without a raw error message", async () => {
     mockedTasksApi.get.mockRejectedValue(new Error("Request failed (500)"));
     renderApp("/tasks/task-1");
@@ -187,5 +257,89 @@ describe("TaskDetailPage", () => {
     expect(screen.getByText("Cancellation requested")).toBeInTheDocument();
     expect(screen.getByText("Execution stopped")).toBeInTheDocument();
     expect(screen.getByText("Task cancelled")).toBeInTheDocument();
+  });
+
+  it("shows duration stats derived from the report when durations are available", async () => {
+    mockedTasksApi.get.mockResolvedValue(makeTask({ status: "DONE", completedAt: "2026-01-01T00:20:00.000Z" }));
+    mockedTasksApi.getReport.mockResolvedValue(
+      makeReport({
+        status: "Done",
+        durations: { totalMs: 20 * 60 * 1000, implementationMs: 5 * 60 * 1000, reviewMs: null, validationMs: 30 * 1000, waitingForHumanReviewMs: null },
+      }),
+    );
+
+    renderApp("/tasks/task-1");
+
+    await waitFor(() => expect(screen.getByText("20m")).toBeInTheDocument());
+    expect(screen.getByText("5m")).toBeInTheDocument();
+    expect(screen.getByText("30s")).toBeInTheDocument();
+    // No stat rendered for a duration that isn't computable (reviewMs: null) — never fabricated.
+    expect(screen.queryByText("Review")).not.toBeInTheDocument();
+  });
+
+  it("shows a recovery banner when the task's history includes a crash-recovery resume", async () => {
+    mockedTasksApi.get.mockResolvedValue(makeTask({ status: "REVIEW" }));
+    mockedTasksApi.getReport.mockResolvedValue(makeReport({ status: "Ready for review", recoveredFromCrash: true }));
+
+    renderApp("/tasks/task-1");
+
+    await waitFor(() => expect(screen.getByText("Recovered from a crash")).toBeInTheDocument());
+  });
+
+  it("does not show a recovery banner for a normal task with no interrupted runs", async () => {
+    mockedTasksApi.get.mockResolvedValue(makeTask({ status: "REVIEW" }));
+    mockedTasksApi.getReport.mockResolvedValue(makeReport({ status: "Ready for review", recoveredFromCrash: false }));
+
+    renderApp("/tasks/task-1");
+
+    await waitFor(() => expect(screen.getByText("Fix OTP timeout login")).toBeInTheDocument());
+    expect(screen.queryByText("Recovered from a crash")).not.toBeInTheDocument();
+  });
+
+  it("shows which stage/role/attempt failed, in addition to the failure reason, when failureContext is present", async () => {
+    mockedTasksApi.get.mockResolvedValue(makeTask({ status: "FAILED", completedAt: "2026-01-01T00:20:00.000Z" }));
+    mockedTasksApi.getReport.mockResolvedValue(
+      makeReport({
+        status: "Failed",
+        failureReason: "Gemini returned retryable HTTP 503 after 2 attempts.",
+        failureContext: { stage: "Agent invocation", failedRole: "implementer", attemptNumber: 2, recoveredFromCrash: false },
+      }),
+    );
+
+    renderApp("/tasks/task-1");
+
+    await waitFor(() => expect(screen.getByText(/Agent invocation/)).toBeInTheDocument());
+    expect(screen.getByText(/attempt 2/)).toBeInTheDocument();
+  });
+
+  it("exposes the full agent run history (implementer + reviewer, multiple attempts) inside an expandable Execution details section", async () => {
+    mockedTasksApi.get.mockResolvedValue(makeTask({ status: "REVIEW" }));
+    mockedTasksApi.getReport.mockResolvedValue(
+      makeReport({
+        status: "Ready for review",
+        agentRuns: [
+          makeAgentRunHistoryItem({ id: "r1", attemptNumber: 1, trigger: "initial" }),
+          makeAgentRunHistoryItem({ id: "r2", role: "reviewer", attemptNumber: 1, trigger: "review", verdict: "approved" }),
+        ],
+      }),
+    );
+
+    renderApp("/tasks/task-1");
+
+    await waitFor(() => expect(screen.getByText("Execution details")).toBeInTheDocument());
+    expect(screen.getAllByText("Implementer").length).toBeGreaterThan(0);
+    expect(screen.getByText("Reviewer")).toBeInTheDocument();
+  });
+
+  it("existing report shape (no agentRuns/durations) still renders correctly — backward compatibility", async () => {
+    mockedTasksApi.get.mockResolvedValue(makeTask({ status: "DONE", completedAt: "2026-01-01T00:20:00.000Z" }));
+    // Deliberately the exact minimal shape earlier milestones' tests already relied on.
+    mockedTasksApi.getReport.mockResolvedValue(makeReport({ status: "Done", whatChanged: "Updated session timeout handling.", filesChanged: 5 }));
+
+    renderApp("/tasks/task-1");
+
+    await waitFor(() => expect(screen.getByText("✓ Completed")).toBeInTheDocument());
+    expect(screen.getByText("Updated session timeout handling.")).toBeInTheDocument();
+    expect(screen.getByText("5 files changed")).toBeInTheDocument();
   });
 });

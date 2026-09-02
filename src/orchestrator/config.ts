@@ -20,6 +20,17 @@ export interface OrchestratorConfig {
    * single-column SQLite read). See /docs/TASK_LIFECYCLE.md "Cancellation".
    */
   cancellationPollIntervalMs: number;
+  /**
+   * How often a live execution renews its own claim lease (see
+   * TaskRepository.claimWorking) while it's genuinely still running — not
+   * a recovery mechanism itself, but what keeps `recoverOrphanedTasks` from
+   * mistaking a slow-but-alive episode for a crashed one. Must stay well
+   * below `taskLeaseMs`: an episode with multiple self-fix/review cycles
+   * can legitimately run for several multiples of `agentInvocationTimeoutMs`,
+   * easily exceeding `taskLeaseMs` on its own. See
+   * /docs/TASK_LIFECYCLE.md "Crash recovery".
+   */
+  leaseHeartbeatIntervalMs: number;
 }
 
 export const DEFAULT_ORCHESTRATOR_CONFIG: OrchestratorConfig = {
@@ -28,4 +39,5 @@ export const DEFAULT_ORCHESTRATOR_CONFIG: OrchestratorConfig = {
   agentInvocationTimeoutMs: 10 * 60 * 1000,
   taskLeaseMs: 5 * 60 * 1000,
   cancellationPollIntervalMs: 300,
+  leaseHeartbeatIntervalMs: 60 * 1000,
 };

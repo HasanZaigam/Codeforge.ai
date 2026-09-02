@@ -20,6 +20,7 @@ export const EVENT_LABELS: Record<TaskEventType, string> = {
   RETRY_STARTED: "Automatically fixing a test failure",
   REVIEW_STARTED: "Running an independent code review",
   REVIEW_COMPLETED: "Independent review finished",
+  REVIEW_CHANGES_REQUESTED: "Reviewer requested changes — AI developer is fixing them",
   NEEDS_INPUT_RAISED: "Your decision is required",
   NEEDS_INPUT_ANSWERED: "Continuing with your answer",
   TASK_MOVED_TO_REVIEW: "Ready for your review",
@@ -37,6 +38,9 @@ export const EVENT_LABELS: Record<TaskEventType, string> = {
   BRANCH_PUSHED: "Pushed to GitHub",
   PULL_REQUEST_CREATED: "Opened a Pull Request",
   SOURCE_CONTROL_FAILED: "Source control operation failed",
+  HUMAN_REVIEW_DETECTED: "New feedback found on the Pull Request",
+  HUMAN_REVIEW_CHANGES_REQUESTED: "Changes requested on GitHub — AI developer is fixing them",
+  HUMAN_REVIEW_APPROVED: "Approved on GitHub",
 };
 
 export function labelForEvent(type: TaskEventType): string {

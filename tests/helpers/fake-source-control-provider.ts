@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { CancellationError } from "../../src/domain/errors.js";
-import type { GitCredential, Project, PullRequestRef } from "../../src/domain/types.js";
+import type { GitCredential, HumanReviewFeedbackItem, Project, PullRequestRef } from "../../src/domain/types.js";
 import type { OpenPullRequestRequest, SourceControlProvider } from "../../src/source-control/source-control-provider.js";
 
 export type FakeFailurePoint = "resolveCloneCredential" | "commitAll" | "push" | "openPullRequest";
@@ -27,8 +27,33 @@ export class FakeSourceControlProvider implements SourceControlProvider {
   private failAt: FakeFailurePoint | null = null;
   private cancelAt: FakeFailurePoint | null = null;
 
+  /** Scripted human PR feedback, keyed by branch — see setPullRequestFeedback / listPullRequestFeedback. */
+  private readonly feedbackByBranch = new Map<string, HumanReviewFeedbackItem[]>();
+  /** Every listPullRequestFeedback() call this instance has observed — for asserting polling behavior. */
+  readonly feedbackCalls: number[] = [];
+  /** Scripted PR state, keyed by branch — mirrors GitHubSourceControlProvider's real PR-state check (merged/closed PRs are never actionable). Defaults to "open". */
+  private readonly prStateByBranch = new Map<string, "open" | "closed" | "merged">();
+  /** The next listPullRequestFeedback() call throws this exact error instead — see failNextCallToFeedback. */
+  private feedbackFailure: Error | null = null;
+
   constructor(key = "github") {
     this.key = key;
+  }
+
+  /** Scripts the full current feedback set a real GitHub PR would return for `branch` — see listPullRequestFeedback. */
+  setPullRequestFeedback(branch: string, items: HumanReviewFeedbackItem[]): void {
+    this.feedbackByBranch.set(branch, items);
+  }
+
+  /** Scripts the PR's current state for `branch` — see listPullRequestFeedback's PR-state check, mirroring GitHubSourceControlProvider's real one. */
+  setPullRequestState(branch: string, state: "open" | "closed" | "merged"): void {
+    this.prStateByBranch.set(branch, state);
+  }
+
+  /** The next listPullRequestFeedback() call throws this exact error (e.g. a GitHubAuthError, or a
+   *  plain Error to simulate a transient/unclassified failure) instead of returning normally. */
+  failNextCallToFeedback(error: Error): void {
+    this.feedbackFailure = error;
   }
 
   /** The next call to this operation throws instead of succeeding — simulates a real GitHub/network failure. */
@@ -74,6 +99,24 @@ export class FakeSourceControlProvider implements SourceControlProvider {
   /** Count of distinct PRs actually created (not returned via idempotent search) — for asserting no duplicates. */
   get pullRequestsCreated(): number {
     return this.openPullRequestsByBranch.size;
+  }
+
+  /** Mirrors GitHubSourceControlProvider: returns [] for a merged/closed PR (see setPullRequestState), otherwise whatever was scripted via setPullRequestFeedback for this PR's branch. */
+  async listPullRequestFeedback(_project: Project, pr: PullRequestRef, _signal: AbortSignal): Promise<HumanReviewFeedbackItem[]> {
+    this.feedbackCalls.push(Date.now());
+    if (this.feedbackFailure) {
+      const err = this.feedbackFailure;
+      this.feedbackFailure = null;
+      throw err;
+    }
+    for (const [branch, ref] of this.openPullRequestsByBranch) {
+      if (ref.id === pr.id) {
+        const state = this.prStateByBranch.get(branch) ?? "open";
+        if (state !== "open") return [];
+        return this.feedbackByBranch.get(branch) ?? [];
+      }
+    }
+    return [];
   }
 
   private record(op: FakeFailurePoint, branch?: string): void {

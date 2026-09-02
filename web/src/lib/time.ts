@@ -25,6 +25,14 @@ export function formatDuration(startIso: string | null, endIso: string | null): 
   if (!startIso || !endIso) return null;
   const ms = new Date(endIso).getTime() - new Date(startIso).getTime();
   if (ms < 0) return null;
+  return formatDurationMs(ms);
+}
+
+/** Same formatting `formatDuration` uses, for a duration already given in milliseconds — see
+ *  TaskReport.durations (server-derived from existing timestamps, e.g. summed across several
+ *  AgentRuns) where there's no single start/end ISO pair to diff here. */
+export function formatDurationMs(ms: number | null): string | null {
+  if (ms === null || ms < 0) return null;
   const totalSeconds = Math.round(ms / 1000);
   if (totalSeconds < 60) return `${totalSeconds}s`;
   const minutes = Math.floor(totalSeconds / 60);

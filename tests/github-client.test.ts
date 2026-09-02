@@ -104,3 +104,149 @@ test("createPullRequest sends the title/body/head/base and returns a mapped Pull
     restore();
   }
 });
+
+test("getPullRequest returns the merged flag, which listPullRequests/createPullRequest never expose", async () => {
+  const restore = stubFetch(async () => jsonResponse(200, { number: 7, html_url: "https://github.com/acme/widgets/pull/7", state: "closed", merged: true }));
+  try {
+    const client = new GitHubClient("fake-token");
+    const pr = await client.getPullRequest("acme", "widgets", 7);
+    assert.deepEqual(pr, { number: 7, htmlUrl: "https://github.com/acme/widgets/pull/7", state: "closed", merged: true });
+  } finally {
+    restore();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Retry behavior
+// ---------------------------------------------------------------------------
+
+test("a retryable_transient failure (500) is retried and eventually succeeds, for an idempotent (GET) call", async () => {
+  let calls = 0;
+  const restore = stubFetch(async () => {
+    calls += 1;
+    if (calls < 3) return jsonResponse(500, { message: "Internal Server Error" });
+    return jsonResponse(200, { login: "octocat" });
+  });
+  try {
+    const client = new GitHubClient("fake-token", undefined, { retryBaseDelayMs: 1, retryMaxDelayMs: 5 });
+    const user = await client.getAuthenticatedUser();
+    assert.deepEqual(user, { login: "octocat" });
+    assert.equal(calls, 3);
+  } finally {
+    restore();
+  }
+});
+
+test("a non-retryable failure (404) is never retried — exactly one request", async () => {
+  let calls = 0;
+  const restore = stubFetch(async () => {
+    calls += 1;
+    return jsonResponse(404, { message: "Not Found" });
+  });
+  try {
+    const client = new GitHubClient("fake-token", undefined, { maxRetries: 3, retryBaseDelayMs: 1, retryMaxDelayMs: 5 });
+    await assert.rejects(() => client.getRepository("acme", "widgets"));
+    assert.equal(calls, 1);
+  } finally {
+    restore();
+  }
+});
+
+test("a non-retryable failure (401) is never retried — exactly one request", async () => {
+  let calls = 0;
+  const restore = stubFetch(async () => {
+    calls += 1;
+    return jsonResponse(401, { message: "Bad credentials" });
+  });
+  try {
+    const client = new GitHubClient("fake-token", undefined, { maxRetries: 3, retryBaseDelayMs: 1, retryMaxDelayMs: 5 });
+    await assert.rejects(() => client.getAuthenticatedUser(), GitHubAuthError);
+    assert.equal(calls, 1);
+  } finally {
+    restore();
+  }
+});
+
+test("a retry loop is bounded: after maxRetries + 1 total attempts, the classified error is still thrown", async () => {
+  let calls = 0;
+  const restore = stubFetch(async () => {
+    calls += 1;
+    return jsonResponse(503, { message: "Service Unavailable" });
+  });
+  try {
+    const client = new GitHubClient("fake-token", undefined, { maxRetries: 2, retryBaseDelayMs: 1, retryMaxDelayMs: 5 });
+    await assert.rejects(() => client.getAuthenticatedUser(), GitHubApiError);
+    assert.equal(calls, 3, "1 initial attempt + 2 retries, never more");
+  } finally {
+    restore();
+  }
+});
+
+test("a rate limit with a short Retry-After is retried once that wait elapses", async () => {
+  let calls = 0;
+  const restore = stubFetch(async () => {
+    calls += 1;
+    if (calls === 1) return jsonResponse(403, { message: "secondary rate limit" }, { "retry-after": "0" });
+    return jsonResponse(200, { login: "octocat" });
+  });
+  try {
+    const client = new GitHubClient("fake-token", undefined, { retryMaxDelayMs: 5000 });
+    const user = await client.getAuthenticatedUser();
+    assert.deepEqual(user, { login: "octocat" });
+    assert.equal(calls, 2);
+  } finally {
+    restore();
+  }
+});
+
+test("a rate limit whose suggested wait exceeds retryMaxDelayMs fails fast instead of blocking this call for a long time", async () => {
+  let calls = 0;
+  const resetEpoch = Math.floor(Date.now() / 1000) + 3600; // an hour away
+  const restore = stubFetch(async () => {
+    calls += 1;
+    return jsonResponse(403, { message: "API rate limit exceeded" }, { "x-ratelimit-remaining": "0", "x-ratelimit-reset": String(resetEpoch) });
+  });
+  try {
+    const client = new GitHubClient("fake-token", undefined, { maxRetries: 3, retryMaxDelayMs: 2000 });
+    const start = Date.now();
+    await assert.rejects(() => client.getAuthenticatedUser(), GitHubRateLimitError);
+    assert.ok(Date.now() - start < 500, "must fail fast, not wait out (or repeatedly poll against) an hour-long rate limit");
+    assert.equal(calls, 1, "never retried — the wait would exceed the configured budget");
+  } finally {
+    restore();
+  }
+});
+
+test("createPullRequest (a non-idempotent write) is never auto-retried, even on a transient-looking 500 — avoids a duplicate PR from a lost response", async () => {
+  let calls = 0;
+  const restore = stubFetch(async () => {
+    calls += 1;
+    return jsonResponse(500, { message: "Internal Server Error" });
+  });
+  try {
+    const client = new GitHubClient("fake-token", undefined, { maxRetries: 3, retryBaseDelayMs: 1, retryMaxDelayMs: 5 });
+    await assert.rejects(() => client.createPullRequest("acme", "widgets", { title: "T", body: "B", head: "task/abc", base: "main" }), GitHubApiError);
+    assert.equal(calls, 1, "exactly one POST — never retried automatically");
+  } finally {
+    restore();
+  }
+});
+
+test("cancellation during a retry wait is honored immediately, not after the full delay", async () => {
+  let calls = 0;
+  const restore = stubFetch(async () => {
+    calls += 1;
+    return jsonResponse(500, { message: "Internal Server Error" });
+  });
+  try {
+    const client = new GitHubClient("fake-token", undefined, { maxRetries: 5, retryBaseDelayMs: 5000, retryMaxDelayMs: 5000 });
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 20);
+    const start = Date.now();
+    await assert.rejects(() => client.getAuthenticatedUser(controller.signal));
+    assert.ok(Date.now() - start < 1000, "must not wait out the full 5s backoff after cancellation");
+    assert.equal(calls, 1, "must not have started a second attempt after cancellation");
+  } finally {
+    restore();
+  }
+});
