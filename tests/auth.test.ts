@@ -391,6 +391,31 @@ test("GET /health remains accessible without authentication and reveals no inter
   }
 });
 
+test("GET /health/ready is also public and reports ready when the database is reachable, revealing no internal details", async () => {
+  const h = await setupHarness("health-ready");
+  try {
+    const res = await fetch(`${h.baseUrl}/health/ready`);
+    assert.equal(res.status, 200);
+    const body = await json<Record<string, unknown>>(res);
+    assert.deepEqual(body, { status: "ready" });
+  } finally {
+    await teardown(h);
+  }
+});
+
+test("GET /health/ready reports 503 once the database connection is closed", async () => {
+  const h = await setupHarness("health-not-ready");
+  try {
+    h.platform.db.close();
+    const res = await fetch(`${h.baseUrl}/health/ready`);
+    assert.equal(res.status, 503);
+    const body = await json<Record<string, unknown>>(res);
+    assert.deepEqual(body, { status: "not_ready" });
+  } finally {
+    h.server.close();
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Impersonation
 // ---------------------------------------------------------------------------

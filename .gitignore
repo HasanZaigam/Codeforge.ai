@@ -6,3 +6,4 @@ dist/
 *.sqlite-shm
 .data/
 .env
+*.log

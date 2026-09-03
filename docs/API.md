@@ -24,7 +24,7 @@ Both processes read the same environment variables and must point at the same SQ
 
 ## Authentication *(implemented in Step 6 — see [AUTHENTICATION.md](./AUTHENTICATION.md) for the full design)*
 
-Every request to `/projects/*` and `/tasks/*` requires a valid session, presented as an HttpOnly `session` cookie set by `/auth/register` or `/auth/login`. There is no header-based identity anymore — a client cannot claim to be a given user; the server resolves `req.user` only from a cookie it issued and can revoke. `/auth/register`, `/auth/login`, and `GET /health` are the only endpoints reachable without a session; `/auth/logout` and `/auth/me` need one.
+Every request to `/projects/*` and `/tasks/*` requires a valid session, presented as an HttpOnly `session` cookie set by `/auth/register` or `/auth/login`. There is no header-based identity anymore — a client cannot claim to be a given user; the server resolves `req.user` only from a cookie it issued and can revoke. `/auth/register`, `/auth/login`, `GET /health`, and `GET /health/ready` are the only endpoints reachable without a session; `/auth/logout` and `/auth/me` need one.
 
 ## Authorization semantics
 
@@ -37,6 +37,7 @@ Every route this API exposes, classified by who may call it. **PUBLIC** = no ses
 | Route | Classification |
 |---|---|
 | `GET /health` | PUBLIC |
+| `GET /health/ready` | PUBLIC |
 | `POST /auth/register` | PUBLIC |
 | `POST /auth/login` | PUBLIC |
 | `POST /auth/logout` | AUTHENTICATED |
@@ -103,6 +104,9 @@ A task's `status` (`TODO | WORKING | NEEDS_INPUT | REVIEW | DONE | FAILED | CANC
 
 ### `GET /health`
 Liveness check, public, no session required. `{ "status": "ok" }` — nothing else; never includes database paths, credentials, or other internal details.
+
+### `GET /health/ready`
+Readiness check, public, no session required. Performs one synchronous `SELECT 1` against the database. `200 { "status": "ready" }` if reachable, `503 { "status": "not_ready" }` if not — same no-internal-details policy as `/health`. See [DEPLOYMENT.md](./DEPLOYMENT.md) "Health and readiness checks" for how this differs from `/health` and how to wire each into an orchestrator.
 
 ### `POST /auth/register`
 Public. `{ "email": "dev@example.com", "password": "at least 10 characters", "name": "Dev" }`. Creates an account, sets the session cookie, returns `201` with `{ "user": UserDTO }`. `409 EMAIL_ALREADY_REGISTERED` if the email is taken. Rate-limited (see AUTHENTICATION.md).

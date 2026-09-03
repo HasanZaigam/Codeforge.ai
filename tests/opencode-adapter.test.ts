@@ -1093,8 +1093,14 @@ test("22. cancellation during retry backoff stops immediately — no further spa
     signal: controller.signal,
   });
 
-  // Give the first (failing) attempt time to actually run and enter the backoff wait, then cancel.
-  setTimeout(() => controller.abort(), 300);
+  // Wait for the first (failing) attempt to actually run — not a blind fixed delay, since
+  // process-spawn latency on a loaded machine can exceed what used to be a safe guess, which would
+  // otherwise race whether the first attempt even started before we abort — then cancel once it's
+  // genuinely into the backoff wait, so the abort is guaranteed to preempt the wait rather than gamble
+  // on timing.
+  for (let i = 0; i < 400 && readCounter(counterFile) < 1; i++) await new Promise((r) => setTimeout(r, 5));
+  assert.equal(readCounter(counterFile), 1, "the first attempt must have genuinely run before testing cancellation of the wait after it");
+  controller.abort();
 
   const start = Date.now();
   await assert.rejects(promise, (err: unknown) => {

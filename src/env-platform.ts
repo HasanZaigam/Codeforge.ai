@@ -4,6 +4,7 @@ import { ClaudeCodeAdapter } from "./coding-engine/claude-code-adapter.js";
 import { OpenCodeAdapter } from "./coding-engine/opencode-adapter.js";
 import { createSelfFixDemoEngine } from "./cli/fixture-engine-handlers.js";
 import type { CodingEngine } from "./coding-engine/coding-engine.js";
+import { validateSharedConfig } from "./config/startup-config.js";
 
 /**
  * Shared environment-driven Platform construction for the standalone API
@@ -12,6 +13,7 @@ import type { CodingEngine } from "./coding-engine/coding-engine.js";
  * development. See CLAUDE.md "Running this repo".
  */
 export function buildPlatformFromEnv(ownerId?: string): Platform {
+  validateSharedConfig(process.env);
   const dbPath = process.env.DB_PATH ?? "./.data/platform.sqlite";
   const workspacesRoot = process.env.WORKSPACES_ROOT ?? "./.data/workspaces";
   const engine = resolveEngineFromEnv();

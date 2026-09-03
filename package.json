@@ -8,13 +8,15 @@
     "node": ">=22.5.0"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && mkdir -p dist/src/persistence/migrations && cp src/persistence/migrations/*.sql dist/src/persistence/migrations/",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node --import tsx --test --test-isolation=none tests/**/*.test.ts",
     "demo": "tsx src/cli/demo.ts",
     "api": "tsx src/api/server.ts",
     "worker": "tsx src/worker/run-worker.ts",
     "dev": "tsx src/dev.ts",
+    "start:api": "node dist/src/api/server.js",
+    "start:worker": "node dist/src/worker/run-worker.js",
     "web:install": "npm --prefix web install",
     "web:dev": "npm --prefix web run dev",
     "web:build": "npm --prefix web run build",

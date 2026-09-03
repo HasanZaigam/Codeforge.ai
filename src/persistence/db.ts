@@ -28,6 +28,15 @@ export function openDatabase(path: string): DatabaseSync {
   return db;
 }
 
+/**
+ * Explicit, ordered list — avoids fs.readdir ordering surprises. Exported
+ * so tests can assert it stays in sync with what's actually on disk in
+ * src/persistence/migrations/ (see tests/migrations.test.ts) — a migration
+ * file added here but not on disk (or vice versa) would otherwise only
+ * surface as a runtime ENOENT the first time a fresh database is opened.
+ */
+export const MIGRATION_FILES = ["001_init.sql", "002_cancellation.sql", "003_auth.sql", "004_github.sql", "005_concurrency.sql"];
+
 function runMigrations(db: DatabaseSync): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS _migrations (
@@ -37,7 +46,7 @@ function runMigrations(db: DatabaseSync): void {
   `);
 
   const migrationsDir = join(__dirname, "migrations");
-  const files = ["001_init.sql", "002_cancellation.sql", "003_auth.sql", "004_github.sql", "005_concurrency.sql"]; // explicit, ordered list — avoids fs.readdir ordering surprises
+  const files = MIGRATION_FILES;
 
   const applied = new Set(
     db

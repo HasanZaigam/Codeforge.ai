@@ -16,7 +16,10 @@ import { integrationsRouter } from "./routes/integrations.js";
  * and /docs/API.md.
  *
  * Route groups (see /docs/AUTHENTICATION.md):
- *  - `/health` — public, no session info, no request-time database access.
+ *  - `/health` — public, no session info, no request-time database access
+ *    (liveness: "is the process up"). `/health/ready` is the readiness
+ *    counterpart — it does touch the database (see below) to answer "can
+ *    this process actually serve traffic," per /docs/DEPLOYMENT.md.
  *  - `/auth/*` — public (nothing to authenticate against yet for
  *    register/login); logout/me require a session but 401 cleanly rather
  *    than needing the router-level guard below.
@@ -33,6 +36,22 @@ export function buildApp(platform: Platform): Express {
   app.use(attachUser(services.auth));
 
   app.get("/health", (_req, res) => res.json({ status: "ok" }));
+
+  // Readiness: a cheap, synchronous round-trip to the database (node:sqlite
+  // is synchronous — this is not an async query, just a single indexed-free
+  // read). Distinct from /health on purpose: a load balancer/orchestrator
+  // should stop routing traffic here if the DB is unreachable, but that's a
+  // different signal from "should this process be restarted," which is all
+  // /health answers. Never includes the db path or any internal detail in
+  // the response — only ok/not-ok.
+  app.get("/health/ready", (_req, res) => {
+    try {
+      platform.db.prepare("SELECT 1").get();
+      res.json({ status: "ready" });
+    } catch {
+      res.status(503).json({ status: "not_ready" });
+    }
+  });
 
   app.use(authRouter(services.auth));
   app.use(requireAuth, projectsRouter(services, platform.taskEvents));

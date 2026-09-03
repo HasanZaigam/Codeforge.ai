@@ -2,6 +2,10 @@ import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import { buildPlatformFromEnv } from "../env-platform.js";
 import { Worker } from "./worker.js";
+import { parsePositiveIntEnv } from "../config/startup-config.js";
+
+/** Upper bound on graceful shutdown before forcing exit — see "shutdown" below. */
+const SHUTDOWN_TIMEOUT_MS = 30_000;
 
 /**
  * Standalone worker process entrypoint (`npm run worker`). Deliberately
@@ -14,7 +18,7 @@ async function main() {
   await mkdir(dirname(dbPath), { recursive: true });
 
   const platform = buildPlatformFromEnv();
-  const pollIntervalMs = Number(process.env.POLL_INTERVAL_MS ?? 2000);
+  const pollIntervalMs = parsePositiveIntEnv("POLL_INTERVAL_MS", process.env.POLL_INTERVAL_MS, 2000);
 
   const worker = new Worker(platform.tasks, platform.orchestrator, { pollIntervalMs }, (taskId, err) => {
     console.error(`[worker] task ${taskId} raised an unexpected error outside the Orchestrator's own handling:`, err);
@@ -23,9 +27,26 @@ async function main() {
   console.log(`[worker] starting, poll interval ${pollIntervalMs}ms, db=${dbPath}`);
   worker.start();
 
+  // `worker.stop()` deliberately does not cancel in-flight task execution —
+  // it stops scheduling new ticks and waits for whatever's already running
+  // to finish naturally (see Worker.stop's own doc comment). That's a
+  // conscious choice, not an oversight: a task that's still genuinely
+  // executing when SIGTERM arrives is exactly what the existing lease/crash
+  // -recovery mechanism (TECHNICAL_DECISIONS.md TD-12, TASK_LIFECYCLE.md
+  // "Crash recovery") already exists to handle safely if this process is
+  // killed before it finishes — so shutdown here has a bounded grace period
+  // rather than an unconditional wait: if it's not done by
+  // SHUTDOWN_TIMEOUT_MS, force-exit and let recovery take it from there on
+  // the next claim, instead of leaving an orchestrator (systemd/k8s/etc.)
+  // waiting indefinitely on a hung process.
   const shutdown = async (signal: string) => {
     console.log(`[worker] received ${signal}, finishing in-flight work before exit...`);
+    const forceExit = setTimeout(() => {
+      console.error(`[worker] graceful shutdown exceeded ${SHUTDOWN_TIMEOUT_MS}ms — forcing exit; any still-running task's lease will expire and be recovered normally`);
+      process.exit(1);
+    }, SHUTDOWN_TIMEOUT_MS);
     await worker.stop();
+    clearTimeout(forceExit);
     platform.db.close();
     process.exit(0);
   };

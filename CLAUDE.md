@@ -24,6 +24,7 @@ Don't duplicate architectural reasoning into this file — it goes stale. Read t
 - [docs/UI_ARCHITECTURE.md](./docs/UI_ARCHITECTURE.md) — screen structure, component boundaries, polling strategy, responsive strategy.
 - [docs/GITHUB_INTEGRATION.md](./docs/GITHUB_INTEGRATION.md) — GitHub integration, encrypted credential storage, repository/branch validation, PR creation.
 - [docs/CODING_ENGINE.md](./docs/CODING_ENGINE.md) — Coding engine abstraction, OpenCode adapter, Claude Code adapter, fixture engine, sanitization and process cancellation.
+- [docs/DEPLOYMENT.md](./docs/DEPLOYMENT.md) — production architecture, environment variables, startup/shutdown, migrations, health checks, CI, SQLite backup.
 
 ## Ground rules for working in this repo
 
@@ -36,7 +37,7 @@ Don't duplicate architectural reasoning into this file — it goes stale. Read t
 
 ## Status
 
-Step 8A complete: OpenCode Coding Engine integration — see [docs/CODING_ENGINE.md](./docs/CODING_ENGINE.md). The platform defaults to `OpenCodeAdapter` (`opencode`) behind the vendor-neutral `CodingEngine` abstraction with environment sanitization and graceful cancellation, while preserving `ClaudeCodeAdapter` and `FixtureCodingEngine`. Step 7 real GitHub integration (encrypted PAT storage, PR opening, idempotency) and Step 6 authentication/authorization remain fully operational. Real Jenkins integration and multi-tenant (multi-organization) infrastructure still don't exist — see [docs/MVP_SCOPE.md](./docs/MVP_SCOPE.md).
+Step 8A complete: OpenCode Coding Engine integration — see [docs/CODING_ENGINE.md](./docs/CODING_ENGINE.md). The platform defaults to `OpenCodeAdapter` (`opencode`) behind the vendor-neutral `CodingEngine` abstraction with environment sanitization and graceful cancellation, while preserving `ClaudeCodeAdapter` and `FixtureCodingEngine`. Step 7 real GitHub integration (encrypted PAT storage, PR opening, idempotency) and Step 6 authentication/authorization remain fully operational. CI/CD and production deployment readiness are now in place — see [docs/DEPLOYMENT.md](./docs/DEPLOYMENT.md): fail-fast startup config validation, a `GET /health/ready` readiness check, bounded graceful shutdown, a production build that packages database migrations, and GitHub Actions CI (`.github/workflows/ci.yml`) requiring no real credentials. Real Jenkins integration and multi-tenant (multi-organization) infrastructure still don't exist — see [docs/MVP_SCOPE.md](./docs/MVP_SCOPE.md).
 
 ### Running this repo
 
@@ -47,6 +48,8 @@ Backend (repo root):
 - `npm run demo` — runs the full task lifecycle twice directly against the domain/orchestrator (no HTTP), against a disposable local git fixture repo: once showing the self-fix loop reaching `REVIEW`, once showing `NEEDS_INPUT` → human answer → `REVIEW`. Uses `FixtureCodingEngine`, not a live Claude Code CLI call — see the security-boundary note at the top of `src/coding-engine/claude-code-adapter.ts`.
 - `npm run api` / `npm run worker` — the HTTP server and the background execution poller, as two separate processes (see [TECHNICAL_DECISIONS.md](./docs/TECHNICAL_DECISIONS.md) TD-16); `npm run dev` runs both together for local convenience. Set `CODING_ENGINE=fixture` to exercise them without a real Claude Code CLI/credentials. Full contract in [docs/API.md](./docs/API.md). Every request now needs a session — `curl` against a protected route without first `POST`ing to `/auth/register` or `/auth/login` (and reusing the returned cookie) gets a `401`.
 - **Local data reset**: a `.data/platform.sqlite` from before Step 6 has no real user accounts (only the old placeholder), so nothing is lost by deleting it and letting the app create a fresh one — see [docs/AUTHENTICATION.md](./docs/AUTHENTICATION.md) "Migrations."
+- **Environment variables**: copy `.env.example` to `.env` to get started — every variable is documented there and validated (clearly, never logging a secret value) at process startup. Full reference: [docs/DEPLOYMENT.md](./docs/DEPLOYMENT.md).
+- **Production**: `npm run build` (compiles + packages database migrations into `dist/`), then `npm run start:api` / `npm run start:worker` (run the compiled output directly, no `tsx` needed). Full production architecture, graceful shutdown, health checks, CI, and SQLite backup guidance: [docs/DEPLOYMENT.md](./docs/DEPLOYMENT.md).
 
 Frontend (`web/`, its own package — see TECHNICAL_DECISIONS.md TD-20):
 - `cd web && npm install`

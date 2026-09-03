@@ -1,0 +1,111 @@
+name: CI
+
+# Runs the same verification suite documented in CLAUDE.md "Running this
+# repo" — typecheck + tests for the backend and frontend, plus the frontend
+# production build. Nothing here requires real GitHub, OpenCode, or Gemini
+# credentials, or any production infrastructure: the backend suite builds
+# its own isolated SQLite/workspace fixtures per test and uses
+# FixtureCodingEngine / stubbed fetch for anything that would otherwise be a
+# live external call (see docs/CODING_ENGINE.md, docs/GITHUB_INTEGRATION.md).
+# See docs/DEPLOYMENT.md "Continuous integration".
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel a still-running run for the same branch/PR when a new commit lands.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend (typecheck, test, build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Build (also verifies migrations are packaged into dist/)
+        run: npm run build
+
+      # Not one of the "at minimum" checks, but directly justified by a real
+      # bug this milestone found: `tsc` alone doesn't copy the .sql
+      # migration files into dist/, so a compiled build could typecheck and
+      # pass every test yet still fail to boot in production. This boots the
+      # actual compiled artifact against a throwaway SQLite file with the
+      # real production coding engine selected (opencode) and NODE_ENV=
+      # production, using no credentials at all — booting never requires
+      # one, only actually invoking the engine on a task does (see
+      # src/coding-engine/opencode-adapter.ts) — and confirms both health
+      # endpoints respond and the process shuts down cleanly on SIGTERM.
+      - name: Smoke-test the compiled production build
+        run: |
+          set -e
+          mkdir -p /tmp/ci-smoke
+          DB_PATH=/tmp/ci-smoke/platform.sqlite \
+          WORKSPACES_ROOT=/tmp/ci-smoke/workspaces \
+          CODING_ENGINE=opencode \
+          NODE_ENV=production \
+          PORT=3999 \
+            node dist/src/api/server.js &
+          SERVER_PID=$!
+          trap 'kill -TERM $SERVER_PID 2>/dev/null || true' EXIT
+
+          for i in $(seq 1 20); do
+            if curl -sf http://localhost:3999/health > /dev/null; then break; fi
+            sleep 0.5
+          done
+
+          echo "-- /health --"
+          curl -sf http://localhost:3999/health
+          echo
+          echo "-- /health/ready --"
+          curl -sf http://localhost:3999/health/ready
+          echo
+
+          kill -TERM $SERVER_PID
+          wait $SERVER_PID
+          echo "server exited cleanly on SIGTERM"
+
+  frontend:
+    name: Frontend (typecheck, test, build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Typecheck
+        working-directory: web
+        run: npm run typecheck
+
+      - name: Test
+        working-directory: web
+        run: npm run test
+
+      - name: Build
+        working-directory: web
+        run: npm run build
