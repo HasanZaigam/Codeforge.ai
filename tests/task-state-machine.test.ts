@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { InvalidTransitionError, canTransition, isTerminal, transition } from "../src/domain/task-state-machine.js";
 
 test("valid transitions succeed", () => {
+  assert.equal(transition("BACKLOG", "released"), "TODO");
   assert.equal(transition("TODO", "claim"), "WORKING");
   assert.equal(transition("WORKING", "gates_passed"), "REVIEW");
   assert.equal(transition("WORKING", "blocked"), "NEEDS_INPUT");
@@ -20,6 +21,8 @@ test("invalid transitions throw InvalidTransitionError", () => {
   assert.throws(() => transition("DONE", "claim"), InvalidTransitionError);
   assert.throws(() => transition("FAILED", "claim"), InvalidTransitionError);
   assert.throws(() => transition("REVIEW", "blocked"), InvalidTransitionError);
+  assert.throws(() => transition("TODO", "released"), InvalidTransitionError, "released is only legal from BACKLOG");
+  assert.throws(() => transition("BACKLOG", "claim"), InvalidTransitionError, "the worker's claim trigger must never apply directly to BACKLOG");
 });
 
 test("canTransition mirrors transition() without throwing", () => {
@@ -31,6 +34,7 @@ test("DONE, FAILED, and CANCELLED are terminal; nothing else is", () => {
   assert.equal(isTerminal("DONE"), true);
   assert.equal(isTerminal("FAILED"), true);
   assert.equal(isTerminal("CANCELLED"), true);
+  assert.equal(isTerminal("BACKLOG"), false);
   assert.equal(isTerminal("TODO"), false);
   assert.equal(isTerminal("WORKING"), false);
   assert.equal(isTerminal("REVIEW"), false);
@@ -41,7 +45,8 @@ test("gates_failed_retry is not a table entry (handled inside the WORKING episod
   assert.equal(canTransition("WORKING", "gates_failed_retry"), false);
 });
 
-test("TODO, WORKING, and NEEDS_INPUT can all be cancelled", () => {
+test("BACKLOG, TODO, WORKING, and NEEDS_INPUT can all be cancelled", () => {
+  assert.equal(transition("BACKLOG", "cancel"), "CANCELLED");
   assert.equal(transition("TODO", "cancel"), "CANCELLED");
   assert.equal(transition("WORKING", "cancel"), "CANCELLED");
   assert.equal(transition("NEEDS_INPUT", "cancel"), "CANCELLED");

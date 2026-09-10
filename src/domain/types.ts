@@ -9,6 +9,7 @@
 
 /** User-visible + terminal task states. Orchestrator-owned; never set by an LLM. */
 export type TaskStatus =
+  | "BACKLOG"
   | "TODO"
   | "WORKING"
   | "NEEDS_INPUT"
@@ -72,15 +73,50 @@ export interface Decision {
   recordedAt: string;
 }
 
+/**
+ * How a task's workspace branch is derived — see /docs/TASK_LIFECYCLE.md
+ * "Branch modes". Set once at task creation, immutable thereafter (unlike
+ * `TaskRecord.branchName`, the orchestrator-derived *actual* branch in use,
+ * which this only informs). `"new"` is the default and safest mode (isolated
+ * per-task branch); `"existing"` checks out a user-selected branch directly
+ * and never creates one. Absent on any Task row created before this field
+ * existed — always treated as `"new"` (see task-repository.ts rowToTask).
+ */
+export type BranchMode = "new" | "existing";
+
 export interface Task {
   id: string;
   tenantId: string;
   projectId: string;
   title: string;
-  /** Original plain-language description. Immutable once created. */
+  /**
+   * Original plain-language description. Editable only while the task is still BACKLOG (see
+   * TaskService.editBacklogTask / POST /tasks/:taskId/edit) — immutable once released from BACKLOG,
+   * exactly like `workingBranch`/`baseBranch` below.
+   */
   goal: string;
   status: TaskStatus;
   taskRecord: TaskRecord;
+  /** See BranchMode. Defaults to "new" for backward compatibility with rows created before this field existed. */
+  branchMode: BranchMode;
+  /**
+   * Mode "new": an optional user-supplied branch name (validated — see
+   * schemas.ts `isSafeBranchName`) used instead of the auto-derived
+   * `task/<id-prefix>` name; null means auto-derive. Mode "existing": the
+   * exact, required branch name to check out directly — never created,
+   * never renamed. Editable only while the task is still BACKLOG (see
+   * TaskService.editBacklogTask); immutable once released from BACKLOG.
+   */
+  workingBranch: string | null;
+  /**
+   * Mode "new" only: overrides `Project.defaultBranch` as the branch this
+   * task's new branch is created from. Null means "use the project's
+   * default branch." Ignored in mode "existing" (there is no separate base
+   * to branch from — the selected branch itself is the target). Editable
+   * only while the task is still BACKLOG (see TaskService.editBacklogTask);
+   * immutable once released from BACKLOG.
+   */
+  baseBranch: string | null;
   currentAgentRunId: string | null;
   workspaceId: string | null;
   lockOwner: string | null;
@@ -99,6 +135,28 @@ export interface Task {
    */
   cancelRequestedAt: string | null;
   cancelRequestedBy: string | null;
+  /**
+   * Ownership epoch for this task's execution lease (see
+   * /docs/TASK_LIFECYCLE.md "Worker concurrency and lease loss" and
+   * migrations/009_lock_generation.sql). Advances only when the lease
+   * changes hands — a claimTodo/claimWorking/claimReviewForHumanFeedback
+   * call that actually wins — never on a same-owner heartbeat renewal
+   * (TaskRepository.renewWorkingLease). An execution captures the
+   * generation it was granted at claim time and threads it through its
+   * whole run; every write that must not survive losing the lease is
+   * fenced against this column's CURRENT value (TaskRepository.saveOwned),
+   * not the value captured at claim time.
+   */
+  lockGeneration: number;
+  /**
+   * When this REVIEW task's PR is next due for a GitHub refresh (status +
+   * human-feedback check) — see migrations/010_review_poll_scheduling.sql
+   * and TaskRepository.claimReviewCheck. `null` for every non-REVIEW task
+   * and for a REVIEW task never yet checked (treated as due immediately).
+   * Deliberately orthogonal to `lockGeneration`: this governs "who gets to
+   * do this poll cycle's read-only GitHub check," not execution ownership.
+   */
+  nextReviewCheckAt: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -107,6 +165,7 @@ export interface Task {
 
 export type TaskEventType =
   | "TASK_CREATED"
+  | "TASK_RELEASED"
   | "TASK_CLAIMED"
   | "TASK_STARTED"
   | "WORKSPACE_CREATED"
@@ -137,9 +196,21 @@ export type TaskEventType =
   | "BRANCH_PUSHED"
   | "PULL_REQUEST_CREATED"
   | "SOURCE_CONTROL_FAILED"
+  | "NO_CHANGES_DETECTED"
   | "HUMAN_REVIEW_DETECTED"
   | "HUMAN_REVIEW_CHANGES_REQUESTED"
-  | "HUMAN_REVIEW_APPROVED";
+  | "HUMAN_REVIEW_APPROVED"
+  | "PULL_REQUEST_MERGED"
+  /**
+   * Appended when an in-flight execution discovers (via a fenced write or
+   * heartbeat-renewal failure) that it no longer holds the task's
+   * execution lease — distinct from TASK_FAILED (a genuine platform
+   * failure) and from TASK_CANCELLED (a human-requested stop). Task status
+   * and workspace are deliberately left untouched by whichever process
+   * raises this — see LeaseLostError's own doc comment. See
+   * /docs/TASK_LIFECYCLE.md "Worker concurrency and lease loss".
+   */
+  | "EXECUTION_LEASE_LOST";
 
 export interface TaskEvent {
   id: string;
@@ -213,6 +284,14 @@ export interface AgentRun {
   cost: CostMetadata | null;
   startedAt: string;
   completedAt: string | null;
+  /**
+   * The task's `lock_generation` at the moment this AgentRun was created
+   * (see Orchestrator.runAgent) — the fencing key AgentRunRepository.complete()
+   * re-checks against the task's CURRENT lock_generation, so a stale
+   * execution (operating under an old generation) can never complete this
+   * run after a newer owner has taken over. See migrations/009_lock_generation.sql.
+   */
+  ownerGeneration: number;
 }
 
 export interface CostMetadata {
@@ -253,6 +332,62 @@ export interface PullRequestRef {
   number: number | null;
   url: string | null;
 }
+
+/**
+ * The remote state of a task's PR — used to detect a human merging (or
+ * closing without merging) the PR directly on GitHub, so a REVIEW task can
+ * be synced to DONE without the platform ever merging anything itself. See
+ * /docs/TASK_LIFECYCLE.md "PR merge sync" and SourceControlProvider.getPullRequestStatus.
+ */
+export interface PullRequestStatus {
+  state: "open" | "closed";
+  /** True only once the PR has actually been merged (a distinct fact from `state === "closed"` — a PR can be closed without merging). */
+  merged: boolean;
+  /**
+   * GitHub's own "can this be merged cleanly" verdict for an open PR — null when unknown: GitHub
+   * computes this asynchronously and can report null for a brief window right after a push, and a
+   * provider with no real PR concept (local-git) always reports null here (see
+   * SourceControlProvider.getPullRequestStatus's own doc comment) — never fabricated as true/false.
+   * See /docs/TASK_LIFECYCLE.md "Merge/conflict state".
+   */
+  mergeable: boolean | null;
+}
+
+// ---------------------------------------------------------------------------
+// Branch comparison / merge-conflict state (see /docs/TASK_LIFECYCLE.md
+// "Stale/behind detection" and "Merge/conflict state") — detection only, no
+// remediation: the platform never auto-rebases/merges anything.
+// ---------------------------------------------------------------------------
+
+/**
+ * Ahead/behind commit counts between a task's working branch and its base —
+ * see SourceControlProvider.getBranchStatus. `comparable=false` means the
+ * provider genuinely could not determine this (never fabricated data) —
+ * distinct from `comparable=true` with `aheadBy`/`behindBy` both `0`, which
+ * means "up to date."
+ */
+export interface BranchComparisonStatus {
+  comparable: boolean;
+  aheadBy: number | null;
+  behindBy: number | null;
+}
+
+/**
+ * The richer, task-execution-independent state of a task's branch/PR — see
+ * /docs/TASK_LIFECYCLE.md "Merge/conflict state". Deliberately distinct from
+ * `TaskStatus`: a task can be REVIEW while its branch state is READY, BEHIND,
+ * or CONFLICT, and reaching DONE off a PR merge is the *only* thing that
+ * lets this become MERGED (see Orchestrator.finalizeMergedPullRequest) — the
+ * AI finishing implementation, or a branch merely existing, never implies
+ * MERGED or READY on its own.
+ *   - READY: open PR (or, for local-git, a real branch), no known conflict, not behind its base.
+ *   - BEHIND: not (yet) known to conflict, but the base has commits this branch doesn't.
+ *   - CONFLICT: the provider reports this PR cannot be merged cleanly.
+ *   - MERGED / CLOSED_NOT_MERGED: the PR's own terminal remote state (see PullRequestStatus).
+ *   - NOT_APPLICABLE: no real PR concept for this provider (local-git) — never fabricated as READY.
+ *   - UNKNOWN: not enough information yet (e.g. no PR opened yet, or the provider read failed).
+ */
+export type MergeState = "READY" | "BEHIND" | "CONFLICT" | "MERGED" | "CLOSED_NOT_MERGED" | "NOT_APPLICABLE" | "UNKNOWN";
 
 // ---------------------------------------------------------------------------
 // Human review feedback (human-in-the-loop PR review, see TASK_LIFECYCLE.md

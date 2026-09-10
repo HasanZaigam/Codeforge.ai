@@ -11,6 +11,27 @@ These are two separate concerns, deliberately never conflated:
 
 A user can be fully authenticated to the platform with no GitHub account connected at all (e.g. only using `local-git` projects). Connecting GitHub (`POST /integrations/github`) is a distinct, explicit action from login.
 
+## Local git / plain-git testing (`sourceControlProvider: "local-git"`)
+
+The `local-git` provider (`src/source-control/local-git-source-control-provider.ts`) exists purely so this platform's entire automated test suite and `npm run demo` can drive a real task through the full orchestrator/coding-engine lifecycle — clone, implement, commit, push — against an ordinary local git repository, with **zero GitHub credentials required**. It is not a second production-supported source-control provider (see [MVP_SCOPE.md](./MVP_SCOPE.md)) and is materially different from `github` in ways a user must understand before choosing it for real work:
+
+- `resolveCloneCredential` always returns `null` — clone/push run with no credential the platform manages at all, so they succeed or fail purely on whatever ambient git configuration (SSH agent, credential helper, `~/.netrc`) already exists on the host running the worker process.
+- `openPullRequest` never calls a real API — it fabricates a local `PullRequestRef` (`number: null`, `url: null`) purely so the Orchestrator has something to attach to the task's REVIEW state.
+- `getPullRequestStatus` always reports `{ state: "open", merged: false }` — there is no real PR to merge, so a `local-git` task **can never reach `DONE` via merge-sync**; it stays in `REVIEW` forever. There is also no PR-review concept, so `listPullRequestFeedback` always returns `[]` — a human reviewing the pushed branch outside the platform has no way to signal anything back to the task.
+- No independent-credential audit trail, no per-user OAuth/PAT scoping, no revocation story — whoever can reach the worker's filesystem/git config controls what it can push to.
+
+**GitHub-URL bypass, checked and closed**: because `resolveCloneCredential` is always `null`, pointing a `local-git` project's `repoUrl` at an actual `github.com` remote would push using whatever ambient credentials happen to be configured on the host, completely outside this platform's encrypted per-user PAT storage and PR-based review workflow — a real bypass of the `github` provider's entire credential/audit model, not merely a cosmetic one. `CreateProjectSchema`'s `local-git` branch (`src/api/schemas.ts`) rejects any `repoUrl` that looks like a `github.com`/`*.github.com` remote (https, ssh, or `git@` form) for exactly this reason.
+
+**Why it must not normally run in production**: every property above is acceptable for a disposable local/CI fixture repo and unacceptable for a real deployment target — no PR-based review gate, no merge signal, no credential scoping. So it is disabled by default whenever `NODE_ENV=production`, gated by the `ALLOW_LOCAL_GIT_PROJECTS` environment variable (see [DEPLOYMENT.md](./DEPLOYMENT.md) "Environment variables"):
+
+| `NODE_ENV` | `ALLOW_LOCAL_GIT_PROJECTS` | `local-git` project creation |
+|---|---|---|
+| not `production` | unset or any value | Always allowed — the automated test suite and `npm run demo` never need to set this. |
+| `production` | unset or `false` | **Disabled** — `POST /projects` returns `403 LOCAL_GIT_PROJECTS_DISABLED`. |
+| `production` | `true` | Allowed, explicitly opted into. |
+
+Enforced in `ProjectService.create()` (`src/application/project-service.ts`) itself — not only hidden from the UI's "Source control" dropdown — so a direct API request cannot bypass it regardless of request shape. A malformed `ALLOW_LOCAL_GIT_PROJECTS` value (anything other than a clean `"true"`/`"false"`, case-insensitive) fails fast at startup via `validateSharedConfig` (`src/config/startup-config.ts`), the same fail-fast convention as `CODING_ENGINE=fixture` under `NODE_ENV=production`.
+
 ## Credential mechanism: PAT, as an explicit dev-only boundary
 
 A GitHub App (fine-grained, repo-scoped, revocable installation tokens) is the right mechanism for a production multi-tenant product — it doesn't require the user to hand over a broad personal token, and installations are scoped to specific repositories by GitHub itself. Building and registering a GitHub App requires a public callback URL and app registration that don't exist for this MVP's deployment story (see [MVP_SCOPE.md](./MVP_SCOPE.md)), so Step 7 ships a **Personal Access Token (PAT)**, stored per-user, as the supported mechanism — with the limitations below made explicit rather than hidden:
@@ -104,10 +125,12 @@ Together these two guards mean **one task → one GitHub PR** holds across a wor
 A PR search only ever needs to distinguish `open` from "everything else" (see above) — but the human review feedback loop needs to know specifically whether a PR is `merged`, so `GitHubClient.getPullRequest` (the single-PR fetch, `GET /repos/{owner}/{repo}/pulls/{number}`) is used instead, which is the only endpoint that returns a `merged` flag.
 
 - **OPEN**: normal — feedback is fetched and processed as usual.
-- **MERGED**: `GitHubSourceControlProvider.listPullRequestFeedback` checks state *before* fetching any reviews/comments and returns `[]` immediately if merged — a later worker poll can never re-trigger implementation because of a stray or late review on an already-merged PR. No new task status was introduced: the task simply stays in `REVIEW` (the platform never listens for a merge webhook or auto-completes the task on merge — a human still explicitly accepts it, exactly as before this milestone).
-- **CLOSED (not merged)**: same treatment as merged — `[]`, no processing. A human closed it without merging; nothing here should keep pushing commits to a dead branch.
+- **MERGED**: `GitHubSourceControlProvider.listPullRequestFeedback` checks state *before* fetching any reviews/comments and returns `[]` immediately if merged — a later worker poll can never re-trigger implementation because of a stray or late review on an already-merged PR. **As of the PR-merge-sync milestone, the task itself is completed** (`REVIEW -> DONE`) the moment this state is observed — see [TASK_LIFECYCLE.md](./TASK_LIFECYCLE.md) "PR merge sync" for the full mechanism. The platform still never merges anything itself; it only reacts to a merge a human already performed on GitHub.
+- **CLOSED (not merged)**: distinct from MERGED — no feedback is fetched or processed (same `[]` short-circuit), and, per the PR-merge-sync milestone, this **never** completes the task either. A human closed it without merging; the task simply stays `REVIEW` — nothing here should keep pushing commits to a dead branch, and nothing here should claim a change was accepted that wasn't.
 
-This check happens once per `checkHumanReviewFeedback` call, adds exactly one extra read (`getPullRequest`) before the (now frequently skipped) reviews/comments fetch, and required no new `SourceControlProvider` interface method beyond what already existed for the read path — `listPullRequestFeedback`'s own contract ("returns the actionable feedback for this PR, or `[]`") already covers "there is none because it's merged/closed."
+This state check happens once per `checkHumanReviewFeedback` call, adds exactly one extra read (`getPullRequest`) before the (now frequently skipped) reviews/comments fetch.
+
+**`SourceControlProvider.getPullRequestStatus`** (added by the PR-merge-sync milestone): `listPullRequestFeedback`'s own contract ("returns the actionable feedback for this PR, or `[]`") was sufficient for the human-review-feedback loop, which never needed to tell MERGED apart from CLOSED-not-merged — both were equally "not actionable." Completing a task, however, genuinely needs that distinction (only MERGED may ever become `DONE`), so this milestone added the smallest necessary interface method: `getPullRequestStatus(project, pr, signal) -> { state: "open" | "closed"; merged: boolean }`. `GitHubSourceControlProvider` implements it with the exact same `GitHubClient.getPullRequest` call `listPullRequestFeedback` already makes internally, just surfacing the `merged` field instead of discarding it; `LocalGitSourceControlProvider` always returns `{ state: "open", merged: false }` (no real PR concept — nothing external could ever merge one). `checkHumanReviewFeedback` calls this once, first, before deciding whether to even look at feedback — see TASK_LIFECYCLE.md.
 
 ## Human review feedback ingestion
 

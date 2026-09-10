@@ -8,6 +8,8 @@ export class ApiError extends Error {
     public readonly status: number,
     public readonly code: string,
     message: string,
+    /** The server's `error.details` (present for INVALID_REQUEST — Zod's `flatten()` shape), if any — see /docs/API.md "Error format". */
+    public readonly details?: unknown,
   ) {
     super(message);
     this.name = "ApiError";

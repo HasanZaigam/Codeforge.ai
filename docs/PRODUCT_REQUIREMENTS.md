@@ -15,13 +15,14 @@ Scope: what the product must do, from the developer's point of view. For the sys
 - A project carries its own tech stack, structure, tests, and rules — expressed as configuration and in-repo context files, never as platform code. See [CONTEXT_ARCHITECTURE.md](./CONTEXT_ARCHITECTURE.md).
 
 ### FR-2: Task board
-- Opening a project shows a Kanban board: `TODO → WORKING → REVIEW → NEEDS INPUT → DONE`.
-- A task card shows: title, short description, project, status, agent status/progress, time started, last activity, and the next relevant action (e.g. "Answer question", "Review changes").
+- Opening a project shows a Kanban board: `BACKLOG → TODO → WORKING → REVIEW → NEEDS INPUT → DONE`, plus `FAILED` shown as a conditional extra column only once a task actually has that status. `CANCELLED` tasks are deliberately not shown as board columns — they remain fully visible on their own task detail page (see [TASK_LIFECYCLE.md](./TASK_LIFECYCLE.md) "Cancellation" and TECHNICAL_DECISIONS.md TD-25).
+- A task card shows: title, short description, project, status, agent status/progress, time started, last activity, and the next relevant action (e.g. "Answer question", "Review changes", "Start Task" for a `BACKLOG` task with no incomplete dependencies).
 - Advanced technical detail (logs, diffs, tool calls, validation output) lives behind "View Details" — never on the board itself.
 
 ### FR-3: Task creation
 - A developer creates a task from a short, plain-language description (e.g. "Client says login fails when OTP is entered after session timeout"). No structured/technical prompt is required.
 - The system is responsible for turning that description into an executable engineering task by gathering project context itself (see [TASK_LIFECYCLE.md](./TASK_LIFECYCLE.md)).
+- A created task starts in `BACKLOG`: its title/goal/branch selection can still be edited, and it can explicitly declare dependencies on other tasks in the same project (all of which must reach `DONE` before it can start). A developer explicitly releases it into `TODO` via "Start Task" — a task never starts executing on its own the moment it's created. See [TASK_LIFECYCLE.md](./TASK_LIFECYCLE.md) "Task creation," "BACKLOG editing," and "Task dependencies."
 
 ### FR-4: Autonomous execution
 - Once created, a task proceeds without further prompting through investigation, planning, implementation, testing, self-fix, and validation, per [TASK_LIFECYCLE.md](./TASK_LIFECYCLE.md).

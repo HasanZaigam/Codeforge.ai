@@ -69,10 +69,23 @@ test("full HTTP flow: create project -> create task -> API returns immediately i
     const elapsedMs = Date.now() - start;
     assert.equal(taskRes.status, 201);
     const { task } = await json<{ task: { id: string; status: string } }>(taskRes);
-    assert.equal(task.status, "TODO", "task creation must not execute the task inline");
+    assert.equal(task.status, "BACKLOG", "task creation must not execute the task inline, and must not skip the human release gate");
     assert.ok(elapsedMs < 1000, `task creation should return near-instantly, took ${elapsedMs}ms`);
 
-    // Nothing has executed yet — no worker has ticked.
+    // Nothing has executed yet — no worker has ticked, and the task hasn't even been released.
+    const stillBacklog = await json<{ task: { status: string } }>(await h.client.fetch(`/tasks/${task.id}`));
+    assert.equal(stillBacklog.task.status, "BACKLOG");
+
+    // The worker must never pick up a BACKLOG task on its own.
+    await h.worker.tick();
+    const stillBacklogAfterTick = await json<{ task: { status: string } }>(await h.client.fetch(`/tasks/${task.id}`));
+    assert.equal(stillBacklogAfterTick.task.status, "BACKLOG", "the worker must never claim a BACKLOG task");
+
+    const startRes = await h.client.fetch(`/tasks/${task.id}/start`, { method: "POST" });
+    assert.equal(startRes.status, 200);
+    const { task: released } = await json<{ task: { status: string } }>(startRes);
+    assert.equal(released.status, "TODO");
+
     const stillTodo = await json<{ task: { status: string } }>(await h.client.fetch(`/tasks/${task.id}`));
     assert.equal(stillTodo.task.status, "TODO");
 
@@ -113,6 +126,7 @@ test("NEEDS_INPUT is exposed via the API and answering resumes the task to REVIE
         body: JSON.stringify({ title: "Fix add()", description: "add() returns the wrong result" }),
       }),
     );
+    await h.client.fetch(`/tasks/${task.id}/start`, { method: "POST" });
 
     await h.worker.tick();
 
@@ -204,7 +218,8 @@ test("POST /tasks/:id/cancel: cancels a TODO task, is idempotent, rejects an inv
     assert.equal(notFoundBody.error.code, "NOT_FOUND");
     assert.ok(!notFoundBody.error.message.includes("at "), "must not leak a stack trace");
 
-    // Cancel a TODO task.
+    // Cancel a BACKLOG task (never released — identical "nothing running" shape to cancelling TODO,
+    // see task-state-machine.ts's TRANSITIONS comment).
     const { task } = await json<{ task: { id: string } }>(
       await h.client.fetch(`/projects/${project.id}/tasks`, {
         method: "POST",
@@ -239,6 +254,7 @@ test("POST /tasks/:id/cancel: cancels a TODO task, is idempotent, rejects an inv
         body: JSON.stringify({ title: "Fix add() again", description: "add() returns the wrong result" }),
       }),
     );
+    await h.client.fetch(`/tasks/${task2.id}/start`, { method: "POST" });
     await h.worker.tick();
     const inReview = await json<{ task: { status: string } }>(await h.client.fetch(`/tasks/${task2.id}`));
     assert.equal(inReview.task.status, "REVIEW");
@@ -268,9 +284,10 @@ test("POST /tasks/:id/cancel: concurrent cancel requests against the same task n
       }),
     );
 
-    // Still TODO: cancellation finalizes immediately (no live execution to race against), so this
-    // exercises the atomic finalizeCancellationOnTodo guard directly — only one of these three
-    // concurrent requests may actually win the UPDATE; the rest must resolve idempotently, not error.
+    // Still BACKLOG (never released): cancellation finalizes immediately (no live execution to race
+    // against), so this exercises the atomic finalizeCancellationOnBacklog guard directly — only one
+    // of these three concurrent requests may actually win the UPDATE; the rest must resolve
+    // idempotently, not error.
     const responses = await Promise.all([
       h.client.fetch(`/tasks/${task.id}/cancel`, { method: "POST" }),
       h.client.fetch(`/tasks/${task.id}/cancel`, { method: "POST" }),
@@ -281,6 +298,53 @@ test("POST /tasks/:id/cancel: concurrent cancel requests against the same task n
     const events = await json<{ events: Array<{ type: string }> }>(await h.client.fetch(`/tasks/${task.id}/events`));
     const cancelledEvents = events.events.filter((e) => e.type === "TASK_CANCELLED");
     assert.equal(cancelledEvents.length, 1, "three concurrent requests must still only finalize cancellation once");
+  } finally {
+    await teardown(h);
+  }
+});
+
+test("POST /tasks/:id/start: releases a BACKLOG task, rejects a second call and a call against a non-BACKLOG task, and 404s for an unknown task", async () => {
+  const h = await setupHarness("start", createSelfFixDemoEngine());
+  try {
+    const notFound = await h.client.fetch("/tasks/does-not-exist/start", { method: "POST" });
+    assert.equal(notFound.status, 404);
+
+    const { project } = await json<{ project: { id: string } }>(
+      await h.client.fetch("/projects", {
+        method: "POST",
+        body: JSON.stringify({ name: "Fixture", sourceControlProvider: "local-git", repoUrl: h.repoPath, codingEngine: "fixture", commands: { test: "node test.js" } }),
+      }),
+    );
+    const { task } = await json<{ task: { id: string; status: string } }>(
+      await h.client.fetch(`/projects/${project.id}/tasks`, {
+        method: "POST",
+        body: JSON.stringify({ title: "Fix add()", description: "add() returns the wrong result" }),
+      }),
+    );
+    assert.equal(task.status, "BACKLOG");
+
+    const startRes = await h.client.fetch(`/tasks/${task.id}/start`, { method: "POST" });
+    assert.equal(startRes.status, 200);
+    const { task: started } = await json<{ task: { status: string } }>(startRes);
+    assert.equal(started.status, "TODO");
+
+    // A second start attempt is rejected, not a silent no-op — the task is already released.
+    const secondStart = await h.client.fetch(`/tasks/${task.id}/start`, { method: "POST" });
+    assert.equal(secondStart.status, 409);
+    const secondStartBody = await json<{ error: { code: string } }>(secondStart);
+    assert.equal(secondStartBody.error.code, "INVALID_STATE_TRANSITION");
+
+    // Still TODO — the rejected duplicate must not have changed anything.
+    const stillTodo = await json<{ task: { status: string } }>(await h.client.fetch(`/tasks/${task.id}`));
+    assert.equal(stillTodo.task.status, "TODO");
+
+    // Starting a task already in WORKING/REVIEW/etc. is equally rejected — drive this one all the
+    // way to REVIEW first, then try to start it.
+    await h.worker.tick();
+    const inReview = await json<{ task: { status: string } }>(await h.client.fetch(`/tasks/${task.id}`));
+    assert.equal(inReview.task.status, "REVIEW");
+    const startOnReview = await h.client.fetch(`/tasks/${task.id}/start`, { method: "POST" });
+    assert.equal(startOnReview.status, 409);
   } finally {
     await teardown(h);
   }

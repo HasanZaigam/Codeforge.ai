@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { buildPlatform, type Platform, type BuildPlatformOptions } from "../src/platform.js";
-import { createTask } from "../src/orchestrator/task-factory.js";
+import { createReadyTask } from "./helpers/create-ready-task.js";
 import { createFixtureRepo } from "../src/cli/fixture-repo.js";
 import { FixtureCodingEngine } from "../src/coding-engine/fixture-coding-engine.js";
 import { FakeSourceControlProvider } from "./helpers/fake-source-control-provider.js";
@@ -67,7 +67,7 @@ async function setupTwoWorkerPlatform(
 }
 
 function makeTask(platform: Platform, project: Project) {
-  return createTask(platform.tasks, platform.taskEvents, {
+  return createReadyTask(platform.tasks, platform.taskEvents, {
     tenantId: "default",
     projectId: project.id,
     title: "Fix add()",
@@ -177,7 +177,7 @@ test("an expired lease allows recovery — recoverOrphanedTasks finds it, a new 
   await new Promise((r) => setTimeout(r, 15));
 
   assert.deepEqual(platformB.orchestrator.recoverOrphanedTasks(), [task.id]);
-  assert.equal(platformB.tasks.claimWorking(task.id, "B", 60_000, new Date().toISOString()), true);
+  assert.notEqual(platformB.tasks.claimWorking(task.id, "B", 60_000, new Date().toISOString()), null);
 });
 
 test("two workers racing to recover the same orphaned task: only one recovery execution actually proceeds", async () => {
@@ -201,15 +201,19 @@ test("two workers racing to recover the same orphaned task: only one recovery ex
 // 6-7. Lease renewal ownership
 // ---------------------------------------------------------------------------
 
-test("lease renewal succeeds for the current owner and fails for a different owner while the lease is valid", async () => {
+test("lease renewal (renewWorkingLease) succeeds for the current owner without advancing lock_generation, and fails for a different owner while the lease is valid", async () => {
   const engine = new FixtureCodingEngine({ implementer: correctImplementerResult, reviewer: approvingReviewerHandler });
   const { platformA, project } = await setupTwoWorkerPlatform("renewal-ownership", engine);
   const task = makeTask(platformA, project);
   const now = new Date().toISOString();
-  platformA.tasks.claimTodo(task.id, "A", 60_000, now);
+  const generation = platformA.tasks.claimTodo(task.id, "A", 60_000, now);
 
-  assert.equal(platformA.tasks.claimWorking(task.id, "A", 60_000, new Date().toISOString()), true, "the current owner can renew");
-  assert.equal(platformA.tasks.claimWorking(task.id, "B", 60_000, new Date().toISOString()), false, "a different owner cannot steal a still-valid lease");
+  assert.equal(platformA.tasks.renewWorkingLease(task.id, "A", 60_000, new Date().toISOString()), true, "the current owner can renew");
+  assert.equal(platformA.tasks.findById(task.id)?.lockGeneration, generation, "renewal never advances the generation");
+  assert.equal(platformA.tasks.renewWorkingLease(task.id, "B", 60_000, new Date().toISOString()), false, "a different owner cannot steal a still-valid lease via renewal");
+  // claimWorking (ownership acquisition, not renewal) also refuses a different owner while the
+  // lease is valid — see task-repository.test.ts for its full generation-advancing behavior.
+  assert.equal(platformA.tasks.claimWorking(task.id, "B", 60_000, new Date().toISOString()), null, "a different owner cannot steal a still-valid lease via claimWorking either");
 });
 
 test("releaseLock is owner-guarded: a stale worker's release cannot un-claim another worker's active lease", async () => {
@@ -219,7 +223,7 @@ test("releaseLock is owner-guarded: a stale worker's release cannot un-claim ano
   platformA.tasks.claimTodo(task.id, "A", 1, new Date().toISOString());
   await new Promise((r) => setTimeout(r, 15));
   // B legitimately recovers the now-expired lease.
-  assert.equal(platformB.tasks.claimWorking(task.id, "B", 60_000, new Date().toISOString()), true);
+  assert.notEqual(platformB.tasks.claimWorking(task.id, "B", 60_000, new Date().toISOString()), null);
 
   // A, unaware it lost the lease, tries to release what it thinks is its own lock.
   platformA.tasks.releaseLock(task.id, "A", new Date().toISOString());
@@ -306,6 +310,7 @@ test("the database rejects two AgentRun rows for the same (task, role, attemptNu
     cost: null,
     startedAt: now,
     completedAt: null,
+    ownerGeneration: 1,
   });
 
   platformA.agentRuns.insert(makeRun("run-1"));
@@ -429,4 +434,218 @@ test("across a full recovery race, invariants hold: one workspace, one branch, o
   assert.equal(events.filter((t) => t === "BRANCH_CREATED").length, 1);
   assert.equal(events.filter((t) => t === "PULL_REQUEST_CREATED").length, 1);
   assert.equal(scProvider.pullRequestsCreated, 1);
+});
+
+// ---------------------------------------------------------------------------
+// Concurrency V1: lease-generation fencing (see /docs/TASK_LIFECYCLE.md
+// "Worker concurrency and lease loss" and migrations/009_lock_generation.sql)
+// ---------------------------------------------------------------------------
+
+test("14. lock_generation semantics: first claim gets generation 1, a same-owner heartbeat renewal preserves it, and a new owner after expiry gets the next generation, monotonically", async () => {
+  const engine = new FixtureCodingEngine({ implementer: correctImplementerResult, reviewer: approvingReviewerHandler });
+  const { platformA, platformB, project } = await setupTwoWorkerPlatform("gen-semantics", engine);
+  const task = makeTask(platformA, project);
+
+  const gen1 = platformA.tasks.claimTodo(task.id, "A", 60_000, new Date().toISOString());
+  assert.equal(gen1, 1, "the first-ever claim on a fresh task takes it to generation 1");
+
+  // Any number of heartbeat renewals by the SAME owner must never advance the generation.
+  for (let i = 0; i < 5; i++) {
+    assert.equal(platformA.tasks.renewWorkingLease(task.id, "A", 60_000, new Date().toISOString()), true);
+  }
+  assert.equal(platformA.tasks.findById(task.id)?.lockGeneration, 1, "repeated heartbeats never advance the generation");
+
+  // Force A's own lease to an already-expired value (simulating time passing without a heartbeat),
+  // then let worker B take over — this MUST advance the generation past 1.
+  platformA.tasks.claimWorking(task.id, "A", 1, new Date(Date.now() - 10_000).toISOString());
+  await new Promise((r) => setTimeout(r, 5));
+  const gen2 = platformB.tasks.claimWorking(task.id, "B", 60_000, new Date().toISOString());
+  assert.equal(gen2, 3, "claimWorking always advances the generation on success (A's own self-reclaim above took it to 2, B's takeover to 3) — monotonically increasing");
+});
+
+test("15. TaskRepository.saveOwned: the current generation's write succeeds; a stale generation's write fails cleanly and does not overwrite the current owner's state", async () => {
+  const engine = new FixtureCodingEngine({ implementer: correctImplementerResult, reviewer: approvingReviewerHandler });
+  const { platformA, project } = await setupTwoWorkerPlatform("save-owned", engine);
+  const task = makeTask(platformA, project);
+  const staleGeneration = platformA.tasks.claimTodo(task.id, "A", 60_000, new Date().toISOString())!;
+
+  // A different owner takes over after expiry — advances the generation.
+  await new Promise((r) => setTimeout(r, 5));
+  platformA.tasks.claimWorking(task.id, "A", 1, new Date(Date.now() - 10_000).toISOString());
+  await new Promise((r) => setTimeout(r, 5));
+  const currentGeneration = platformA.tasks.claimWorking(task.id, "B", 60_000, new Date().toISOString())!;
+  assert.notEqual(currentGeneration, staleGeneration);
+
+  const freshRead = platformA.tasks.findById(task.id)!;
+  freshRead.taskRecord.plan = "B's real plan";
+  assert.equal(platformA.tasks.saveOwned(freshRead, currentGeneration, new Date().toISOString()), true, "the current owner's fenced save succeeds");
+  assert.equal(platformA.tasks.findById(task.id)?.taskRecord.plan, "B's real plan");
+
+  const staleWrite = platformA.tasks.findById(task.id)!;
+  staleWrite.taskRecord.plan = "A's stale, discarded plan";
+  assert.equal(platformA.tasks.saveOwned(staleWrite, staleGeneration, new Date().toISOString()), false, "a stale generation's fenced save must fail, not silently succeed");
+  assert.equal(platformA.tasks.findById(task.id)?.taskRecord.plan, "B's real plan", "the current owner's state must survive the stale write attempt untouched");
+});
+
+test("16. AgentRunRepository.complete: the current execution can complete its own AgentRun; a stale execution cannot complete/overwrite one after ownership changed", async () => {
+  const engine = new FixtureCodingEngine({ implementer: correctImplementerResult, reviewer: approvingReviewerHandler });
+  const { platformA, project } = await setupTwoWorkerPlatform("agentrun-fencing", engine);
+  const task = makeTask(platformA, project);
+  const genA = platformA.tasks.claimTodo(task.id, "A", 60_000, new Date().toISOString())!;
+
+  const baseInput = { taskGoal: "g", taskPlan: null, priorDecisions: [], repoPath: "/tmp", projectConventionPointer: "", lastFailure: null, reviewEvidence: null, reviewerFeedback: null, humanReviewFeedback: null };
+  platformA.agentRuns.insert({
+    id: "run-A",
+    taskId: task.id,
+    role: "implementer",
+    engine: "fixture",
+    attemptNumber: 1,
+    status: "running",
+    input: baseInput,
+    result: null,
+    error: null,
+    cost: null,
+    startedAt: new Date().toISOString(),
+    completedAt: null,
+    ownerGeneration: genA,
+  });
+
+  // Ownership moves on — a new generation takes over the task.
+  await new Promise((r) => setTimeout(r, 5));
+  platformA.tasks.claimWorking(task.id, "A", 1, new Date(Date.now() - 10_000).toISOString());
+  await new Promise((r) => setTimeout(r, 5));
+  const genB = platformA.tasks.claimWorking(task.id, "B", 60_000, new Date().toISOString())!;
+  assert.notEqual(genB, genA);
+
+  platformA.agentRuns.insert({
+    id: "run-B",
+    taskId: task.id,
+    role: "implementer",
+    engine: "fixture",
+    attemptNumber: 2,
+    status: "running",
+    input: baseInput,
+    result: null,
+    error: null,
+    cost: null,
+    startedAt: new Date().toISOString(),
+    completedAt: null,
+    ownerGeneration: genB,
+  });
+
+  // The stale run (created under genA, now no longer the task's current generation) must fail to complete.
+  const staleCompleted = platformA.agentRuns.complete("run-A", "completed", null, null, null, new Date().toISOString());
+  assert.equal(staleCompleted, false, "a stale execution's AgentRun completion must be rejected");
+  assert.equal(platformA.agentRuns.listForTask(task.id).find((r) => r.id === "run-A")?.status, "running", "the stale run's row must be left untouched, not silently marked completed");
+
+  // The current run (created under genB, the task's current generation) completes normally.
+  const currentCompleted = platformA.agentRuns.complete("run-B", "completed", null, null, null, new Date().toISOString());
+  assert.equal(currentCompleted, true, "the current execution's own AgentRun completion must succeed");
+  assert.equal(platformA.agentRuns.listForTask(task.id).find((r) => r.id === "run-B")?.status, "completed");
+});
+
+// ---------------------------------------------------------------------------
+// 17. Zombie-worker scenario: stale execution is fully fenced out at every write
+// ---------------------------------------------------------------------------
+
+test("17. zombie worker: A's stalled execution cannot mutate task state, cannot overwrite the AgentRun, and produces no extra commit/push/PR after B fully recovers and completes the task", async () => {
+  const gate = makeGate();
+  let implementerCalls = 0;
+  const handler = async (request: EngineInvocationRequest): Promise<EngineInvocationResult> => {
+    implementerCalls += 1;
+    if (implementerCalls === 1) await gate.promise; // A's first attempt stalls indefinitely
+    return correctImplementerResult(request);
+  };
+  const engine = new FixtureCodingEngine({ implementer: handler, reviewer: approvingReviewerHandler });
+  const scProvider = new FakeSourceControlProvider("github");
+  const { platformA, platformB, project } = await setupTwoWorkerPlatform("zombie-worker", engine, {
+    orchestratorConfig: { taskLeaseMs: 60, leaseHeartbeatIntervalMs: 100_000 }, // heartbeat effectively disabled — the DB-level generation fence must still catch it
+    sourceControlProvider: "github",
+    owner: "acme",
+    repo: "widgets",
+    additionalSourceControlProviders: [scProvider],
+  });
+  const task = makeTask(platformA, project);
+
+  const stuck = platformA.orchestrator.executeTask(task.id); // A claims (generation 1), stalls on the implementer gate
+  try {
+    for (let i = 0; i < 200 && implementerCalls === 0; i++) await new Promise((r) => setTimeout(r, 5));
+    assert.equal(implementerCalls, 1, "worker A must have genuinely started");
+
+    // A's 60ms lease is now long expired (no heartbeat will save it — it's set to fire in
+    // 100_000ms, i.e. effectively never during this test). B recovers and fully completes the task.
+    await new Promise((r) => setTimeout(r, 100));
+    assert.deepEqual(platformB.orchestrator.recoverOrphanedTasks(), [task.id]);
+    const resultB = await platformB.orchestrator.executeTask(task.id);
+    assert.equal(resultB.status, "REVIEW", "worker B must fully complete the task while A is still stalled");
+
+    const genAfterB = platformA.tasks.findById(task.id)!.lockGeneration;
+    assert.ok(genAfterB > 1, "B's takeover must have advanced the generation past A's");
+
+    // Now release A's stalled implementer call — every write it attempts from here on must be a
+    // no-op against the DB, since it's operating under a stale generation.
+    gate.release();
+    await stuck.catch(() => {});
+
+    const finalTask = platformA.tasks.findById(task.id)!;
+    assert.equal(finalTask.status, "REVIEW", "B's real, completed work must survive — A's belated resumption must not touch task status");
+    assert.equal(finalTask.lockGeneration, genAfterB, "A's belated resumption must not advance or otherwise touch the generation");
+    assert.ok(finalTask.taskRecord.pullRequest, "B's legitimately-opened PR reference must be present and untouched");
+
+    // No duplicate side effects: exactly one commit/push/PR, from B's real run — never a second one
+    // from A's belated (fenced-out) resumption.
+    assert.equal(scProvider.pullRequestsCreated, 1, "A's stale resumption must never open a second PR");
+    const events = platformA.taskEvents.listForTask(task.id).map((e) => e.type);
+    assert.equal(events.filter((t) => t === "COMMIT_CREATED").length, 1, "no duplicate commit from A");
+    assert.equal(events.filter((t) => t === "BRANCH_PUSHED").length, 1, "no duplicate push from A");
+    assert.equal(events.filter((t) => t === "PULL_REQUEST_CREATED").length, 1, "no duplicate PR from A");
+
+    // A's own (interrupted-then-abandoned) AgentRun must never have been mutated to "completed" by
+    // its belated resumption once it lost the lease.
+    const implementerRuns = platformA.agentRuns.listForTask(task.id).filter((r) => r.role === "implementer");
+    assert.ok(implementerRuns.some((r) => r.status === "completed"), "B's real completed run is present");
+    const staleRun = implementerRuns.find((r) => r.attemptNumber === 1);
+    assert.ok(staleRun, "A's own first-attempt AgentRun row must still exist");
+    assert.notEqual(staleRun!.status, "completed", "A's belated resumption must never be able to mark its own stale AgentRun completed");
+  } finally {
+    await abandon(stuck, gate.release);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 18. Workspace fencing
+// ---------------------------------------------------------------------------
+
+test("18. workspace fencing: two different generations cannot both claim the same workspace directory as active — a stale generation loses and must not reuse it", async () => {
+  const engine = new FixtureCodingEngine({ implementer: correctImplementerResult, reviewer: approvingReviewerHandler });
+  const { platformA, project } = await setupTwoWorkerPlatform("workspace-fencing", engine);
+  const task = makeTask(platformA, project);
+  const now = new Date().toISOString();
+
+  const workspace: import("../src/domain/types.js").Workspace = {
+    id: randomUUID(),
+    taskId: task.id,
+    provider: "local-git",
+    path: "/tmp/does-not-matter",
+    repoUrl: project.repoUrl,
+    branch: "task/abc",
+    baseCommit: "deadbeef",
+    status: "ready",
+    createdAt: now,
+    destroyedAt: null,
+  };
+  platformA.workspaces.insert(workspace);
+
+  // Generation 2 (a newer execution) claims the workspace first.
+  assert.equal(platformA.workspaces.claimForGeneration(workspace.id, 2), true, "a newer generation can claim an unclaimed (generation 0) workspace");
+
+  // Generation 1 (a stale, older execution — e.g. A resuming after B already took over) must lose.
+  assert.equal(platformA.workspaces.claimForGeneration(workspace.id, 1), false, "a stale (lower) generation must not be able to claim a workspace a newer generation already owns");
+
+  // The same generation calling again is also refused (strictly increasing only — not idempotent
+  // re-claim by design, since a real execution only calls this once per provisionWorkspace).
+  assert.equal(platformA.workspaces.claimForGeneration(workspace.id, 2), false, "claiming is strictly-increasing: the same generation cannot re-claim");
+
+  // A genuinely newer generation can still take over from generation 2.
+  assert.equal(platformA.workspaces.claimForGeneration(workspace.id, 5), true, "a strictly newer generation can still take over");
 });

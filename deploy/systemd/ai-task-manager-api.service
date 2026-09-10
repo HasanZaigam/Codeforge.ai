@@ -1,0 +1,59 @@
+# systemd unit for the API process — see docs/DEPLOYMENT.md "Production deployment".
+#
+# Install:
+#   sudo cp deploy/systemd/ai-task-manager-api.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now ai-task-manager-api
+#
+# This unit intentionally does NOT embed secrets. It reads them from
+# /etc/ai-task-manager/api.env — a root-owned, 0600 file that is never
+# checked into this repository. See docs/DEPLOYMENT.md "Secrets configuration"
+# for how that file is created and what it must contain.
+#
+# Adjust User/Group/WorkingDirectory/ExecStart paths to match your host's
+# actual deployment path — the values below assume the platform is checked
+# out and built at /opt/ai-task-manager, run as a dedicated unprivileged
+# "aitaskmanager" service account.
+
+[Unit]
+Description=AI Task Manager - API server
+Documentation=https://github.com/your-org/AI_Task_Manager/blob/main/docs/DEPLOYMENT.md
+# The API only needs the database file to exist on disk (created automatically
+# on first boot if missing) — it does not depend on the worker unit to start,
+# since TD-16 keeps the two fully independent processes.
+After=network.target
+
+[Service]
+Type=simple
+User=aitaskmanager
+Group=aitaskmanager
+WorkingDirectory=/opt/ai-task-manager
+EnvironmentFile=/etc/ai-task-manager/api.env
+# Compiled output only — no tsx/TypeScript toolchain needed at runtime.
+ExecStart=/usr/bin/node dist/src/api/server.js
+Restart=on-failure
+RestartSec=3
+
+# SIGTERM is what src/api/server.ts's own shutdown handler listens for
+# (graceful: stop accepting new connections, finish in-flight requests, close
+# the DB, exit 0 — bounded at 30s internally, see docs/DEPLOYMENT.md
+# "Graceful shutdown"). Give systemd a little more than that internal bound
+# before it escalates to SIGKILL, so the process's own bounded shutdown is
+# always what actually happens.
+TimeoutStopSec=35
+KillSignal=SIGTERM
+
+# --- Hardening (safe defaults for a Node service with no need for broader
+# host access; does not restrict anything the API process actually uses) ---
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+# The API process needs write access to the SQLite file/WAL sidecars and
+# nothing else on disk — ProtectSystem=strict makes everything else read-only
+# by default, so this is the one path carved back out. Match DB_PATH's parent
+# directory in api.env.
+ReadWritePaths=/opt/ai-task-manager/.data
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

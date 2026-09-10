@@ -38,7 +38,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     if (res.status === 401 && !path.startsWith("/auth/")) {
       emitUnauthenticated();
     }
-    throw new ApiError(res.status, body?.error.code ?? "UNKNOWN", body?.error.message ?? `Request failed (${res.status})`);
+    throw new ApiError(res.status, body?.error.code ?? "UNKNOWN", body?.error.message ?? `Request failed (${res.status})`, body?.error.details);
   }
 
   if (res.status === 204) return undefined as T;

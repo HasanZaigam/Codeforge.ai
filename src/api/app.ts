@@ -54,8 +54,8 @@ export function buildApp(platform: Platform): Express {
   });
 
   app.use(authRouter(services.auth));
-  app.use(requireAuth, projectsRouter(services, platform.taskEvents));
-  app.use(requireAuth, tasksRouter(services, platform.taskEvents));
+  app.use(requireAuth, projectsRouter(services, platform.taskEvents, platform.taskDependencies));
+  app.use(requireAuth, tasksRouter(services, platform.taskEvents, platform.taskDependencies));
   app.use(requireAuth, integrationsRouter(services));
 
   app.use((req, res) => {

@@ -8,6 +8,7 @@ import type { TaskEventType } from "../api/index.js";
  */
 export const EVENT_LABELS: Record<TaskEventType, string> = {
   TASK_CREATED: "Task created",
+  TASK_RELEASED: "Started — released for work",
   TASK_CLAIMED: "Picked up for work",
   TASK_STARTED: "Started working",
   WORKSPACE_CREATED: "Prepared a workspace",
@@ -38,9 +39,12 @@ export const EVENT_LABELS: Record<TaskEventType, string> = {
   BRANCH_PUSHED: "Pushed to GitHub",
   PULL_REQUEST_CREATED: "Opened a Pull Request",
   SOURCE_CONTROL_FAILED: "Source control operation failed",
+  NO_CHANGES_DETECTED: "No repository changes were needed — your decision is required",
   HUMAN_REVIEW_DETECTED: "New feedback found on the Pull Request",
   HUMAN_REVIEW_CHANGES_REQUESTED: "Changes requested on GitHub — AI developer is fixing them",
   HUMAN_REVIEW_APPROVED: "Approved on GitHub",
+  PULL_REQUEST_MERGED: "Pull Request merged on GitHub — task completed",
+  EXECUTION_LEASE_LOST: "Handed off to another worker process",
 };
 
 export function labelForEvent(type: TaskEventType): string {

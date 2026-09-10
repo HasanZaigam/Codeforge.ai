@@ -1,11 +1,11 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { OpenPullRequestRequest, SourceControlProvider } from "./source-control-provider.js";
-import type { GitCredential, HumanReviewFeedbackItem, Project, PullRequestRef } from "../domain/types.js";
+import type { BranchComparisonStatus, GitCredential, HumanReviewFeedbackItem, Project, PullRequestRef, PullRequestStatus } from "../domain/types.js";
 import { CancellationError } from "../domain/errors.js";
 import { commitAllLocal } from "./git-commit.js";
 import { gitCredentialEnv } from "./git-credential-env.js";
-import { GitHubClient } from "../integrations/github/github-client.js";
+import { GitHubClient, GitHubNotFoundError } from "../integrations/github/github-client.js";
 import { resolveGitHubToken } from "../integrations/github/credential-resolver.js";
 import type { GitHubCredentialRepository } from "../persistence/repositories/github-credential-repository.js";
 import { computeBackoffDelayMs, sleepUnlessAborted } from "../coding-engine/retry-backoff.js";
@@ -196,6 +196,67 @@ export class GitHubSourceControlProvider implements SourceControlProvider {
     }));
 
     return [...reviewItems, ...commentItems];
+  }
+
+  /**
+   * See SourceControlProvider.getPullRequestStatus's own doc comment. A
+   * single `getPullRequest` call — the same one `listPullRequestFeedback`
+   * already made internally, just with the `merged` field this method
+   * actually surfaces to the caller instead of discarding it.
+   */
+  async getPullRequestStatus(project: Project, pr: PullRequestRef, signal: AbortSignal): Promise<PullRequestStatus> {
+    if (signal.aborted) throw new CancellationError();
+    if (!project.owner || !project.repo || pr.number === null) return { state: "open", merged: false, mergeable: null };
+    const client = this.clientFactory(this.tokenFor(project));
+    const current = await withAbortAsCancellation(signal, () => client.getPullRequest(project.owner!, project.repo!, pr.number!, signal));
+    return {
+      state: current.state === "closed" ? "closed" : "open",
+      merged: current.merged === true,
+      mergeable: current.mergeable ?? null,
+    };
+  }
+
+  /** See SourceControlProvider.listBranches's own doc comment. */
+  async listBranches(project: Project, signal: AbortSignal): Promise<string[]> {
+    if (signal.aborted) throw new CancellationError();
+    if (!project.owner || !project.repo) {
+      throw new Error(`Project ${project.id} has sourceControlProvider="github" but no owner/repo configured`);
+    }
+    const client = this.clientFactory(this.tokenFor(project));
+    return withAbortAsCancellation(signal, () => client.listBranches(project.owner!, project.repo!, signal));
+  }
+
+  /** See SourceControlProvider.branchExists's own doc comment — a real, checkable GitHub API fact. */
+  async branchExists(project: Project, branch: string, signal: AbortSignal): Promise<boolean | null> {
+    if (signal.aborted) throw new CancellationError();
+    if (!project.owner || !project.repo) {
+      throw new Error(`Project ${project.id} has sourceControlProvider="github" but no owner/repo configured`);
+    }
+    const client = this.clientFactory(this.tokenFor(project));
+    const branchRef = await withAbortAsCancellation(signal, () => client.getBranch(project.owner!, project.repo!, branch, signal));
+    return branchRef !== null;
+  }
+
+  /**
+   * See SourceControlProvider.getBranchStatus's own doc comment — GitHub's real compare API.
+   * Advisory display data only (never a gate — see the interface's own doc comment), so a ref that
+   * no longer exists (branch deleted, base renamed) reports `comparable: false` rather than
+   * throwing; any other failure (auth, rate limit) is allowed to propagate — those are real,
+   * surfaceable problems, not "nothing to compare."
+   */
+  async getBranchStatus(project: Project, branch: string, baseBranch: string, signal: AbortSignal): Promise<BranchComparisonStatus> {
+    if (signal.aborted) throw new CancellationError();
+    if (!project.owner || !project.repo) {
+      throw new Error(`Project ${project.id} has sourceControlProvider="github" but no owner/repo configured`);
+    }
+    const client = this.clientFactory(this.tokenFor(project));
+    try {
+      const result = await withAbortAsCancellation(signal, () => client.compareCommits(project.owner!, project.repo!, baseBranch, branch, signal));
+      return { comparable: true, aheadBy: result.aheadBy, behindBy: result.behindBy };
+    } catch (err) {
+      if (err instanceof GitHubNotFoundError) return { comparable: false, aheadBy: null, behindBy: null };
+      throw err;
+    }
   }
 
   private tokenFor(project: Project): string {

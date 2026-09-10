@@ -1,0 +1,21 @@
+-- GitHub Review Polling Hardening (follow-up to Phase 2). Before this, every worker process's own
+-- Worker.tick() independently listed every REVIEW task and called Orchestrator.checkHumanReviewFeedback
+-- for it on EVERY poll cycle (default every 2s), each of which makes several real GitHub API calls
+-- (getPullRequestStatus + listPullRequestFeedback) with no cross-worker coordination and no
+-- review-specific cadence — N worker processes each polling every REVIEW task every 2s. See
+-- /docs/TASK_LIFECYCLE.md "REVIEW polling" and /docs/GITHUB_INTEGRATION.md.
+--
+-- `tasks.next_review_check_at` is a DB-backed "next GitHub refresh due" schedule, checked and
+-- atomically claimed by Worker.tick() (TaskRepository.claimReviewCheck) BEFORE it ever calls
+-- Orchestrator.checkHumanReviewFeedback — a worker that loses the claim skips calling
+-- checkHumanReviewFeedback (and therefore GitHub) entirely for that REVIEW task this cycle. This is
+-- deliberately orthogonal to `lock_generation` (Concurrency V1's execution-ownership fencing, see
+-- migrations/009_lock_generation.sql): this column governs "who gets to do this cycle's cheap
+-- read-only GitHub status check," never task execution ownership — checkHumanReviewFeedback's own
+-- existing claimReviewForHumanFeedback (REVIEW -> WORKING) is untouched and remains the sole guard
+-- around the actionable "changes requested" fix-cycle claim.
+--
+-- NULL (every existing row, and every task the moment it first reaches REVIEW) means "never checked
+-- yet, due immediately" — preserves the pre-existing behavior of checking a REVIEW task's PR status
+-- the very first time a worker sees it, rather than waiting a full interval after migration/creation.
+ALTER TABLE tasks ADD COLUMN next_review_check_at TEXT;

@@ -49,6 +49,41 @@ export function fromExhaustedSelfFix(failedChecks: CheckResult[], attempts: numb
 }
 
 /**
+ * Built when the implementer completes a passing implement-and-validate pass but produces
+ * literally zero repository changes (see git-commit.ts's `hasNoRepositoryChanges` and
+ * orchestrator.ts's use of it right before the first `prepareChanges()` call in
+ * `runWorkingEpisode`). This is a genuine, evidence-backed dead end for automation to stop and
+ * report — not a bug to route around: the implementer correctly declined to make an unsafe or
+ * unnecessary change, so there is nothing to commit, push, or open a Pull Request for, and only a
+ * human can decide how the task should proceed from here. Routed through the same NEEDS_INPUT
+ * mechanism as every other stuck point — never a bespoke status or error-reporting path. See
+ * /docs/TASK_LIFECYCLE.md "Zero-change detection".
+ */
+export function fromEmptyDiff(implementerSummary: string): NeedsInputRecordInput {
+  const summary = implementerSummary.trim();
+  return {
+    discovered:
+      "The AI developer completed an implementation pass and validation passed, but the workspace ended up " +
+      `identical to its starting point — no files were changed.${summary ? ` Its own summary: "${summary}"` : ""}`,
+    attempted: [
+      "Ran a full implement-and-validate pass on this task; validation succeeded, but the working tree and " +
+        "commit history came out unchanged from the branch's starting point.",
+    ],
+    blocker:
+      "The AI developer could not find any change it judged safe and necessary to make for this task, so there " +
+      "is nothing to commit, push, or open a Pull Request for.",
+    question:
+      "How should this task proceed — confirm no change was actually needed, clarify/narrow the task, or " +
+      "explicitly allow the AI to modify files it currently treats as off-limits?",
+    options: [
+      { label: "No change was needed", description: "Confirm the task is effectively already satisfied — close it out without a code change." },
+      { label: "Clarify the task", description: "Give the specific file(s) or behavior that should have changed." },
+      { label: "Allow modifying existing files", description: "Explicitly permit editing files the AI currently treats as off-limits." },
+    ],
+  };
+}
+
+/**
  * Built when the review/fix cycle exhausts its configured budget (see
  * `OrchestratorConfig.maxReviewerRejections`) without the Reviewer ever
  * approving. Unlike an exhausted self-fix loop or an Implementer-signaled

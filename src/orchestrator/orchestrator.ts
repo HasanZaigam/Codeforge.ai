@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
-import type { AgentRole, ContextBundle, HumanAnswer, HumanReviewFeedback, Project, ReviewResult, StepResult, Task, ValidationResult, Workspace } from "../domain/types.js";
+import type { AgentRole, ContextBundle, HumanAnswer, HumanReviewFeedback, Project, PullRequestRef, ReviewResult, StepResult, Task, ValidationResult, Workspace } from "../domain/types.js";
 import { transition, canTransition, InvalidTransitionError } from "../domain/task-state-machine.js";
-import { CancellationError, LeaseLostError } from "../domain/errors.js";
+import { BranchNotFoundAtExecutionError, CancellationError, IncompleteDependenciesError, LeaseLostError } from "../domain/errors.js";
 import type { TaskRepository } from "../persistence/repositories/task-repository.js";
+import type { TaskDependencyRepository } from "../persistence/repositories/task-dependency-repository.js";
 import type { TaskEventRepository } from "../persistence/repositories/task-event-repository.js";
 import type { ProjectRepository } from "../persistence/repositories/project-repository.js";
 import type { AgentRunRepository } from "../persistence/repositories/agent-run-repository.js";
@@ -16,7 +17,16 @@ import { buildImplementerContext, buildReviewerContext } from "./context-builder
 import { deriveReviewResult } from "../review/reviewer.js";
 import { buildHumanReviewFeedback, deriveHumanReviewOutcome } from "../review/human-review-feedback.js";
 import { buildPullRequestDescription, buildPullRequestTitle } from "./pull-request-content.js";
-import { assertNonTrivial, describeReviewCycleExhaustion, fromExhaustedSelfFix, fromImplementerDraft, toHumanInputRequest, type NeedsInputRecordInput } from "./needs-input.js";
+import {
+  assertNonTrivial,
+  describeReviewCycleExhaustion,
+  fromEmptyDiff,
+  fromExhaustedSelfFix,
+  fromImplementerDraft,
+  toHumanInputRequest,
+  type NeedsInputRecordInput,
+} from "./needs-input.js";
+import { hasNoRepositoryChanges } from "../source-control/git-commit.js";
 import { DEFAULT_ORCHESTRATOR_CONFIG, type OrchestratorConfig } from "./config.js";
 // The Orchestrator is otherwise provider-agnostic (see SourceControlProvider), but distinguishing
 // "surface this clearly" (auth/permission) from "quietly retry next poll" (transient/rate-limited)
@@ -52,6 +62,7 @@ export class Orchestrator {
     private readonly engines: CodingEngineRegistry,
     private readonly workspaceProvider: WorkspaceProvider,
     private readonly sourceControlProviders: SourceControlProviderRegistry,
+    private readonly dependencyRepo: TaskDependencyRepository,
     private readonly ownerId: string,
     private readonly config: OrchestratorConfig = DEFAULT_ORCHESTRATOR_CONFIG,
   ) {}
@@ -67,16 +78,31 @@ export class Orchestrator {
     let task = this.requireTask(taskId);
     const now = () => new Date().toISOString();
 
+    let generation: number;
     if (task.status === "TODO") {
-      if (!this.taskRepo.claimTodo(taskId, this.ownerId, this.config.taskLeaseMs, now())) {
+      const claimed = this.taskRepo.claimTodo(taskId, this.ownerId, this.config.taskLeaseMs, now());
+      if (claimed === null) {
         return this.requireTask(taskId);
       }
-      this.eventRepo.append(taskId, "TASK_CLAIMED", { owner: this.ownerId }, now());
+      generation = claimed;
+      this.eventRepo.append(taskId, "TASK_CLAIMED", { owner: this.ownerId, generation }, now());
       this.eventRepo.append(taskId, "TASK_STARTED", {}, now());
       task = this.requireTask(taskId);
     } else if (task.status === "WORKING") {
-      if (!this.taskRepo.claimWorking(taskId, this.ownerId, this.config.taskLeaseMs, now())) {
+      // Captured BEFORE the claim purely for observability below (item 9: distinguish a genuine
+      // takeover-from-another-owner from this process simply resuming its own task) — never used
+      // for any decision; the claim's own atomic WHERE clause is what actually decides ownership.
+      const previousOwner = task.lockOwner;
+      const claimed = this.taskRepo.claimWorking(taskId, this.ownerId, this.config.taskLeaseMs, now());
+      if (claimed === null) {
         return task;
+      }
+      generation = claimed;
+      if (previousOwner && previousOwner !== this.ownerId) {
+        // Distinct from EXECUTION_LEASE_LOST (the LOSING process's signal) — this is the WINNING
+        // process's signal, so a reader of the event log can see both halves of a takeover.
+        console.log(`[orchestrator] task ${taskId} — recovered from ${previousOwner} (generation ${generation}).`);
+        this.eventRepo.append(taskId, "TASK_CLAIMED", { owner: this.ownerId, generation, recoveredFrom: previousOwner }, now());
       }
     } else {
       return task; // REVIEW / NEEDS_INPUT / DONE / FAILED / CANCELLED: nothing for the orchestrator to drive
@@ -95,9 +121,9 @@ export class Orchestrator {
         // executeTask() call (this one, possibly in a different process) must resume that exact
         // cycle, never the original implement/validate/review pipeline. See
         // /docs/TASK_LIFECYCLE.md "Crash recovery".
-        task = await this.withCancellation(taskId, (signal) => this.runHumanFeedbackFixCycle(taskId, signal));
+        task = await this.withCancellation(taskId, (signal) => this.runHumanFeedbackFixCycle(taskId, signal, generation));
       } else {
-        task = await this.withCancellation(taskId, (signal) => this.runWorkingEpisode(task, signal));
+        task = await this.withCancellation(taskId, (signal) => this.runWorkingEpisode(task, signal, generation));
       }
     } catch (err) {
       if (err instanceof CancellationError) {
@@ -106,16 +132,26 @@ export class Orchestrator {
         // Another process's claim won — see withCancellation's heartbeat and LeaseLostError's own
         // doc comment for why this must NOT touch task status or the workspace: whoever now holds
         // the lease may be actively, legitimately using both. Just stop and observe current state.
-        console.error(`[orchestrator] task ${taskId} — lost the execution lease to another process mid-run; stopping without touching task state.`);
+        // Distinct from TASK_FAILED/TASK_CANCELLED (see EXECUTION_LEASE_LOST's own doc comment) so
+        // this is unambiguously visible as "fenced out," not a real failure or a human's cancel.
+        console.error(`[orchestrator] task ${taskId} — lost the execution lease (generation ${generation}) to another process mid-run; stopping without touching task state.`);
+        this.eventRepo.append(taskId, "EXECUTION_LEASE_LOST", { owner: this.ownerId, generation }, now());
         task = this.requireTask(taskId);
       } else {
         // Only genuine platform/infra failures land here — model judgment calls are always
-        // routed to NEEDS_INPUT via raiseNeedsInput(), never thrown.
+        // routed to NEEDS_INPUT via raiseNeedsInput(), never thrown. This write is itself
+        // generation-fenced: a genuine error racing an undetected lease loss must not overwrite
+        // whatever the new owner is doing either.
+        const fresh = this.requireTask(taskId);
+        fresh.status = transition(fresh.status, "infra_failure");
+        fresh.completedAt = now();
+        if (this.taskRepo.saveOwned(fresh, generation, now())) {
+          this.eventRepo.append(taskId, "TASK_FAILED", { error: String(err) }, now());
+        } else {
+          console.error(`[orchestrator] task ${taskId} — infra failure occurred but the execution lease (generation ${generation}) was already lost; not marking FAILED.`);
+          this.eventRepo.append(taskId, "EXECUTION_LEASE_LOST", { owner: this.ownerId, generation }, now());
+        }
         task = this.requireTask(taskId);
-        task.status = transition(task.status, "infra_failure");
-        task.completedAt = now();
-        this.taskRepo.save(task, now());
-        this.eventRepo.append(taskId, "TASK_FAILED", { error: String(err) }, now());
       }
     } finally {
       this.taskRepo.releaseLock(taskId, this.ownerId, now());
@@ -168,6 +204,57 @@ export class Orchestrator {
   }
 
   /**
+   * Releases a BACKLOG task into TODO — the explicit human gate this
+   * milestone introduces (see /docs/TASK_LIFECYCLE.md "Task lifecycle").
+   * Like requestCancellation, this is a domain command: the caller never
+   * writes `status` directly, and the atomic UPDATE...WHERE guard in
+   * TaskRepository.releaseFromBacklog (mirroring claimTodo's own pattern)
+   * is what actually decides who wins a race between two concurrent
+   * "Start Task" requests — only one call's WHERE clause matches, so the
+   * loser here throws InvalidTransitionError rather than silently
+   * double-processing. A task not currently in BACKLOG (already released,
+   * or never existed there) also throws InvalidTransitionError, via the
+   * same `canTransition` check every other transition in this file uses,
+   * so an invalid attempt never has a different failure shape than any
+   * other illegal transition.
+   *
+   * Also enforces explicit task dependencies (see /docs/TASK_LIFECYCLE.md "Task dependencies"): a
+   * task with any dependency not yet DONE may not be released. The actual gate is the `NOT EXISTS`
+   * clause built into `TaskRepository.releaseFromBacklog`'s own UPDATE — it re-evaluates every
+   * dependency in the SAME atomic statement that flips status, so there is no TOCTOU gap between
+   * "checked dependencies" and "released," even under a concurrent dependency edit or a dependency
+   * completing mid-request. The `listIncompleteDependencies` call below is only a fast, friendly
+   * pre-check for the common (non-racing) case — exactly the same "pre-check + DB-authoritative
+   * closure" shape `TaskService.create`'s branch-collision handling already uses — so the error
+   * names the incomplete dependencies instead of a bare 409. If the release UPDATE itself still
+   * fails after the pre-check passed (a genuine race), the dependencies are re-read once more to
+   * report what's actually true now, never a stale message.
+   */
+  startTask(taskId: string): Task {
+    const task = this.requireTask(taskId);
+    if (!canTransition(task.status, "released")) {
+      throw new InvalidTransitionError(task.status, "released");
+    }
+    const incomplete = this.dependencyRepo.listDependencies(taskId).filter((d) => d.status !== "DONE");
+    if (incomplete.length > 0) {
+      throw new IncompleteDependenciesError(incomplete);
+    }
+    const now = new Date().toISOString();
+    if (!this.taskRepo.releaseFromBacklog(taskId, now)) {
+      // Raced with something else between the checks above and this UPDATE — re-read current
+      // state to report what's actually true now, rather than a stale/misleading error.
+      const fresh = this.requireTask(taskId);
+      if (fresh.status !== "BACKLOG") {
+        throw new InvalidTransitionError(fresh.status, "released");
+      }
+      const stillIncomplete = this.dependencyRepo.listDependencies(taskId).filter((d) => d.status !== "DONE");
+      throw new IncompleteDependenciesError(stillIncomplete);
+    }
+    this.eventRepo.append(taskId, "TASK_RELEASED", {}, now);
+    return this.requireTask(taskId);
+  }
+
+  /**
    * Requests cancellation of a task. This is a domain command, not a status
    * write — the caller (API/application layer) never sets `status`
    * directly, and this method itself never kills a process: it only
@@ -200,11 +287,13 @@ export class Orchestrator {
         return this.requireTask(taskId); // still WORKING — the in-flight execution finalizes it
       }
 
-      // TODO or NEEDS_INPUT: nothing is currently executing anywhere — finalize immediately.
+      // BACKLOG, TODO, or NEEDS_INPUT: nothing is currently executing anywhere — finalize immediately.
       const won =
-        task.status === "TODO"
-          ? this.taskRepo.finalizeCancellationOnTodo(taskId, requestedBy, now)
-          : this.taskRepo.finalizeCancellationOnNeedsInput(taskId, requestedBy, now);
+        task.status === "BACKLOG"
+          ? this.taskRepo.finalizeCancellationOnBacklog(taskId, requestedBy, now)
+          : task.status === "TODO"
+            ? this.taskRepo.finalizeCancellationOnTodo(taskId, requestedBy, now)
+            : this.taskRepo.finalizeCancellationOnNeedsInput(taskId, requestedBy, now);
 
       if (!won) continue; // raced with a claim/answer — retry against fresh state
 
@@ -239,17 +328,29 @@ export class Orchestrator {
   }
 
   /**
-   * Polls a REVIEW task's PR for new human feedback (see
-   * SourceControlProvider.listPullRequestFeedback) and, if a "changes
-   * requested" review is found, runs a bounded fix cycle in the SAME
-   * workspace/branch before returning the task to REVIEW — see
-   * /docs/TASK_LIFECYCLE.md "Human review feedback loop". A no-op for any
-   * task that isn't REVIEW with a PR already opened. Safe to call
-   * repeatedly/concurrently for the same taskId: at most one call wins the
-   * REVIEW->WORKING claim (claimReviewForHumanFeedback), and every feedback
-   * item is recorded in `processedHumanFeedbackIds` before it can trigger a
-   * second fix cycle — see requirement "duplicate GitHub feedback is
-   * ignored".
+   * Polls a REVIEW task's PR for (1) a merge/close on GitHub — see "PR merge
+   * sync" below — and, only if still open, (2) new human feedback (see
+   * SourceControlProvider.listPullRequestFeedback), running a bounded fix
+   * cycle in the SAME workspace/branch before returning the task to REVIEW
+   * if a "changes requested" review is found — see /docs/TASK_LIFECYCLE.md
+   * "Human review feedback loop". A no-op for any task that isn't REVIEW
+   * with a PR already opened. Safe to call repeatedly/concurrently for the
+   * same taskId: at most one call wins the REVIEW->WORKING claim
+   * (claimReviewForHumanFeedback), and every feedback item is recorded in
+   * `processedHumanFeedbackIds` before it can trigger a second fix cycle —
+   * see requirement "duplicate GitHub feedback is ignored".
+   *
+   * PR merge sync (see /docs/TASK_LIFECYCLE.md "PR merge sync" and
+   * /docs/GITHUB_INTEGRATION.md "PR state handling"): this platform never
+   * auto-merges a PR, but a human merging it directly on GitHub is a real,
+   * final acceptance signal — this closes the gap where a task would
+   * otherwise sit in REVIEW forever after that happens. Deliberately reuses
+   * this exact poll (same cadence, same REVIEW-task loop the worker already
+   * runs every tick) rather than adding a second poller — see
+   * /docs/TECHNICAL_DECISIONS.md for why. A merged PR completes the task
+   * (REVIEW -> DONE, idempotent and race-safe — see
+   * TaskRepository.finalizeReviewAsDoneOnMerge); a PR closed WITHOUT being
+   * merged never completes the task — it just stays REVIEW, same as today.
    */
   async checkHumanReviewFeedback(taskId: string): Promise<Task> {
     const now = () => new Date().toISOString();
@@ -258,10 +359,40 @@ export class Orchestrator {
 
     const project = this.requireProject(task.projectId);
     const scProvider = this.sourceControlProviders.resolve(project.sourceControlProvider);
+    const pr = task.taskRecord.pullRequest;
+
+    let prStatus;
+    try {
+      prStatus = await scProvider.getPullRequestStatus(project, pr, new AbortController().signal);
+    } catch (err) {
+      // Same visibility policy as the feedback-fetch failure handling below (see its own comment):
+      // a transient/rate-limited read failure just retries next poll; anything else (e.g. a revoked
+      // token) is surfaced via the existing SOURCE_CONTROL_FAILED event, but never fails the task —
+      // and, critically, never risks a false DONE off a failed/uncertain status read.
+      const reason = err instanceof Error ? err.message : String(err);
+      const classification = classifyGitHubError(err);
+      console.error(`[orchestrator] task ${taskId} — failed to fetch pull request status (${classification.category}): ${reason}`);
+      if (classification.category !== "retryable_transient" && classification.category !== "rate_limited") {
+        this.eventRepo.append(task.id, "SOURCE_CONTROL_FAILED", { step: "check_pull_request_status", error: reason }, now());
+      }
+      this.maybeExtendReviewBackoff(taskId, classification);
+      return task;
+    }
+
+    if (prStatus.merged) {
+      return this.finalizeMergedPullRequest(taskId, pr, now);
+    }
+    if (prStatus.state === "closed") {
+      // Closed WITHOUT being merged: per the product principle, this must never become DONE — it
+      // simply stays REVIEW (there is nothing further to do; a human closed it, they can reopen it
+      // or start a new task). No event: nothing changed from the task's perspective, and this would
+      // otherwise fire on every single poll for as long as the PR stays closed.
+      return task;
+    }
 
     let items;
     try {
-      items = await scProvider.listPullRequestFeedback(project, task.taskRecord.pullRequest, new AbortController().signal);
+      items = await scProvider.listPullRequestFeedback(project, pr, new AbortController().signal);
     } catch (err) {
       // A transient/rate-limited read failure must never fail the task itself — the next poll
       // retries, and a server log line is enough (no permanent audit-trail entry for something
@@ -276,6 +407,7 @@ export class Orchestrator {
       if (classification.category !== "retryable_transient" && classification.category !== "rate_limited") {
         this.eventRepo.append(task.id, "SOURCE_CONTROL_FAILED", { step: "check_review_feedback", error: reason }, now());
       }
+      this.maybeExtendReviewBackoff(taskId, classification);
       return task;
     }
 
@@ -292,15 +424,30 @@ export class Orchestrator {
         this.eventRepo.append(taskId, "HUMAN_REVIEW_APPROVED", { reviewer: outcome.approvals.at(-1)!.authorLogin }, now());
       }
       task.taskRecord.processedHumanFeedbackIds = [...alreadyProcessed, ...outcome.newItems.map((i) => i.id)];
+      // Deliberately `save()`, not `saveOwned()`: this branch never calls
+      // `claimReviewForHumanFeedback` (that claim only happens further down, in the actionable
+      // "changes requested" branch below) — the task is still REVIEW here, not claimed into WORKING,
+      // and this process holds no execution lease/generation at this point to fence against. There is
+      // nothing to pass `saveOwned` as a generation, and fabricating one (e.g. reusing a stale
+      // `task.lockGeneration` read before this write) would not express real ownership — it would
+      // just silently succeed or fail based on a value that was never actually claimed here, which is
+      // worse than `save()`'s honest "unconditional write" semantics. This matches `save()`'s own doc
+      // comment: reserved for call sites that legitimately don't hold an execution lease. (A separate,
+      // pre-existing, out-of-scope race exists here too: two concurrent pollers could both reach this
+      // branch and each unconditionally overwrite `processedHumanFeedbackIds` with their own read of
+      // `alreadyProcessed` — worst case is a duplicate-processed id being briefly "forgotten" and
+      // re-detected on the next poll, not a lost or corrupted task state; not addressed by this pass.)
       this.taskRepo.save(task, now());
       return this.requireTask(taskId);
     }
 
     // Actionable: claim the task (REVIEW -> WORKING) before doing anything else — this is the
     // single atomic guard against two concurrent pollers both starting a fix cycle.
-    if (!this.taskRepo.claimReviewForHumanFeedback(taskId, this.ownerId, this.config.taskLeaseMs, now())) {
+    const claimed = this.taskRepo.claimReviewForHumanFeedback(taskId, this.ownerId, this.config.taskLeaseMs, now());
+    if (claimed === null) {
       return this.requireTask(taskId); // lost the race — another process is already handling this
     }
+    const generation = claimed;
 
     task = this.requireTask(taskId);
     const feedback = buildHumanReviewFeedback(outcome.changesRequested, outcome.newItems);
@@ -321,7 +468,7 @@ export class Orchestrator {
       if (this.taskRepo.isCancelRequested(taskId)) {
         task = await this.finalizeCancellation(this.requireTask(taskId), this.workspaceRepo.findByTaskId(taskId));
       } else {
-        task = await this.withCancellation(taskId, (signal) => this.runHumanFeedbackFixCycle(taskId, signal));
+        task = await this.withCancellation(taskId, (signal) => this.runHumanFeedbackFixCycle(taskId, signal, generation));
       }
     } catch (err) {
       if (err instanceof CancellationError) {
@@ -329,19 +476,76 @@ export class Orchestrator {
       } else if (err instanceof LeaseLostError) {
         // See executeTask's identical branch and LeaseLostError's own doc comment — never touch
         // task status or the workspace here; another process now legitimately owns both.
-        console.error(`[orchestrator] task ${taskId} — lost the execution lease to another process mid-run; stopping without touching task state.`);
+        console.error(`[orchestrator] task ${taskId} — lost the execution lease (generation ${generation}) to another process mid-run; stopping without touching task state.`);
+        this.eventRepo.append(taskId, "EXECUTION_LEASE_LOST", { owner: this.ownerId, generation }, now());
         task = this.requireTask(taskId);
       } else {
+        const fresh = this.requireTask(taskId);
+        fresh.status = transition(fresh.status, "infra_failure");
+        fresh.completedAt = now();
+        if (this.taskRepo.saveOwned(fresh, generation, now())) {
+          this.eventRepo.append(taskId, "TASK_FAILED", { error: String(err) }, now());
+        } else {
+          console.error(`[orchestrator] task ${taskId} — infra failure occurred but the execution lease (generation ${generation}) was already lost; not marking FAILED.`);
+          this.eventRepo.append(taskId, "EXECUTION_LEASE_LOST", { owner: this.ownerId, generation }, now());
+        }
         task = this.requireTask(taskId);
-        task.status = transition(task.status, "infra_failure");
-        task.completedAt = now();
-        this.taskRepo.save(task, now());
-        this.eventRepo.append(taskId, "TASK_FAILED", { error: String(err) }, now());
       }
     } finally {
       this.taskRepo.releaseLock(taskId, this.ownerId, now());
     }
     return this.requireTask(taskId);
+  }
+
+  /**
+   * Completes a REVIEW task whose PR was found merged on GitHub — see
+   * checkHumanReviewFeedback's "PR merge sync" doc comment and
+   * /docs/TASK_LIFECYCLE.md "PR merge sync". Never touches the workspace,
+   * never re-runs the Implementer/Reviewer, never opens/modifies a PR — the
+   * PR is already merged; this only records that fact against the task.
+   * Race-safe and idempotent by construction: `finalizeReviewAsDoneOnMerge`
+   * is a single atomic UPDATE guarded on `status = 'REVIEW'`, so if another
+   * process already finalized this task (or claimed it into WORKING for a
+   * human-feedback fix cycle in the same instant), this call is a silent
+   * no-op — the event below is only appended when THIS call actually won.
+   *
+   * Deliberately appends only `PULL_REQUEST_MERGED`, not the generic
+   * `TASK_COMPLETED` acceptReview() also appends — `PULL_REQUEST_MERGED` is
+   * itself an unambiguous, final completion signal, and staying the single
+   * most-recent event is what lets the API layer (see toTaskDTO's
+   * `deriveCurrentActivity`) render the specific "Completed — PR #N merged"
+   * activity text instead of the generic "Done" a manual Accept produces.
+   */
+  private finalizeMergedPullRequest(taskId: string, pr: PullRequestRef, now: () => string): Task {
+    const wonHere = this.taskRepo.finalizeReviewAsDoneOnMerge(taskId, now());
+    if (wonHere) {
+      this.eventRepo.append(taskId, "PULL_REQUEST_MERGED", { provider: pr.provider, number: pr.number, url: pr.url }, now());
+    }
+    return this.requireTask(taskId);
+  }
+
+  /**
+   * Pushes a REVIEW task's `next_review_check_at` further out than the optimistic schedule
+   * Worker.tick's own `claimReviewCheck` already set (now + `reviewPollIntervalMs`) — called only
+   * from checkHumanReviewFeedback's two read-failure catch blocks above. A plain
+   * `retryable_transient`/`auth`/other failure needs no extra handling here: the claim already
+   * deferred the next attempt by a full `reviewPollIntervalMs`, which is exactly the "don't hammer
+   * every tick" behavior this milestone requires (see /docs/TASK_LIFECYCLE.md "REVIEW polling") —
+   * including for `auth`, whose own persistent-failure visibility (SOURCE_CONTROL_FAILED) is
+   * unaffected by this method and handled entirely by the caller. Only `rate_limited` carries a
+   * concrete external signal (GitHub's own `Retry-After`/rate-limit-reset) that can legitimately be
+   * LONGER than the normal cadence — when it is, this extends the schedule to match it instead of
+   * silently retrying sooner than GitHub itself says is safe. Never called for a task this process
+   * didn't just win the claim for, so there is no ownership race to guard against the way
+   * `claimReviewCheck`'s own WHERE clause must (see TaskRepository.rescheduleReviewCheck's own doc
+   * comment).
+   */
+  private maybeExtendReviewBackoff(taskId: string, classification: ReturnType<typeof classifyGitHubError>): void {
+    if (classification.category !== "rate_limited" || classification.suggestedDelayMs === null) return;
+    if (classification.suggestedDelayMs <= this.config.reviewPollIntervalMs) return;
+    const nextCheckAt = new Date(Date.now() + classification.suggestedDelayMs).toISOString();
+    this.taskRepo.rescheduleReviewCheck(taskId, nextCheckAt);
+    console.error(`[orchestrator] task ${taskId} — rate limited; deferring next REVIEW check to ${nextCheckAt} (suggested ${classification.suggestedDelayMs}ms)`);
   }
 
   // -------------------------------------------------------------------------
@@ -382,7 +586,10 @@ export class Orchestrator {
     // dangerous to whichever process now legitimately owns the lease.
     const heartbeat = setInterval(() => {
       if (controller.signal.aborted) return;
-      const renewed = this.taskRepo.claimWorking(taskId, this.ownerId, this.config.taskLeaseMs, new Date().toISOString());
+      // renewWorkingLease, not claimWorking: this must succeed ONLY for the current owner and must
+      // NEVER advance lock_generation — a heartbeat is this same execution proving it's still
+      // alive, not a new ownership event. See TaskRepository.renewWorkingLease's own doc comment.
+      const renewed = this.taskRepo.renewWorkingLease(taskId, this.ownerId, this.config.taskLeaseMs, new Date().toISOString());
       if (!renewed) {
         leaseLost = true;
         controller.abort();
@@ -454,22 +661,81 @@ export class Orchestrator {
   }
 
   // -------------------------------------------------------------------------
+  // Lease-generation fencing (see /docs/TASK_LIFECYCLE.md "Worker concurrency and lease loss")
+  // -------------------------------------------------------------------------
+
+  /**
+   * The ONLY way a live execution (runWorkingEpisode / runHumanFeedbackFixCycle / runAgent and
+   * everything they call) may persist a Task write. Wraps TaskRepository.saveOwned and turns a
+   * failed (generation-mismatched) write into a LeaseLostError, so every call site downstream gets
+   * uniform, correct handling via the existing executeTask/checkHumanReviewFeedback catch blocks —
+   * callers never need to check a boolean themselves.
+   */
+  private saveOwned(task: Task, generation: number, now: string): void {
+    if (!this.taskRepo.saveOwned(task, generation, now)) {
+      throw new LeaseLostError();
+    }
+  }
+
+  /**
+   * Authoritative, DB-backed ownership check performed immediately before each high-consequence
+   * side effect this milestone calls out explicitly (validation commands, git commit, git push, PR
+   * creation/update — see runValidationStep/prepareChanges/ensurePullRequest below): re-reads the
+   * task's CURRENT lock_generation and compares it against the generation this execution was
+   * granted at claim time. A single in-memory `leaseLost` flag (set only by withCancellation's own
+   * heartbeat, on its own polling cadence) is not good enough on its own to gate an external
+   * git/GitHub call — this makes the DB itself the source of truth at the exact moment before the
+   * call, narrowing (not eliminating — see the module-level caveat below) the window.
+   *
+   * IMPORTANT, and impossible to fully close with this architecture: this check and the external
+   * call it guards are still two separate operations, not one atomic transaction. A takeover that
+   * lands in the instant between this check returning and the external call actually starting is a
+   * real, unavoidable residual race — see docs/TASK_LIFECYCLE.md "Worker concurrency and lease
+   * loss" and this task's own "Remaining limitations." What this DOES fully close is the much
+   * larger, easily-hit window of "an execution that lost its lease minutes ago, and hasn't reached
+   * a heartbeat tick yet, being allowed to commit/push/open a PR at all."
+   */
+  private assertStillOwned(taskId: string, generation: number): void {
+    const current = this.taskRepo.findById(taskId);
+    if (!current || current.lockGeneration !== generation) {
+      throw new LeaseLostError();
+    }
+  }
+
+  // -------------------------------------------------------------------------
   // Internal execution
   // -------------------------------------------------------------------------
 
-  private async runWorkingEpisode(task: Task, signal: AbortSignal): Promise<Task> {
+  private async runWorkingEpisode(task: Task, signal: AbortSignal, generation: number): Promise<Task> {
     const now = () => new Date().toISOString();
     const project = this.requireProject(task.projectId);
     const engine = this.engines.resolve(project.codingEngine);
     const scProvider = this.sourceControlProviders.resolve(project.sourceControlProvider);
 
-    const branchName = task.taskRecord.branchName ?? `task/${task.id.slice(0, 8)}`;
-    task.taskRecord.branchName = branchName;
-    this.taskRepo.save(task, now());
+    // Branch modes (see /docs/TASK_LIFECYCLE.md "Branch modes" and domain/types.ts BranchMode):
+    // "existing" checks out task.workingBranch directly and never creates a branch — the clone's
+    // own "base" IS the target branch. "new" (default, and the only behavior that existed before
+    // branch modes did) creates an isolated branch — task.workingBranch is an optional custom name
+    // (falling back to taskRecord.branchName, then the historical auto-derived name), and the base
+    // to branch off of is task.baseBranch if the user overrode it, else the project's default.
+    const branchMode = task.branchMode ?? "new";
+    const branchName =
+      branchMode === "existing"
+        ? task.workingBranch! // required + validated at task-creation time — see TaskService.create
+        : (task.taskRecord.branchName ?? task.workingBranch ?? `task/${task.id.slice(0, 8)}`);
+    const cloneBaseBranch = branchMode === "existing" ? branchName : (task.baseBranch ?? project.defaultBranch);
+    // The PR's own base (merge target) is always the actual branch this task's changes should land
+    // on: for "new" mode that's whatever base it was branched from (which may not be the project's
+    // default branch, if the user overrode it); for "existing" mode there is no separate "base to
+    // branch from" concept, so it's always the project's default branch.
+    const pullRequestBaseBranch = branchMode === "existing" ? project.defaultBranch : cloneBaseBranch;
 
-    const workspace = await this.provisionWorkspace(task, project, scProvider, branchName, signal);
+    task.taskRecord.branchName = branchName;
+    this.saveOwned(task, generation, now());
+
+    const workspace = await this.provisionWorkspace(task, project, scProvider, branchName, cloneBaseBranch, branchMode, signal, generation);
     task.workspaceId = workspace.id;
-    this.taskRepo.save(task, now());
+    this.saveOwned(task, generation, now());
 
     let lastValidation: ValidationResult | null = null;
     let lastImplementerResult: StepResult | null = null;
@@ -479,28 +745,43 @@ export class Orchestrator {
       this.throwIfCancelled(signal);
       const attemptNumber = this.nextAttemptNumber(task.id, "implementer");
       const context = buildImplementerContext(task, project, workspace.path, lastValidation);
-      const step = await this.runAgent(task, project, engine, "implementer", context, attemptNumber, signal);
+      const step = await this.runAgent(task, project, engine, "implementer", context, attemptNumber, signal, generation);
 
       if (step.status === "needs_input" && step.needsInput) {
-        return this.raiseNeedsInput(task, fromImplementerDraft(step.needsInput));
+        return this.raiseNeedsInput(task, fromImplementerDraft(step.needsInput), generation);
       }
 
       lastImplementerResult = step;
-      lastValidation = await this.runValidationStep(task, workspace.path, project.commands, signal);
+      lastValidation = await this.runValidationStep(task, workspace.path, project.commands, signal, generation);
 
       if (lastValidation.status === "passed") break;
 
       task.taskRecord.selfFixAttempts = attemptNumber;
-      this.taskRepo.save(task, now());
+      this.saveOwned(task, generation, now());
 
       if (attemptNumber >= this.config.maxSelfFixAttempts) {
-        return this.raiseNeedsInput(task, fromExhaustedSelfFix(lastValidation.checks, attemptNumber));
+        return this.raiseNeedsInput(task, fromExhaustedSelfFix(lastValidation.checks, attemptNumber), generation);
       }
       this.eventRepo.append(task.id, "RETRY_STARTED", { nextAttempt: attemptNumber + 1 }, now());
     }
 
     this.throwIfCancelled(signal);
-    await this.prepareChanges(task, project, scProvider, workspace.path, workspace.branch, signal);
+
+    // Zero-change detection (see /docs/TASK_LIFECYCLE.md "Zero-change detection"): the implementer
+    // may correctly decide, after real investigation, that no file should be changed at all (e.g.
+    // the target already exists and the task forbids modifying existing files). Detecting that
+    // BEFORE ever calling commitAll/push/openPullRequest avoids pushing a no-op branch and hitting
+    // GitHub's PR-creation 422 ("No commits between base and head") — this is never reachable once
+    // a PR already exists for this task, since that only happens after a real, non-empty commit
+    // was pushed on a prior pass. `workspace.baseCommit` can in principle be null for a
+    // WorkspaceProvider that doesn't record one — fail open (proceed to commit/push as before)
+    // rather than block a task this check can't actually evaluate.
+    if (workspace.baseCommit && (await hasNoRepositoryChanges(workspace.path, workspace.baseCommit, signal))) {
+      this.eventRepo.append(task.id, "NO_CHANGES_DETECTED", { branch: workspace.branch }, now());
+      return this.raiseNeedsInput(task, fromEmptyDiff(lastImplementerResult?.summary ?? ""), generation);
+    }
+
+    await this.prepareChanges(task, project, scProvider, workspace.path, workspace.branch, signal, generation);
 
     // ---- independent review loop (review/fix cycle) ----
     // Invariants preserved across every cycle (see /docs/TASK_LIFECYCLE.md "Review/fix cycle" and
@@ -514,7 +795,7 @@ export class Orchestrator {
       const reviewAttemptNumber = this.nextAttemptNumber(task.id, "reviewer");
       this.eventRepo.append(task.id, "REVIEW_STARTED", { attemptNumber: reviewAttemptNumber }, now());
       const reviewContext = buildReviewerContext(task, project, workspace.path, lastImplementerResult, lastValidation);
-      const reviewStep = await this.runAgent(task, project, engine, "reviewer", reviewContext, reviewAttemptNumber, signal);
+      const reviewStep = await this.runAgent(task, project, engine, "reviewer", reviewContext, reviewAttemptNumber, signal, generation);
       const review = deriveReviewResult(reviewStep);
       this.eventRepo.append(task.id, "REVIEW_COMPLETED", { verdict: review.verdict, findings: review.findings }, now());
 
@@ -527,11 +808,23 @@ export class Orchestrator {
         // The PR is a required part of reaching REVIEW, not a best-effort side effect: if opening
         // it fails, this throws and the task lands in FAILED (via executeTask's catch), never a
         // false REVIEW claiming a PR that doesn't exist — see /docs/GITHUB_INTEGRATION.md.
-        await this.ensurePullRequest(task, project, scProvider, workspace.path, workspace.branch, lastImplementerResult!, lastValidation!, review, signal);
+        await this.ensurePullRequest(
+          task,
+          project,
+          scProvider,
+          workspace.path,
+          workspace.branch,
+          pullRequestBaseBranch,
+          lastImplementerResult!,
+          lastValidation!,
+          review,
+          signal,
+          generation,
+        );
 
         task.status = transition(task.status, "gates_passed");
         task.taskRecord.selfFixAttempts = 0;
-        this.taskRepo.save(task, now());
+        this.saveOwned(task, generation, now());
         this.eventRepo.append(task.id, "TASK_MOVED_TO_REVIEW", { confidence: review.confidence }, now());
         return this.requireTask(task.id);
       }
@@ -540,7 +833,7 @@ export class Orchestrator {
       this.eventRepo.append(task.id, "REVIEW_CHANGES_REQUESTED", { cycle: cycles, findings: review.findings, summary: review.summary }, now());
 
       if (cycles > this.config.maxReviewerRejections) {
-        return this.failTask(task, describeReviewCycleExhaustion(review, cycles));
+        return this.failTask(task, describeReviewCycleExhaustion(review, cycles), generation);
       }
 
       task.taskRecord.decisions.push({
@@ -548,7 +841,7 @@ export class Orchestrator {
         summary: `Independent review rejected the change: ${review.summary}`,
         recordedAt: now(),
       });
-      this.taskRepo.save(task, now());
+      this.saveOwned(task, generation, now());
 
       this.throwIfCancelled(signal);
       const attemptNumber = this.nextAttemptNumber(task.id, "implementer");
@@ -556,19 +849,19 @@ export class Orchestrator {
       // Implementer needs the Reviewer's findings, not a stale/misleading "validation failed"
       // framing. See context-builder.ts's buildImplementerContext doc comment.
       const fixContext = buildImplementerContext(task, project, workspace.path, null, review);
-      const fixStep = await this.runAgent(task, project, engine, "implementer", fixContext, attemptNumber, signal);
+      const fixStep = await this.runAgent(task, project, engine, "implementer", fixContext, attemptNumber, signal, generation);
       if (fixStep.status === "needs_input" && fixStep.needsInput) {
-        return this.raiseNeedsInput(task, fromImplementerDraft(fixStep.needsInput));
+        return this.raiseNeedsInput(task, fromImplementerDraft(fixStep.needsInput), generation);
       }
       lastImplementerResult = fixStep;
-      lastValidation = await this.runValidationStep(task, workspace.path, project.commands, signal);
+      lastValidation = await this.runValidationStep(task, workspace.path, project.commands, signal, generation);
       task.taskRecord.selfFixAttempts = attemptNumber;
-      this.taskRepo.save(task, now());
+      this.saveOwned(task, generation, now());
 
       if (lastValidation.status !== "passed") {
-        return this.raiseNeedsInput(task, fromExhaustedSelfFix(lastValidation.checks, attemptNumber));
+        return this.raiseNeedsInput(task, fromExhaustedSelfFix(lastValidation.checks, attemptNumber), generation);
       }
-      await this.prepareChanges(task, project, scProvider, workspace.path, workspace.branch, signal);
+      await this.prepareChanges(task, project, scProvider, workspace.path, workspace.branch, signal, generation);
     }
   }
 
@@ -589,7 +882,7 @@ export class Orchestrator {
    * recovery dispatch resumes with exactly the same feedback, not a fresh
    * (or missing) one. See /docs/TASK_LIFECYCLE.md "Crash recovery".
    */
-  private async runHumanFeedbackFixCycle(taskId: string, signal: AbortSignal): Promise<Task> {
+  private async runHumanFeedbackFixCycle(taskId: string, signal: AbortSignal, generation: number): Promise<Task> {
     const now = () => new Date().toISOString();
     let task = this.requireTask(taskId);
     const feedback = task.taskRecord.pendingHumanReviewFeedback;
@@ -608,34 +901,34 @@ export class Orchestrator {
     const attemptNumber = this.nextAttemptNumber(taskId, "implementer");
     const context = buildImplementerContext(task, project, workspace.path, null, null, feedback);
     const engine = this.engines.resolve(project.codingEngine);
-    const step = await this.runAgent(task, project, engine, "implementer", context, attemptNumber, signal);
+    const step = await this.runAgent(task, project, engine, "implementer", context, attemptNumber, signal, generation);
     if (step.status === "needs_input" && step.needsInput) {
       task = this.requireTask(taskId);
       task.taskRecord.pendingHumanReviewFeedback = null;
-      return this.raiseNeedsInput(task, fromImplementerDraft(step.needsInput));
+      return this.raiseNeedsInput(task, fromImplementerDraft(step.needsInput), generation);
     }
 
     task = this.requireTask(taskId);
-    const validation = await this.runValidationStep(task, workspace.path, project.commands, signal);
+    const validation = await this.runValidationStep(task, workspace.path, project.commands, signal, generation);
     task.taskRecord.selfFixAttempts = attemptNumber;
-    this.taskRepo.save(task, now());
+    this.saveOwned(task, generation, now());
 
     if (validation.status !== "passed") {
       // Same escalation path an ordinary self-fix exhaustion uses — a human-requested fix that
       // itself fails validation is exactly as unresolved as any other unfixed failure.
       task.taskRecord.pendingHumanReviewFeedback = null;
-      return this.raiseNeedsInput(task, fromExhaustedSelfFix(validation.checks, attemptNumber));
+      return this.raiseNeedsInput(task, fromExhaustedSelfFix(validation.checks, attemptNumber), generation);
     }
 
     this.throwIfCancelled(signal);
-    await this.prepareChanges(task, project, scProvider, workspace.path, workspace.branch, signal);
+    await this.prepareChanges(task, project, scProvider, workspace.path, workspace.branch, signal, generation);
 
     this.throwIfCancelled(signal);
     task = this.requireTask(taskId);
     task.status = transition(task.status, "gates_passed");
     task.taskRecord.selfFixAttempts = 0;
     task.taskRecord.pendingHumanReviewFeedback = null;
-    this.taskRepo.save(task, now());
+    this.saveOwned(task, generation, now());
     this.eventRepo.append(taskId, "TASK_MOVED_TO_REVIEW", { trigger: "human_review_feedback" }, now());
     return this.requireTask(taskId);
   }
@@ -645,7 +938,10 @@ export class Orchestrator {
     project: Project,
     scProvider: SourceControlProvider,
     branchName: string,
+    cloneBaseBranch: string,
+    branchMode: "new" | "existing",
     signal: AbortSignal,
+    generation: number,
   ) {
     const now = () => new Date().toISOString();
     // Crash-recovery re-entry: WorkspaceProvider.provision() is itself idempotent (see its own doc
@@ -654,22 +950,54 @@ export class Orchestrator {
     // See /docs/TASK_LIFECYCLE.md "Crash recovery".
     const existing = this.workspaceRepo.findByTaskId(task.id);
     if (existing && existing.status === "ready") {
+      // Workspace-fencing (see /docs/SECURITY_ARCHITECTURE.md, migrations/009_lock_generation.sql,
+      // WorkspaceRepository.claimForGeneration): this execution's own reused workspace directory
+      // must first become THIS generation's — strictly-increasing only. If a newer generation
+      // already claimed it (this call is a stale execution catching up after losing the lease), the
+      // claim loses and this stops before ever touching a single file in the shared checkout,
+      // instead of racing a legitimately newer owner on disk.
+      if (!this.workspaceRepo.claimForGeneration(existing.id, generation)) {
+        throw new LeaseLostError();
+      }
       return existing;
     }
     try {
+      // Branch existence validation (see /docs/TASK_LIFECYCLE.md "Branch existence validation"):
+      // TaskService.create already confirmed the branch existed *at task-creation time* — this
+      // re-checks it *now*, right before actually cloning/checking it out, to catch the gap where a
+      // branch was deleted (or renamed) in between. `cloneBaseBranch` is exactly the ref this
+      // episode is about to `git clone --branch` (see provision() below): for "existing" mode it IS
+      // the target working branch itself; for "new" mode it's the base the new branch will be
+      // created from — either way, this is the one ref that must exist for provisioning to succeed.
+      // A `null` result ("can't verify" — see SourceControlProvider.branchExists's own doc comment,
+      // e.g. local-git's best-effort remote reachability) is never treated as "missing": this stays
+      // advisory for providers that can't reliably confirm it, a hard gate only where it's a real,
+      // checkable fact (GitHub).
+      const stillExists = await scProvider.branchExists(project, cloneBaseBranch, signal);
+      if (stillExists === false) {
+        throw new BranchNotFoundAtExecutionError(cloneBaseBranch);
+      }
+
       const credential = await scProvider.resolveCloneCredential(project, signal);
       const workspace = await this.workspaceProvider.provision(
         {
           taskId: task.id,
           repoUrl: project.repoUrl,
-          baseBranch: project.defaultBranch,
+          baseBranch: cloneBaseBranch,
           taskBranch: branchName,
+          mode: branchMode,
         },
         signal,
         credential,
       );
       this.eventRepo.append(task.id, "WORKSPACE_CREATED", { path: workspace.path, branch: workspace.branch }, now());
-      this.eventRepo.append(task.id, "BRANCH_CREATED", { branch: workspace.branch, baseBranch: project.defaultBranch }, now());
+      if (branchMode !== "existing") {
+        this.eventRepo.append(task.id, "BRANCH_CREATED", { branch: workspace.branch, baseBranch: cloneBaseBranch }, now());
+      }
+      // Freshly provisioned: claim it for this generation too (a fresh workspace starts at
+      // active_generation 0, so this always succeeds) — keeps claimForGeneration as the single
+      // source of truth for "who currently owns this workspace directory," whether reused or new.
+      this.workspaceRepo.claimForGeneration(workspace.id, generation);
       return workspace;
     } catch (err) {
       if (err instanceof CancellationError) throw err;
@@ -703,6 +1031,7 @@ export class Orchestrator {
     context: ContextBundle,
     attemptNumber: number,
     signal: AbortSignal,
+    generation: number,
   ): Promise<StepResult> {
     const now = () => new Date().toISOString();
     const runId = randomUUID();
@@ -719,9 +1048,12 @@ export class Orchestrator {
       cost: null,
       startedAt: now(),
       completedAt: null,
+      // Fencing key for AgentRunRepository.complete() — see its own doc comment and
+      // migrations/009_lock_generation.sql.
+      ownerGeneration: generation,
     });
     task.currentAgentRunId = runId;
-    this.taskRepo.save(task, now());
+    this.saveOwned(task, generation, now());
     this.eventRepo.append(task.id, "AGENT_STARTED", { runId, role, attemptNumber }, now());
 
     try {
@@ -732,7 +1064,24 @@ export class Orchestrator {
         timeoutMs: this.config.agentInvocationTimeoutMs,
         signal,
       });
-      this.agentRunRepo.complete(runId, "completed", invocation.result, null, invocation.cost, now());
+      // A stale execution (lease already lost to a newer generation) reaching this point still
+      // gets HERE — the fixture/adapter call itself isn't lease-aware — but `complete()` is
+      // generation-fenced against the task's CURRENT lock_generation, so it silently refuses to
+      // mutate this AgentRun if that's the case. The very next saveOwned() call downstream (in
+      // runWorkingEpisode/runHumanFeedbackFixCycle) independently re-checks the same fencing and
+      // raises LeaseLostError, so a stale completion here never gets treated as this execution's
+      // real, actionable result.
+      const completed = this.agentRunRepo.complete(runId, "completed", invocation.result, null, invocation.cost, now());
+      if (!completed) {
+        // Stale generation: don't append AGENT_COMPLETED (it would misleadingly mix this
+        // fenced-out result into the current owner's real event timeline). EXECUTION_LEASE_LOST
+        // instead — the very next saveOwned() call downstream independently raises LeaseLostError,
+        // which the caller (executeTask/checkHumanReviewFeedback) handles uniformly; this event is
+        // just for immediate visibility right at the point the loss was actually discovered.
+        console.error(`[orchestrator] task ${task.id} — AgentRun ${runId} (generation ${generation}) completed after losing the execution lease; result discarded.`);
+        this.eventRepo.append(task.id, "EXECUTION_LEASE_LOST", { owner: this.ownerId, generation, at: "runAgent" }, now());
+        return invocation.result;
+      }
       this.eventRepo.append(task.id, "AGENT_COMPLETED", { runId, role, status: invocation.result.status }, now());
       return invocation.result;
     } catch (err) {
@@ -774,8 +1123,13 @@ export class Orchestrator {
     workspacePath: string,
     commands: Project["commands"],
     signal: AbortSignal,
+    generation: number,
   ): Promise<ValidationResult> {
     const now = () => new Date().toISOString();
+    // Item 4a: an authoritative ownership check immediately before running validation commands
+    // against the (possibly shared/reused) workspace — see assertStillOwned's own doc comment for
+    // why this narrows, but cannot eliminate, the race against an external process.
+    this.assertStillOwned(task.id, generation);
     this.eventRepo.append(task.id, "VALIDATION_STARTED", {}, now());
     const result = await runValidation(workspacePath, commands, signal);
     this.eventRepo.append(
@@ -803,18 +1157,28 @@ export class Orchestrator {
     workspacePath: string,
     branch: string,
     signal: AbortSignal,
+    generation: number,
   ): Promise<void> {
     const now = () => new Date().toISOString();
     try {
+      // Item 4b: authoritative ownership check immediately before the commit — see
+      // assertStillOwned's own doc comment.
+      this.assertStillOwned(task.id, generation);
       const commitSha = await scProvider.commitAll(project, workspacePath, `[task ${task.id.slice(0, 8)}] ${task.title}`, signal);
       task.taskRecord.latestDiffRef = commitSha;
-      this.taskRepo.save(task, now());
+      this.saveOwned(task, generation, now());
       this.eventRepo.append(task.id, "COMMIT_CREATED", { commitSha }, now());
 
+      // Item 4c: authoritative ownership check immediately before the push — deliberately a
+      // separate check from the one before commitAll above, not one check covering both: the two
+      // external calls are far enough apart in wall-clock time (git push can be slow) that a single
+      // upfront check would leave a much wider unguarded window.
+      this.assertStillOwned(task.id, generation);
       await scProvider.push(project, workspacePath, branch, signal);
       this.eventRepo.append(task.id, "BRANCH_PUSHED", { branch }, now());
     } catch (err) {
       if (err instanceof CancellationError) throw err;
+      if (err instanceof LeaseLostError) throw err;
       this.eventRepo.append(task.id, "SOURCE_CONTROL_FAILED", { step: "commit_or_push", error: String(err) }, now());
       throw err;
     }
@@ -834,31 +1198,37 @@ export class Orchestrator {
     scProvider: SourceControlProvider,
     workspacePath: string,
     branch: string,
+    baseBranch: string,
     implementerResult: StepResult,
     validation: ValidationResult,
     review: ReviewResult,
     signal: AbortSignal,
+    generation: number,
   ): Promise<void> {
     if (task.taskRecord.pullRequest) return; // already opened on a prior attempt — nothing to do
 
     const now = () => new Date().toISOString();
     try {
+      // Item 4d: authoritative ownership check immediately before PR creation — see
+      // assertStillOwned's own doc comment.
+      this.assertStillOwned(task.id, generation);
       const ref = await scProvider.openPullRequest(
         project,
         {
           workspacePath,
           branch,
-          baseBranch: project.defaultBranch,
+          baseBranch,
           title: buildPullRequestTitle(task),
           description: buildPullRequestDescription(task, implementerResult.summary, validation, review),
         },
         signal,
       );
       task.taskRecord.pullRequest = ref;
-      this.taskRepo.save(task, now());
+      this.saveOwned(task, generation, now());
       this.eventRepo.append(task.id, "PULL_REQUEST_CREATED", { provider: ref.provider, number: ref.number, url: ref.url }, now());
     } catch (err) {
       if (err instanceof CancellationError) throw err;
+      if (err instanceof LeaseLostError) throw err;
       this.eventRepo.append(task.id, "SOURCE_CONTROL_FAILED", { step: "open_pull_request", error: String(err) }, now());
       throw err;
     }
@@ -877,23 +1247,28 @@ export class Orchestrator {
    * failure, so this is visible through the exact same task/report/event
    * mechanisms — no new TaskStatus, no new failure-reporting path.
    */
-  private failTask(task: Task, reason: string): Task {
+  private failTask(task: Task, reason: string, generation: number): Task {
     const now = new Date().toISOString();
     task.status = transition(task.status, "infra_failure");
     task.completedAt = now;
-    this.taskRepo.save(task, now);
+    this.saveOwned(task, generation, now);
     this.eventRepo.append(task.id, "TASK_FAILED", { error: reason }, now);
     return this.requireTask(task.id);
   }
 
-  private raiseNeedsInput(task: Task, record: NeedsInputRecordInput): Task {
+  private raiseNeedsInput(task: Task, record: NeedsInputRecordInput, generation: number): Task {
     assertNonTrivial(record);
+    // Checked before inserting the HumanInputRequest row (not just before the task save below): a
+    // stale, lease-lost execution must not leave behind an open "needs input" question for a task
+    // it no longer legitimately owns, even if the subsequent task-status write would itself be
+    // safely fenced.
+    this.assertStillOwned(task.id, generation);
     const now = new Date().toISOString();
     const request = toHumanInputRequest(randomUUID(), task.id, record, now);
     this.humanInputRepo.insert(request);
 
     task.status = transition(task.status, "blocked");
-    this.taskRepo.save(task, now);
+    this.saveOwned(task, generation, now);
     this.eventRepo.append(task.id, "NEEDS_INPUT_RAISED", { requestId: request.id, question: record.question }, now);
     return this.requireTask(task.id);
   }

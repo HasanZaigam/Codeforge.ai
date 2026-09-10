@@ -5,7 +5,7 @@
  * returns. See /docs/UI_ARCHITECTURE.md "API integration".
  */
 
-export type TaskStatus = "TODO" | "WORKING" | "NEEDS_INPUT" | "REVIEW" | "DONE" | "FAILED" | "CANCELLED";
+export type TaskStatus = "BACKLOG" | "TODO" | "WORKING" | "NEEDS_INPUT" | "REVIEW" | "DONE" | "FAILED" | "CANCELLED";
 
 export interface UserDTO {
   id: string;
@@ -49,6 +49,9 @@ export interface TaskDTO {
   currentActivity: string;
   selfFixAttempts: number;
   branchName: string | null;
+  branchMode: "new" | "existing";
+  workingBranch: string | null;
+  baseBranch: string | null;
   createdAt: string;
   updatedAt: string;
   startedAt: string | null;
@@ -62,10 +65,22 @@ export interface TaskDTO {
   pullRequestNumber: number | null;
   /** The latest commit produced for this task, if any. */
   commitSha: string | null;
+  /** This task's explicit, user-defined dependencies — see /docs/TASK_LIFECYCLE.md "Task dependencies". Derived/read-only; never edited by writing this field directly. */
+  dependencies: DependencyStatusDTO[];
+}
+
+/** One dependency, as embedded on TaskDTO or returned by GET/POST/DELETE /tasks/:taskId/dependencies. */
+export interface DependencyStatusDTO {
+  id: string;
+  title: string;
+  status: TaskStatus;
+  /** True only when this dependency's own status is DONE. */
+  satisfied: boolean;
 }
 
 export type TaskEventType =
   | "TASK_CREATED"
+  | "TASK_RELEASED"
   | "TASK_CLAIMED"
   | "TASK_STARTED"
   | "WORKSPACE_CREATED"
@@ -96,9 +111,19 @@ export type TaskEventType =
   | "BRANCH_PUSHED"
   | "PULL_REQUEST_CREATED"
   | "SOURCE_CONTROL_FAILED"
+  | "NO_CHANGES_DETECTED"
   | "HUMAN_REVIEW_DETECTED"
   | "HUMAN_REVIEW_CHANGES_REQUESTED"
-  | "HUMAN_REVIEW_APPROVED";
+  | "HUMAN_REVIEW_APPROVED"
+  | "PULL_REQUEST_MERGED"
+  /**
+   * Appended when an in-flight execution discovers it no longer holds the
+   * task's execution lease (see /docs/TASK_LIFECYCLE.md "Worker
+   * concurrency and lease loss") — distinct from TASK_FAILED (a genuine
+   * platform failure) and TASK_CANCELLED (a human-requested stop). Task
+   * status and workspace are deliberately left untouched.
+   */
+  | "EXECUTION_LEASE_LOST";
 
 export interface TaskEventDTO {
   id: string;
@@ -207,9 +232,43 @@ export interface CreateLocalGitProjectInput extends CreateProjectCommon {
 
 export type CreateProjectInput = CreateGitHubProjectInput | CreateLocalGitProjectInput;
 
+/** POST /projects/verify-github-repo response — see ProjectService.verifyGitHubRepositoryUrl. */
+export interface VerifyGitHubRepositoryResult {
+  repoUrl: string;
+  owner: string;
+  repo: string;
+  defaultBranch: string;
+  /** Auto-suggested project name (the repository name) — always editable, never forced. */
+  suggestedName: string;
+}
+
+export type BranchMode = "new" | "existing";
+
 export interface CreateTaskInput {
   title: string;
   description: string;
+  branchMode?: BranchMode;
+  /** Mode "new" only: an optional custom branch name (else auto-derived from the task title). */
+  branchName?: string;
+  /** Mode "new" only: overrides the project's default branch as the branch to create from. */
+  baseBranch?: string;
+  /** Mode "existing" only: the branch to work directly on — required when branchMode is "existing". */
+  existingBranch?: string;
+  /** Explicit, user-selected dependency task ids — create only (see /docs/TASK_LIFECYCLE.md "Task dependencies"). Ignored by the edit endpoint; dependency edits go through the dedicated add/remove endpoints instead. */
+  dependencyIds?: string[];
+}
+
+/** POST /tasks/:taskId/edit — same field set/validation as task creation. See TaskService.editBacklogTask. */
+export type EditTaskInput = CreateTaskInput;
+
+export type MergeState = "READY" | "BEHIND" | "CONFLICT" | "MERGED" | "CLOSED_NOT_MERGED" | "NOT_APPLICABLE" | "UNKNOWN";
+
+/** GET /tasks/:id/branch-state — detection only (never remediation): the platform never auto-rebases/merges. */
+export interface BranchStateDTO {
+  aheadBy: number | null;
+  behindBy: number | null;
+  comparable: boolean;
+  mergeState: MergeState;
 }
 
 /** GET/POST /integrations/github — never includes the token itself. */

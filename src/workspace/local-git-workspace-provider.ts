@@ -67,7 +67,13 @@ export class LocalGitWorkspaceProvider implements WorkspaceProvider {
         ["clone", "--branch", request.baseBranch, "--single-branch", request.repoUrl, path],
         { signal, env },
       );
-      await execFileAsync("git", ["checkout", "-b", request.taskBranch], { cwd: path, signal });
+      // Mode "existing" (see ProvisionWorkspaceRequest.mode doc comment): `baseBranch` already
+      // equals `taskBranch` here — the clone above checked it out directly, so there is nothing
+      // left to create. Mode "new" (default, and the only behavior that existed before branch
+      // modes did): create the isolated task branch from the just-cloned base branch.
+      if (request.mode !== "existing") {
+        await execFileAsync("git", ["checkout", "-b", request.taskBranch], { cwd: path, signal });
+      }
       const { stdout } = await execFileAsync("git", ["rev-parse", "HEAD"], { cwd: path, signal });
       const baseCommit = stdout.trim();
 

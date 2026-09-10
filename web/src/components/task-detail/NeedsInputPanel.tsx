@@ -23,11 +23,22 @@ export function NeedsInputPanel({
   const [error, setError] = useState<string>();
   const [submitted, setSubmitted] = useState(false);
 
+  // "No change was needed" is the one recommended option that's a complete answer on its own —
+  // the other options (e.g. "Clarify the task") need the developer to actually say what to
+  // clarify, so free text stays required for those. See NeedsInputPanel's UX brief.
+  const isNoChangeNeeded = selectedOption === "No change was needed";
+  const canSubmit = isNoChangeNeeded || freeText.trim().length > 0;
+
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     setError(undefined);
     try {
-      await onSubmit({ selectedOption, freeText: freeText.trim() });
+      // The backend requires non-empty freeText (see api/schemas.ts) — when the developer leaves
+      // it blank for "No change was needed," fall back to the option's own label as the decision
+      // text rather than relaxing that contract.
+      const trimmed = freeText.trim();
+      const effectiveFreeText = trimmed || (isNoChangeNeeded ? selectedOption! : trimmed);
+      await onSubmit({ selectedOption, freeText: effectiveFreeText });
       setSubmitted(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not submit your answer. Please try again.");
@@ -100,21 +111,23 @@ export function NeedsInputPanel({
         )}
 
         <div className="field">
-          <label htmlFor="answer-text">Your decision</label>
+          <label htmlFor="answer-text">
+            Your decision {isNoChangeNeeded && <span style={{ fontWeight: 400, color: "var(--color-text-muted)" }}>(optional)</span>}
+          </label>
           <textarea
             id="answer-text"
             value={freeText}
             onChange={(e) => setFreeText(e.target.value)}
             placeholder="Explain your decision, or add anything the options above don't cover…"
             rows={3}
-            required
+            required={!isNoChangeNeeded}
             maxLength={10000}
           />
         </div>
 
         {error && <ErrorState message={error} />}
 
-        <button type="submit" className="btn btn-primary btn-block" disabled={submitting || !freeText.trim()}>
+        <button type="submit" className="btn btn-primary btn-block" disabled={submitting || !canSubmit}>
           {submitting ? "Submitting…" : "Continue"}
         </button>
       </form>

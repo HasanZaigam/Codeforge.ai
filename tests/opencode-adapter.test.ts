@@ -16,7 +16,7 @@ import {
 import { buildPlatform } from "../src/platform.js";
 import { buildPlatformFromEnv } from "../src/env-platform.js";
 import { ProjectService } from "../src/application/project-service.js";
-import { createTask } from "../src/orchestrator/task-factory.js";
+import { createReadyTask } from "./helpers/create-ready-task.js";
 import { createFixtureRepo } from "../src/cli/fixture-repo.js";
 import type { ContextBundle, Project } from "../src/domain/types.js";
 
@@ -660,7 +660,7 @@ test("14 & 15. Implementer and Reviewer invocation via Orchestrator: full task l
   };
   platform.projects.insert(project);
 
-  const task = createTask(platform.tasks, platform.taskEvents, {
+  const task = createReadyTask(platform.tasks, platform.taskEvents, {
     tenantId: "default",
     projectId: project.id,
     title: "Fix add() using OpenCode",
@@ -1155,7 +1155,7 @@ test("23. orchestrator: retry exhaustion lands the task in FAILED with exactly o
   };
   platform.projects.insert(project);
 
-  const task = createTask(platform.tasks, platform.taskEvents, {
+  const task = createReadyTask(platform.tasks, platform.taskEvents, {
     tenantId: "default",
     projectId: project.id,
     title: "Task that will exhaust retries",

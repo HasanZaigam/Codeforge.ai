@@ -16,7 +16,7 @@ Per the Step 4 brief: the user should feel they delegated a task to an autonomou
 ```
 /login                  Public — sign in / create account (see "Authentication" below)
 /                       Projects — list, connect a new project             \
-/projects/:projectId    Project board — Kanban (TODO/WORKING/NEEDS_INPUT/REVIEW/DONE), create task  |  all behind
+/projects/:projectId    Project board — Kanban (BACKLOG/TODO/WORKING/NEEDS_INPUT/REVIEW/DONE), create task  |  all behind
 /tasks/:taskId          Task details — header, NEEDS_INPUT panel (if applicable), activity, result   |  RequireAuth
 /settings               Account info, GitHub connection status (connect/disconnect)        /
 ```
@@ -64,7 +64,7 @@ No component reimplements a backend rule. `statusMeta.ts` decides how a status i
 
 - **No global state library.** Server state (projects, tasks, events, reports) lives in the hooks above, scoped to whatever component tree needs it — React's own state and props are sufficient at this app's size (four pages, a handful of dialogs).
 - **The backend remains the source of truth for task state**, always. No component ever computes or overrides a task's `status`; the frontend only renders what `GET /tasks/:id` returns and triggers the two writes the API allows (create task, submit input) — see [API.md](./API.md) "Task lifecycle semantics."
-- **Optimistic-but-honest updates**: creating a task inserts the returned `TaskDTO` (already `TODO`, from the real API response — not fabricated) into the board immediately via `useProjectTasks`'s `addOptimisticTask`, so the developer isn't stuck watching a spinner for a background poll to catch up. The next poll reconciles naturally.
+- **Optimistic-but-honest updates**: creating a task inserts the returned `TaskDTO` (already `BACKLOG` — every task is created into `BACKLOG`, from the real API response — not fabricated) into the board immediately via `useProjectTasks`'s `addOptimisticTask`, so the developer isn't stuck watching a spinner for a background poll to catch up. The next poll reconciles naturally.
 
 ## Responsive strategy
 
@@ -72,7 +72,7 @@ One layout serves desktop, tablet, and phone — no separate mobile app or mobil
 - **Board**: a responsive CSS grid (`repeat(auto-fit, minmax(...))`) that shares the container's actual width evenly across however many status columns exist, wrapping to additional rows once columns would drop below a readable floor — not fixed-width columns in a horizontally-scrolling row. The original all-viewport horizontal-scroll design (see TECHNICAL_DECISIONS.md TD-23) fixed each column at 280px regardless of container width, which meant five columns (1400px+) never actually fit inside `--max-content-width` (1200px) — REVIEW/DONE were pushed off-screen on ordinary desktop widths, not just narrow ones. `overflow-x: auto` remains on `.board` as a defensive fallback (an unusually high column count on a narrow viewport), never the primary mechanism.
 - **Dialogs** (create project/task): a bottom sheet on narrow viewports, a centered modal from `640px` up — one component, one media query.
 - **Task detail**: single-column content at all widths; nothing in it depends on horizontal space, so it needs no responsive variant at all.
-- **FAILED and CANCELLED tasks**: neither is one of the five requested board columns — FAILED is rare (an infrastructure failure), and CANCELLED reflects a deliberate developer decision that needs no further attention. `KanbanBoard.tsx` adds each as an extra column only when at least one task actually has that status, keeping the common case exactly five columns. See TECHNICAL_DECISIONS.md TD-25.
+- **FAILED and CANCELLED tasks**: neither is one of the fixed board columns. `FAILED` is rare (an infrastructure failure) — `KanbanBoard.tsx` adds it as a conditional extra column only once at least one task actually has that status, keeping the common case free of an always-empty column. `CANCELLED` is treated differently, not the same way: it is never added as a board column at all, conditional or otherwise — a cancelled task simply doesn't appear on the board (it stays fully visible via its own task detail page, per TASK_LIFECYCLE.md "Cancellation"). See TECHNICAL_DECISIONS.md TD-25 for why FAILED and CANCELLED are treated differently here.
 
 ## Polling strategy
 

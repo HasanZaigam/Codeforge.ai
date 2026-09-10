@@ -122,6 +122,7 @@ a {
   font-size: 1.05rem;
   text-decoration: none;
   color: var(--color-text);
+  white-space: nowrap;
 }
 
 .app-nav {
@@ -151,7 +152,17 @@ a {
 
 @media (max-width: 640px) {
   .app-header {
+    /* Below 640px, brand + nav + logout no longer fit on one row (this is what was squeezing "AI
+       Developer" onto two lines) — wrap the nav links onto their own full-width row underneath
+       instead of letting everything fight for the same line. */
+    flex-wrap: wrap;
+    row-gap: var(--space-2);
     padding: var(--space-3) var(--space-4);
+  }
+  .app-nav {
+    order: 3;
+    width: 100%;
+    gap: var(--space-4);
   }
   .app-main {
     padding: var(--space-4);
@@ -234,6 +245,22 @@ a {
   font-size: 0.85rem;
   text-decoration: underline;
   padding: 4px 0;
+}
+
+.btn-link {
+  background: transparent;
+  border: none;
+  color: var(--color-primary);
+  font-size: 0.85rem;
+  font-weight: 600;
+  text-decoration: underline;
+  padding: 4px 0;
+  cursor: pointer;
+}
+
+.btn-link:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 .btn-secondary {
@@ -353,50 +380,84 @@ a {
 /* Kanban board */
 
 .board {
-  /* CSS Grid, not a fixed-width flex row: `repeat(auto-fit, minmax(...))` shares the container's
-     actual width evenly across however many columns exist (5 in the common case, up to 7 with
-     FAILED/CANCELLED) instead of each column claiming a fixed 280px regardless of what's
-     available — five fixed-280px columns (1400px+) never fit inside the page's own
-     --max-content-width (1200px), which is why REVIEW/DONE were pushed off-screen. The 180px
-     floor is deliberately tight: at the page's own max content width (1200px, minus padding ≈
-     1152px), 5 columns need >= ~218px each to avoid wrapping (1152px − 4×16px gap, divided by 5) —
-     a rounder 220px+ floor would still force the common 5-column board to wrap on its own widest
-     page. Below this floor, auto-fit wraps to additional rows instead of overflowing — see
-     TECHNICAL_DECISIONS.md TD-23 (revised) and UI_ARCHITECTURE.md "Responsive strategy". A
-     horizontal scrollbar remains as a defensive fallback (e.g. many FAILED/CANCELLED tasks
-     pushing the column count unusually high on a narrow viewport), never the primary mechanism. */
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  /* A horizontally-scrolling flex row, not a wrapping grid: each column keeps a fixed, readable
+     width regardless of how many columns exist (5 in the common case, up to 7 with
+     FAILED/CANCELLED) and the board scrolls sideways for the overflow — see
+     TECHNICAL_DECISIONS.md TD-23 (revised) and UI_ARCHITECTURE.md "Responsive strategy". The
+     previous `auto-fit` grid shrank columns until they no longer fit their content and wrapped
+     to a second row instead — every column now stays on one row, exactly like a normal Kanban
+     board (Trello/Jira-style), and narrow viewports get a horizontal scrollbar instead of a
+     second row of columns. */
+  display: flex;
+  align-items: flex-start;
   gap: var(--space-4);
   overflow-x: auto;
   padding-bottom: var(--space-3);
+  /* Mobile: swipe one column at a time instead of landing mid-column — see the 480px breakpoint
+     below, where each column widens to fill most of the screen. */
+  scroll-snap-type: x proximity;
+  -webkit-overflow-scrolling: touch;
 }
 
 .board-column {
-  min-width: 0; /* grid items default to min-width: auto (content-based), which would otherwise force each column wide enough to fit its longest unbroken task text */
+  flex: 0 0 260px;
+  width: 260px;
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
+  background: var(--color-surface-sunken, #f4f5f7);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg, 10px);
+  padding: var(--space-3);
+  scroll-snap-align: start;
 }
+
+/* Border tinted to match the column's own tone (same tokens as the header accent above). */
+.board-column.tone-neutral { border-color: var(--tone-neutral-text); }
+.board-column.tone-active { border-color: var(--tone-active-text); }
+.board-column.tone-attention { border-color: var(--tone-attention-text); }
+.board-column.tone-info { border-color: var(--tone-info-text); }
+.board-column.tone-success { border-color: var(--tone-success-text); }
+.board-column.tone-danger { border-color: var(--tone-danger-text); }
+.board-column.tone-cancelled { border-color: var(--tone-cancelled-text); }
 
 .board-column-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 var(--space-1);
+  padding: var(--space-2) var(--space-2);
+  margin: calc(var(--space-3) * -1) calc(var(--space-3) * -1) 0;
+  border-top-left-radius: var(--radius-lg, 10px);
+  border-top-right-radius: var(--radius-lg, 10px);
+  border-bottom: 3px solid transparent;
 }
+
+/* Each column is tinted by its status's existing tone tokens (the same ones StatusBadge already
+   uses) — a colored header + accent bar per column, matching a conventional Kanban board's
+   color-coded columns without introducing a second, parallel color system. */
+.board-column-header.tone-neutral { background: var(--tone-neutral-bg); border-bottom-color: var(--tone-neutral-text); }
+.board-column-header.tone-active { background: var(--tone-active-bg); border-bottom-color: var(--tone-active-text); }
+.board-column-header.tone-attention { background: var(--tone-attention-bg); border-bottom-color: var(--tone-attention-text); }
+.board-column-header.tone-info { background: var(--tone-info-bg); border-bottom-color: var(--tone-info-text); }
+.board-column-header.tone-success { background: var(--tone-success-bg); border-bottom-color: var(--tone-success-text); }
+.board-column-header.tone-danger { background: var(--tone-danger-bg); border-bottom-color: var(--tone-danger-text); }
+.board-column-header.tone-cancelled { background: var(--tone-cancelled-bg); border-bottom-color: var(--tone-cancelled-text); }
 
 .board-column-title {
   font-size: 0.82rem;
   font-weight: 700;
-  color: var(--color-text-muted);
+  color: var(--color-text);
   text-transform: uppercase;
   letter-spacing: 0.03em;
 }
 
 .board-column-count {
   font-size: 0.78rem;
+  font-weight: 600;
   color: var(--color-text-muted);
+  background: var(--color-surface);
+  border-radius: 999px;
+  padding: 1px 8px;
 }
 
 .board-column-body {
@@ -404,13 +465,35 @@ a {
   flex-direction: column;
   gap: var(--space-3);
   min-height: 60px;
+  /* Each column scrolls its own tasks once it fills up, instead of growing the whole page taller
+     — a column with 50 tasks no longer forces the entire board (and every other, shorter column)
+     to scroll down with it. Capped relative to the viewport so it still works on short screens. */
+  max-height: min(65vh, 620px);
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 2px; /* keeps the scrollbar from overlapping card content */
+}
+
+.board-column .task-card {
+  background: var(--color-surface);
 }
 
 @media (max-width: 720px) {
-  .board {
-    /* A lower floor than the desktop 220px so two columns can still sit side by side on a
-       narrower viewport instead of immediately dropping to one-per-row. */
-    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  .board-column {
+    flex-basis: 240px;
+    width: 240px;
+  }
+  .board-column-body {
+    max-height: min(55vh, 480px);
+  }
+}
+
+@media (max-width: 480px) {
+  /* Below phone width, one column fills nearly the full screen (a sliver of the next column
+     peeks in as an affordance to swipe) rather than several cramped narrow columns. */
+  .board-column {
+    flex-basis: 86vw;
+    width: 86vw;
   }
 }
 
@@ -418,16 +501,24 @@ a {
 
 .task-card {
   padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.task-card:hover {
+  border-color: var(--color-primary);
+}
+
+/* The card's own clickable area (title/description/activity) — a BACKLOG card additionally renders
+   a StartTaskControl as a sibling of this link, so clicking "Start Task" never also navigates. */
+.task-card-link {
   text-decoration: none;
   color: inherit;
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
   cursor: pointer;
-}
-
-.task-card:hover {
-  border-color: var(--color-primary);
 }
 
 .task-card h4 {
@@ -463,6 +554,18 @@ a {
   flex: 0 0 auto;
 }
 
+/* A BACKLOG card's "Start Task" / "Edit" / "Cancel task" row — siblings of the card's own Link so neither
+   click also navigates to Task Details (see TaskCard.tsx). */
+.task-card-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding-top: var(--space-1);
+  border-top: 1px solid var(--color-border);
+  margin-top: var(--space-1);
+}
+
 /* Forms */
 
 .field {
@@ -495,6 +598,52 @@ a {
 .field-hint {
   color: var(--color-text-muted);
   font-size: 0.8rem;
+}
+
+.field-required {
+  color: var(--tone-danger-text);
+}
+
+.field-warning {
+  display: flex;
+  gap: var(--space-2);
+  align-items: flex-start;
+  background: var(--tone-attention-bg);
+  color: var(--tone-attention-text);
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-3);
+  font-size: 0.8rem;
+}
+
+.info-callout {
+  background: var(--tone-info-bg);
+  color: var(--tone-info-text);
+  border-radius: var(--radius-md);
+  padding: var(--space-3) var(--space-4);
+  font-size: 0.8rem;
+  margin-bottom: var(--space-4);
+}
+
+.info-callout-title {
+  font-weight: 600;
+  margin-bottom: var(--space-2);
+}
+
+.info-callout dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--space-1) var(--space-2);
+  margin: 0;
+}
+
+.info-callout dt {
+  color: var(--color-text-muted);
+}
+
+.info-callout dd {
+  margin: 0;
+  font-family: var(--font-mono, monospace);
+  word-break: break-all;
 }
 
 /* Dialog */
@@ -534,6 +683,12 @@ a {
   align-items: center;
   justify-content: space-between;
   margin-bottom: var(--space-4);
+}
+
+.dialog-description {
+  color: var(--color-text-muted);
+  font-size: 0.88rem;
+  margin: calc(var(--space-4) * -1) 0 var(--space-4);
 }
 
 .dialog-actions {

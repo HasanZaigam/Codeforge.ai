@@ -91,6 +91,47 @@ describe("TaskDetailPage", () => {
     await waitFor(() => expect(screen.getByText(/continuing/i)).toBeInTheDocument());
   });
 
+  it("renders a clear explanation (not a raw GitHub error) when NEEDS_INPUT was raised because the AI made no repository changes", async () => {
+    // Regression for the zero-change orchestrator fix: this reuses the exact same generic
+    // NEEDS_INPUT panel as every other question — see NeedsInputPanel.tsx — so this test proves
+    // the human-readable text produced by orchestrator/needs-input.ts's fromEmptyDiff() renders
+    // correctly, instead of the opaque "GitHubApiError: 422 Validation Failed" a user saw before.
+    mockedTasksApi.get.mockResolvedValue(makeTask({ status: "NEEDS_INPUT" }));
+    mockedHumanInputApi.get.mockResolvedValue(
+      makeInputRequest({
+        discovered:
+          'The AI developer completed an implementation pass and validation passed, but the workspace ended up ' +
+          'identical to its starting point — no files were changed. Its own summary: "The target file already ' +
+          'exists and the task forbids modifying existing files, so no change was made."',
+        attempted: [
+          "Ran a full implement-and-validate pass on this task; validation succeeded, but the working tree and " +
+            "commit history came out unchanged from the branch's starting point.",
+        ],
+        blocker:
+          "The AI developer could not find any change it judged safe and necessary to make for this task, so " +
+          "there is nothing to commit, push, or open a Pull Request for.",
+        question:
+          "How should this task proceed — confirm no change was actually needed, clarify/narrow the task, or " +
+          "explicitly allow the AI to modify files it currently treats as off-limits?",
+        options: [{ label: "No change was needed", description: "Confirm the task is effectively already satisfied." }],
+      }),
+    );
+    mockedTasksApi.listEvents.mockResolvedValue([makeEvent({ id: "e1", type: "NO_CHANGES_DETECTED" })]);
+
+    renderApp("/tasks/task-1");
+
+    await waitFor(() => expect(screen.getByText("Your decision is required")).toBeInTheDocument());
+    expect(screen.getByText(/no files were changed/i)).toBeInTheDocument();
+    expect(screen.getByText(/nothing to commit, push, or open a Pull Request/i)).toBeInTheDocument();
+    // No raw GitHub/API error text ever reaches the screen for this path.
+    expect(screen.queryByText(/422/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/GitHubApiError/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Validation Failed/i)).not.toBeInTheDocument();
+    // The activity timeline shows a plain-language label, not the raw event name.
+    expect(screen.getByText(/No repository changes were needed/i)).toBeInTheDocument();
+    expect(screen.queryByText("NO_CHANGES_DETECTED")).not.toBeInTheDocument();
+  });
+
   it("renders a DONE completion summary using only real report data", async () => {
     mockedTasksApi.get.mockResolvedValue(
       makeTask({ status: "DONE", startedAt: "2026-01-01T00:00:00.000Z", completedAt: "2026-01-01T00:18:00.000Z" }),
@@ -106,6 +147,40 @@ describe("TaskDetailPage", () => {
     expect(screen.getByText("5 files changed")).toBeInTheDocument();
     expect(screen.getByText("build")).toBeInTheDocument();
     expect(screen.getByText("No concerns raised.")).toBeInTheDocument();
+  });
+
+  it("renders a task completed via PR-merge sync as DONE with 'Completed — PR #N merged', not 'Ready for your review'", async () => {
+    // See docs/TASK_LIFECYCLE.md "PR merge sync": once the backend detects the PR was merged
+    // directly on GitHub, the task's status/currentActivity flip from REVIEW/"Ready for your
+    // review" to DONE/"Completed — PR #N merged" — the frontend only ever renders what the API
+    // already computed (see api/dto.ts deriveCurrentActivity), never re-deriving it itself.
+    mockedTasksApi.get.mockResolvedValue(
+      makeTask({
+        status: "DONE",
+        currentActivity: "Completed — PR #42 merged",
+        startedAt: "2026-01-01T00:00:00.000Z",
+        completedAt: "2026-01-01T00:18:00.000Z",
+        pullRequestNumber: 42,
+        pullRequestUrl: "https://github.com/example/ott/pull/42",
+      }),
+    );
+    mockedTasksApi.listEvents.mockResolvedValue([
+      makeEvent({ id: "e1", type: "TASK_MOVED_TO_REVIEW" }),
+      makeEvent({ id: "e2", type: "PULL_REQUEST_MERGED", payload: { number: 42, url: "https://github.com/example/ott/pull/42" } }),
+    ]);
+    mockedTasksApi.getReport.mockResolvedValue(
+      makeReport({ status: "Done", whatChanged: "Updated session timeout handling.", filesChanged: 5 }),
+    );
+
+    renderApp("/tasks/task-1");
+
+    await waitFor(() => expect(screen.getByText("Fix OTP timeout login")).toBeInTheDocument());
+    expect(screen.getByText("Done")).toBeInTheDocument(); // StatusBadge — same DONE label as a manual accept
+    expect(screen.queryByText("Review")).not.toBeInTheDocument();
+    expect(screen.getAllByText(/Completed — PR #42 merged/).length).toBeGreaterThan(0);
+    // The merge transition itself shows in the activity timeline, via the existing event-label convention.
+    expect(screen.getByText("Pull Request merged on GitHub — task completed")).toBeInTheDocument();
+    expect(screen.getByText("✓ Completed")).toBeInTheDocument();
   });
 
   it("shows a clean failure reason (e.g. an exhausted review/fix cycle) when a task is FAILED", async () => {

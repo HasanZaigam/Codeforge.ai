@@ -31,6 +31,20 @@ export interface OrchestratorConfig {
    * /docs/TASK_LIFECYCLE.md "Crash recovery".
    */
   leaseHeartbeatIntervalMs: number;
+  /**
+   * The normal cadence (ms) between real GitHub refreshes of a single REVIEW
+   * task's PR — see /docs/TASK_LIFECYCLE.md "REVIEW polling",
+   * migrations/010_review_poll_scheduling.sql, and Worker.tick (which is
+   * what actually claims/schedules against this cadence via
+   * TaskRepository.claimReviewCheck; this Orchestrator-side copy is used
+   * only to decide, inside checkHumanReviewFeedback's rate-limit handling,
+   * whether GitHub's own suggested wait is already longer than the normal
+   * cadence and the schedule needs pushing out further). Distinct from
+   * `POLL_INTERVAL_MS`/Worker's own `pollIntervalMs`, which governs how
+   * often the worker tick runs at all, not how often a GitHub call within it
+   * is allowed. Configurable via `REVIEW_POLL_INTERVAL_MS`.
+   */
+  reviewPollIntervalMs: number;
 }
 
 export const DEFAULT_ORCHESTRATOR_CONFIG: OrchestratorConfig = {
@@ -40,4 +54,5 @@ export const DEFAULT_ORCHESTRATOR_CONFIG: OrchestratorConfig = {
   taskLeaseMs: 5 * 60 * 1000,
   cancellationPollIntervalMs: 300,
   leaseHeartbeatIntervalMs: 60 * 1000,
+  reviewPollIntervalMs: 30 * 1000,
 };

@@ -21,7 +21,15 @@ export function buildApplicationServices(platform: Platform): ApplicationService
     auth: new AuthService(platform.users, platform.sessions),
     github,
     projects: new ProjectService(platform.projects, github),
-    tasks: new TaskService(platform.tasks, platform.taskEvents, platform.agentRuns, platform.projects, platform.orchestrator),
+    tasks: new TaskService(
+      platform.tasks,
+      platform.taskEvents,
+      platform.agentRuns,
+      platform.projects,
+      platform.orchestrator,
+      platform.sourceControlProviders,
+      platform.taskDependencies,
+    ),
     humanInput: new HumanInputService(platform.humanInput, platform.tasks, platform.projects, platform.orchestrator),
   };
 }

@@ -17,6 +17,8 @@ export class ConfigError extends Error {
 
 const KNOWN_CODING_ENGINES = new Set(["opencode", "claude-code", "claude", "fixture"]);
 
+const ALLOW_LOCAL_GIT_PROJECTS_ENV = "ALLOW_LOCAL_GIT_PROJECTS";
+
 /**
  * Validates the configuration shared by both entrypoints: which coding
  * engine is selected, and — only if it's set at all, since a deployment
@@ -39,6 +41,11 @@ export function validateSharedConfig(env: NodeJS.ProcessEnv = process.env): void
         "opencode or claude-code, or unset NODE_ENV=production for local/demo use.",
     );
   }
+
+  // Format-validated eagerly whenever it's set at all (any NODE_ENV) — same "fail clearly at
+  // startup, not silently coerce" stance as parsePositiveIntEnv. The value only actually
+  // *restricts* anything under NODE_ENV=production — see isLocalGitProjectsAllowed below.
+  parseBooleanEnv(ALLOW_LOCAL_GIT_PROJECTS_ENV, env[ALLOW_LOCAL_GIT_PROJECTS_ENV], false);
 
   const key = env.CREDENTIAL_ENCRYPTION_KEY;
   if (key) {
@@ -66,4 +73,35 @@ export function parsePositiveIntEnv(name: string, raw: string | undefined, fallb
     throw new ConfigError(`${name} must be a positive integer if set (got "${raw}").`);
   }
   return n;
+}
+
+/**
+ * Parses a boolean-flag env var, failing clearly if it's set but not a
+ * clean "true"/"false" (case-insensitive) — same "fail clearly at startup,
+ * never silently coerce" stance as parsePositiveIntEnv. `ALLOW_LOCAL_GIT_PROJECTS`
+ * is the only current caller.
+ */
+export function parseBooleanEnv(name: string, raw: string | undefined, fallback: boolean): boolean {
+  if (raw === undefined || raw.trim() === "") return fallback;
+  const normalized = raw.trim().toLowerCase();
+  if (normalized === "true") return true;
+  if (normalized === "false") return false;
+  throw new ConfigError(`${name} must be "true" or "false" if set (got "${raw}").`);
+}
+
+/**
+ * Whether `sourceControlProvider: "local-git"` projects may be created.
+ * Local-git is a dev/testing convenience — no GitHub account, no PR, no
+ * merge signal (see /docs/GITHUB_INTEGRATION.md "Local git / plain-git
+ * testing") — always available outside production so the entire automated
+ * test suite and `npm run demo` keep working with zero env setup. Under
+ * `NODE_ENV=production` it is disabled unless `ALLOW_LOCAL_GIT_PROJECTS=true`
+ * is set explicitly. Read directly wherever project creation is handled
+ * (see ProjectService.create) — this is a per-request policy check, not a
+ * one-time startup check, since it must reject the API call itself, not
+ * just hide the option in the UI.
+ */
+export function isLocalGitProjectsAllowed(env: NodeJS.ProcessEnv = process.env): boolean {
+  if (env.NODE_ENV !== "production") return true;
+  return parseBooleanEnv(ALLOW_LOCAL_GIT_PROJECTS_ENV, env[ALLOW_LOCAL_GIT_PROJECTS_ENV], false);
 }

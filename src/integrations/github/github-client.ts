@@ -71,6 +71,20 @@ export interface GitHubPullRequest {
   /** Present (and meaningful) only on the single-PR fetch (`getPullRequest`) — the list/create
    *  endpoints don't return it, and a PR search result is never stale enough to need it. */
   merged?: boolean;
+  /**
+   * GitHub's own mergeable verdict — present only on the single-PR fetch
+   * (`getPullRequest`), same as `merged`. `null`/`undefined` when GitHub
+   * hasn't finished computing it yet (a real, expected transient state right
+   * after a push) — never coerced to `true` or `false`.
+   */
+  mergeable?: boolean | null;
+}
+
+/** Ahead/behind commit counts between two refs — see GitHubClient.compareCommits. */
+export interface GitHubCompareResult {
+  aheadBy: number;
+  behindBy: number;
+  status: string; // "ahead" | "behind" | "diverged" | "identical"
 }
 
 /** A submitted PR review — carries the verdict ("state"), unlike a plain comment. */
@@ -138,6 +152,23 @@ export class GitHubClient {
     }
   }
 
+  /**
+   * First page (up to 100) of the repository's branch names — enough for
+   * the task-creation "existing branch" picker's MVP scope; a repository
+   * with more than 100 branches would need pagination this doesn't yet do
+   * (see /docs/MVP_SCOPE.md). Not used for anything gating — only to
+   * populate a UI list.
+   */
+  async listBranches(owner: string, repo: string, signal?: AbortSignal): Promise<string[]> {
+    const body = await this.request<Array<{ name: string }>>(
+      "GET",
+      `/repos/${owner}/${repo}/branches?per_page=100`,
+      undefined,
+      signal,
+    );
+    return body.map((b) => b.name);
+  }
+
   async listPullRequests(
     owner: string,
     repo: string,
@@ -195,14 +226,30 @@ export class GitHubClient {
    * /docs/GITHUB_INTEGRATION.md "PR state handling".
    */
   async getPullRequest(owner: string, repo: string, number: number, signal?: AbortSignal): Promise<GitHubPullRequest> {
-    const body = await this.request<{ number: number; html_url: string; state: string; merged: boolean }>(
+    const body = await this.request<{ number: number; html_url: string; state: string; merged: boolean; mergeable: boolean | null }>(
       "GET",
       `/repos/${owner}/${repo}/pulls/${number}`,
       undefined,
       signal,
       `Pull request #${number}`,
     );
-    return { number: body.number, htmlUrl: body.html_url, state: body.state, merged: body.merged };
+    return { number: body.number, htmlUrl: body.html_url, state: body.state, merged: body.merged, mergeable: body.mergeable ?? null };
+  }
+
+  /**
+   * Real ahead/behind commit counts between `base` and `head` — the compare
+   * API GitHub itself uses for its "X commits behind" UI. Used for
+   * stale/behind detection (see /docs/TASK_LIFECYCLE.md "Stale/behind
+   * detection") — never used to gate task execution, only to display.
+   */
+  async compareCommits(owner: string, repo: string, base: string, head: string, signal?: AbortSignal): Promise<GitHubCompareResult> {
+    const body = await this.request<{ ahead_by: number; behind_by: number; status: string }>(
+      "GET",
+      `/repos/${owner}/${repo}/compare/${encodeURIComponent(base)}...${encodeURIComponent(head)}`,
+      undefined,
+      signal,
+    );
+    return { aheadBy: body.ahead_by, behindBy: body.behind_by, status: body.status };
   }
 
   /** Every submitted review on the PR — this is where a "changes requested" verdict lives. */

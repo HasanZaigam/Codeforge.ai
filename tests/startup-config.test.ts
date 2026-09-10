@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { ConfigError, parsePositiveIntEnv, validateSharedConfig } from "../src/config/startup-config.js";
+import { ConfigError, isLocalGitProjectsAllowed, parseBooleanEnv, parsePositiveIntEnv, validateSharedConfig } from "../src/config/startup-config.js";
 
 /**
  * Fail-fast startup configuration validation (src/config/startup-config.ts),
@@ -83,4 +83,66 @@ test("parsePositiveIntEnv: rejects non-numeric, zero, negative, and non-integer 
       (err: unknown) => err instanceof ConfigError && err.message.includes(`got "${bad}"`),
     );
   }
+});
+
+test("parseBooleanEnv: returns the fallback when unset or blank", () => {
+  assert.equal(parseBooleanEnv("ALLOW_LOCAL_GIT_PROJECTS", undefined, false), false);
+  assert.equal(parseBooleanEnv("ALLOW_LOCAL_GIT_PROJECTS", "", true), true);
+  assert.equal(parseBooleanEnv("ALLOW_LOCAL_GIT_PROJECTS", "   ", false), false);
+});
+
+test("parseBooleanEnv: parses true/false case-insensitively, trimmed", () => {
+  assert.equal(parseBooleanEnv("X", "true", false), true);
+  assert.equal(parseBooleanEnv("X", "TRUE", false), true);
+  assert.equal(parseBooleanEnv("X", "  True  ", false), true);
+  assert.equal(parseBooleanEnv("X", "false", true), false);
+  assert.equal(parseBooleanEnv("X", "FALSE", true), false);
+});
+
+test("parseBooleanEnv: rejects anything other than a clean true/false — never silently coerced", () => {
+  for (const bad of ["yes", "1", "0", "no", "TRUE1"]) {
+    assert.throws(
+      () => parseBooleanEnv("ALLOW_LOCAL_GIT_PROJECTS", bad, false),
+      (err: unknown) => err instanceof ConfigError && err.message.includes(`got "${bad}"`),
+    );
+  }
+});
+
+test("validateSharedConfig: rejects a malformed ALLOW_LOCAL_GIT_PROJECTS at startup regardless of NODE_ENV", () => {
+  assert.throws(
+    () => validateSharedConfig({ ALLOW_LOCAL_GIT_PROJECTS: "yes" }),
+    (err: unknown) => err instanceof ConfigError && /ALLOW_LOCAL_GIT_PROJECTS must be "true" or "false"/.test(err.message),
+  );
+  assert.throws(
+    () => validateSharedConfig({ ALLOW_LOCAL_GIT_PROJECTS: "yes", NODE_ENV: "development" }),
+    (err: unknown) => err instanceof ConfigError,
+  );
+});
+
+test("validateSharedConfig: a well-formed ALLOW_LOCAL_GIT_PROJECTS never throws, in any NODE_ENV", () => {
+  assert.doesNotThrow(() => validateSharedConfig({ ALLOW_LOCAL_GIT_PROJECTS: "true" }));
+  assert.doesNotThrow(() => validateSharedConfig({ ALLOW_LOCAL_GIT_PROJECTS: "false", NODE_ENV: "production" }));
+});
+
+test("isLocalGitProjectsAllowed: allowed by default outside production, regardless of the flag", () => {
+  assert.equal(isLocalGitProjectsAllowed({}), true);
+  assert.equal(isLocalGitProjectsAllowed({ NODE_ENV: "development" }), true);
+  assert.equal(isLocalGitProjectsAllowed({ NODE_ENV: "test" }), true);
+  assert.equal(isLocalGitProjectsAllowed({ NODE_ENV: "development", ALLOW_LOCAL_GIT_PROJECTS: "false" }), true);
+});
+
+test("isLocalGitProjectsAllowed: disabled by default in production", () => {
+  assert.equal(isLocalGitProjectsAllowed({ NODE_ENV: "production" }), false);
+  assert.equal(isLocalGitProjectsAllowed({ NODE_ENV: "production", ALLOW_LOCAL_GIT_PROJECTS: "false" }), false);
+});
+
+test("isLocalGitProjectsAllowed: allowed in production only when ALLOW_LOCAL_GIT_PROJECTS=true explicitly", () => {
+  assert.equal(isLocalGitProjectsAllowed({ NODE_ENV: "production", ALLOW_LOCAL_GIT_PROJECTS: "true" }), true);
+});
+
+test("isLocalGitProjectsAllowed: throws clearly on a malformed flag under NODE_ENV=production", () => {
+  assert.throws(
+    () => isLocalGitProjectsAllowed({ NODE_ENV: "production", ALLOW_LOCAL_GIT_PROJECTS: "yes" }),
+    (err: unknown) => err instanceof ConfigError,
+  );
 });

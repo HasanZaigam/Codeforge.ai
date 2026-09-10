@@ -65,7 +65,7 @@ describe("App (session bootstrap, login, logout)", () => {
     expect(screen.getByLabelText(/password/i)).toBeInTheDocument();
   });
 
-  it("a successful login shows the authenticated app shell (projects, nav, user indicator)", async () => {
+  it("a successful login shows the authenticated app shell (projects, nav, log out)", async () => {
     mockedAuthApi.me.mockRejectedValue(new ApiError(401, "UNAUTHENTICATED", "Sign in required"));
     mockedAuthApi.login.mockResolvedValue({ id: "u1", email: "dev@example.com", name: "Dev User", createdAt: "2026-01-01T00:00:00.000Z" });
 
@@ -76,7 +76,7 @@ describe("App (session bootstrap, login, logout)", () => {
     await userEvent.type(screen.getByLabelText(/password/i), "correct horse battery staple");
     await userEvent.click(screen.getByRole("button", { name: /sign in/i }));
 
-    await waitFor(() => expect(screen.getByText("Dev User")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole("button", { name: /log out/i })).toBeInTheDocument());
     expect(screen.getByRole("heading", { name: "Projects" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Settings" })).toBeInTheDocument();
     expect(mockedAuthApi.login).toHaveBeenCalledWith({ email: "dev@example.com", password: "correct horse battery staple" });
@@ -103,7 +103,7 @@ describe("App (session bootstrap, login, logout)", () => {
     mockedAuthApi.logout.mockResolvedValue(undefined);
 
     renderFullApp("/");
-    await waitFor(() => expect(screen.getByText("Dev User")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole("button", { name: /log out/i })).toBeInTheDocument());
 
     await userEvent.click(screen.getByRole("button", { name: /log out/i }));
 

@@ -1,11 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { buildPlatform, type Platform } from "../src/platform.js";
-import { createTask } from "../src/orchestrator/task-factory.js";
+import { createReadyTask } from "./helpers/create-ready-task.js";
 import { createFixtureRepo } from "../src/cli/fixture-repo.js";
 import { createSelfFixDemoEngine, createNeedsInputDemoEngine } from "../src/cli/fixture-engine-handlers.js";
 import { FixtureCodingEngine } from "../src/coding-engine/fixture-coding-engine.js";
@@ -26,11 +26,21 @@ const INSTANT_RESULT: StepResult = {
   needsInput: null,
 };
 
-/** Resolves immediately for every role except `hangRole`, which never resolves on its own — only cancellation (signal abort) settles it. */
+/**
+ * Resolves immediately for every role except `hangRole`, which never resolves on its own — only
+ * cancellation (signal abort) settles it. When the implementer isn't the hanging role, it writes a
+ * real (throwaway) file change — needed so the episode has a genuine, non-empty diff and actually
+ * reaches the review loop instead of being correctly short-circuited by the orchestrator's
+ * zero-change detection (see /docs/TASK_LIFECYCLE.md "Zero-change detection") before ever calling
+ * the Reviewer.
+ */
 function hangingEngine(hangRole: AgentRole): FixtureCodingEngine {
   return new FixtureCodingEngine({
-    implementer: (request) =>
-      hangRole === "implementer" ? hang(request.signal) : Promise.resolve({ result: INSTANT_RESULT, cost: null, logExcerpt: "" }),
+    implementer: async (request) => {
+      if (hangRole === "implementer") return hang(request.signal);
+      await writeFile(join(request.workspacePath, "NOTICE.md"), "placeholder change so a real diff exists\n");
+      return { result: { ...INSTANT_RESULT, filesChanged: ["NOTICE.md"] }, cost: null, logExcerpt: "" };
+    },
     reviewer: (request) =>
       hangRole === "reviewer" ? hang(request.signal) : Promise.resolve({ result: INSTANT_RESULT, cost: null, logExcerpt: "" }),
   });
@@ -92,7 +102,7 @@ async function setupPlatform(
 }
 
 function newTask(platform: Platform, projectId: string, title = "Cancel me") {
-  return createTask(platform.tasks, platform.taskEvents, {
+  return createReadyTask(platform.tasks, platform.taskEvents, {
     tenantId: "default",
     projectId,
     title,

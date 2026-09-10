@@ -3,7 +3,7 @@ import { Dialog } from "../common/Dialog.js";
 import { ErrorState } from "../common/ErrorState.js";
 import { tasksApi, type TaskDTO } from "../../api/index.js";
 
-const CANCELLABLE_STATUSES: TaskDTO["status"][] = ["TODO", "WORKING", "NEEDS_INPUT"];
+const CANCELLABLE_STATUSES: TaskDTO["status"][] = ["BACKLOG", "TODO", "WORKING", "NEEDS_INPUT"];
 
 /**
  * Shown on the task detail page for any task the backend can actually
@@ -43,18 +43,27 @@ export function CancelTaskControl({ task, onCancelled }: { task: TaskDTO; onCanc
     }
   }
 
+  // A BACKLOG task was never released to the AI developer, so the explanatory body text differs
+  // from the "stop working" copy below — but the action is still "Cancel" everywhere, never
+  // "Delete": cancelling transitions the task to CANCELLED and keeps its history record, it does
+  // not remove it. Same POST /tasks/:id/cancel call either way — BACKLOG -> CANCELLED is just
+  // another row in the same state machine (see task-state-machine.ts).
+  const isBacklog = task.status === "BACKLOG";
+
   if (confirming) {
     return (
       <Dialog title="Cancel this task?" onClose={() => (submitting ? undefined : setConfirming(false))}>
         <p style={{ marginBottom: 16 }}>
-          The autonomous developer will stop working on this task. Any changes in its isolated workspace will be discarded
-          unless already pushed to a branch through the platform's normal source-control flow — the activity log will still
-          show what was done before cancelling.
+          {isBacklog
+            ? "This task will be removed from Backlog and never sent to the AI developer. It stays visible in Tasks as Cancelled, in case you need to refer back to it."
+            : "The autonomous developer will stop working on this task. Any changes in its isolated workspace will be discarded " +
+              "unless already pushed to a branch through the platform's normal source-control flow — the activity log will still " +
+              "show what was done before cancelling."}
         </p>
         {error && <ErrorState message={error} />}
         <div className="dialog-actions">
           <button type="button" className="btn btn-secondary" onClick={() => setConfirming(false)} disabled={submitting}>
-            Keep Working
+            {isBacklog ? "Keep Task" : "Keep Working"}
           </button>
           <button type="button" className="btn btn-danger" onClick={handleConfirm} disabled={submitting}>
             {submitting ? "Cancelling…" : "Confirm cancellation"}

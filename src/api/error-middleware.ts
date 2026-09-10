@@ -1,15 +1,24 @@
 import type { NextFunction, Request, Response } from "express";
 import { ZodError } from "zod";
 import {
+  BranchInUseError,
+  CircularDependencyError,
+  CrossProjectDependencyError,
+  DuplicateDependencyError,
   EmailAlreadyRegisteredError,
+  InvalidBranchSelectionError,
   InvalidCredentialsError,
   InvalidGitHubTokenError,
   InvalidOperationError,
   InvalidRepositoryError,
   InvalidRequestError,
+  LocalGitProjectsDisabledError,
   NotFoundError,
+  SelfDependencyError,
+  TaskNotEditableError,
 } from "../application/errors.js";
 import { InvalidTransitionError } from "../domain/task-state-machine.js";
+import { IncompleteDependenciesError } from "../domain/errors.js";
 import { NotFoundError as OrchestratorNotFoundError } from "../orchestrator/orchestrator.js";
 import { GitHubNotConnectedError } from "../integrations/github/credential-resolver.js";
 import { GitHubApiError, GitHubAuthError, GitHubNotFoundError, GitHubRateLimitError } from "../integrations/github/github-client.js";
@@ -59,6 +68,42 @@ export function errorMiddleware(err: unknown, _req: Request, res: Response, _nex
   }
   if (err instanceof InvalidRepositoryError) {
     respond(res, 400, "INVALID_REPOSITORY", err.message);
+    return;
+  }
+  if (err instanceof LocalGitProjectsDisabledError) {
+    respond(res, 403, "LOCAL_GIT_PROJECTS_DISABLED", err.message);
+    return;
+  }
+  if (err instanceof InvalidBranchSelectionError) {
+    respond(res, 400, "INVALID_BRANCH_SELECTION", err.message);
+    return;
+  }
+  if (err instanceof BranchInUseError) {
+    respond(res, 409, "BRANCH_IN_USE", err.message);
+    return;
+  }
+  if (err instanceof TaskNotEditableError) {
+    respond(res, 409, "TASK_NOT_EDITABLE", err.message);
+    return;
+  }
+  if (err instanceof SelfDependencyError) {
+    respond(res, 400, "SELF_DEPENDENCY", err.message);
+    return;
+  }
+  if (err instanceof CrossProjectDependencyError) {
+    respond(res, 400, "CROSS_PROJECT_DEPENDENCY", err.message);
+    return;
+  }
+  if (err instanceof CircularDependencyError) {
+    respond(res, 409, "CIRCULAR_DEPENDENCY", err.message);
+    return;
+  }
+  if (err instanceof DuplicateDependencyError) {
+    respond(res, 409, "DUPLICATE_DEPENDENCY", err.message);
+    return;
+  }
+  if (err instanceof IncompleteDependenciesError) {
+    respond(res, 409, "INCOMPLETE_DEPENDENCIES", err.message, { incomplete: err.incomplete });
     return;
   }
   if (err instanceof GitHubNotConnectedError) {

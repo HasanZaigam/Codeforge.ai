@@ -28,7 +28,6 @@ export function AppShell({ children }: { children: ReactNode }) {
         </nav>
         {user && (
           <div className="user-indicator">
-            <span>{user.name}</span>
             <button type="button" className="btn-link-muted" onClick={handleLogout}>
               Log out
             </button>

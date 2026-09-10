@@ -35,7 +35,18 @@ export function openDatabase(path: string): DatabaseSync {
  * file added here but not on disk (or vice versa) would otherwise only
  * surface as a runtime ENOENT the first time a fresh database is opened.
  */
-export const MIGRATION_FILES = ["001_init.sql", "002_cancellation.sql", "003_auth.sql", "004_github.sql", "005_concurrency.sql"];
+export const MIGRATION_FILES = [
+  "001_init.sql",
+  "002_cancellation.sql",
+  "003_auth.sql",
+  "004_github.sql",
+  "005_concurrency.sql",
+  "006_branch_mode.sql",
+  "007_branch_race_closure.sql",
+  "008_task_dependencies.sql",
+  "009_lock_generation.sql",
+  "010_review_poll_scheduling.sql",
+];
 
 function runMigrations(db: DatabaseSync): void {
   db.exec(`

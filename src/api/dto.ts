@@ -1,4 +1,6 @@
 import type { HumanInputRequest, Project, Task, TaskEvent, TaskEventType, User } from "../domain/types.js";
+import type { BranchStateSummary } from "../reporting/branch-state.js";
+import type { DependencyStatus } from "../persistence/repositories/task-dependency-repository.js";
 
 /**
  * Read models returned by the API. Never the raw persistence row shape —
@@ -60,6 +62,12 @@ export interface TaskDTO {
   currentActivity: string;
   selfFixAttempts: number;
   branchName: string | null;
+  /** See domain/types.ts BranchMode — always "new" for a task created before this field existed. */
+  branchMode: Task["branchMode"];
+  /** The user-supplied branch input at creation time (custom "new" name, or the required "existing" branch) — null if none was given. Distinct from `branchName`, the orchestrator-derived *actual* branch in use. */
+  workingBranch: string | null;
+  /** Mode "new" only: the base-branch override, if the user set one. Null means the project's default branch was used. */
+  baseBranch: string | null;
   createdAt: string;
   updatedAt: string;
   startedAt: string | null;
@@ -73,10 +81,32 @@ export interface TaskDTO {
   pullRequestNumber: number | null;
   /** The latest commit produced for this task, if any (from the platform's own commit, not the coding engine's local git usage). */
   commitSha: string | null;
+  /**
+   * This task's explicit, user-defined dependencies (see /docs/TASK_LIFECYCLE.md "Task
+   * dependencies"), each with the dependency's own live status/title, plus a derived `satisfied`
+   * flag (true only when that dependency is DONE). Never a persisted field — computed fresh on
+   * every read from `task_dependencies`, the same "derived, read-only" treatment already used for
+   * `currentActivity` above. Embedded directly on the task DTO (rather than requiring a second
+   * request per task) so the Kanban board can render "Depends on: ..." / "Blocked by: ..." for
+   * every card without an N+1 fetch.
+   */
+  dependencies: DependencyStatusDTO[];
+}
+
+export interface DependencyStatusDTO {
+  id: string;
+  title: string;
+  status: Task["status"];
+  satisfied: boolean;
+}
+
+export function toDependencyStatusDTO(dep: DependencyStatus): DependencyStatusDTO {
+  return { id: dep.id, title: dep.title, status: dep.status, satisfied: dep.status === "DONE" };
 }
 
 const ACTIVITY_LABELS: Partial<Record<TaskEventType, string>> = {
-  TASK_CREATED: "Waiting to start",
+  TASK_CREATED: "In backlog",
+  TASK_RELEASED: "Waiting to start",
   TASK_CLAIMED: "Starting",
   TASK_STARTED: "Starting",
   WORKSPACE_CREATED: "Preparing workspace",
@@ -107,21 +137,35 @@ const ACTIVITY_LABELS: Partial<Record<TaskEventType, string>> = {
   BRANCH_PUSHED: "Pushed to GitHub",
   PULL_REQUEST_CREATED: "Opened a Pull Request",
   SOURCE_CONTROL_FAILED: "Source control operation failed",
+  NO_CHANGES_DETECTED: "No repository changes were needed — waiting for your input",
   HUMAN_REVIEW_DETECTED: "New feedback found on the Pull Request",
   HUMAN_REVIEW_CHANGES_REQUESTED: "Changes requested on GitHub — fixing",
   HUMAN_REVIEW_APPROVED: "Approved on GitHub",
+  PULL_REQUEST_MERGED: "Pull Request merged on GitHub",
+  EXECUTION_LEASE_LOST: "Handed off to another worker process",
 };
 
 function deriveCurrentActivity(task: Task, latestEvent: TaskEvent | undefined): string {
-  if (task.status === "DONE") return "Done";
+  if (task.status === "DONE") {
+    // A task completed via PR-merge sync (see Orchestrator.finalizeMergedPullRequest) gets a more
+    // specific activity string than a manually-accepted one — see /docs/TASK_LIFECYCLE.md "PR merge
+    // sync" and /docs/UI_ARCHITECTURE.md. `task.taskRecord.pullRequest` is still present (never
+    // cleared on completion), so the PR number is always available here when this event fired.
+    if (latestEvent?.type === "PULL_REQUEST_MERGED") {
+      const number = task.taskRecord.pullRequest?.number;
+      return number ? `Completed — PR #${number} merged` : "Completed — Pull Request merged";
+    }
+    return "Done";
+  }
   if (task.status === "CANCELLED") return "Cancelled";
+  if (task.status === "BACKLOG") return "In backlog";
   if (task.status === "TODO") return "Waiting to start";
   if (task.status === "WORKING" && task.cancelRequestedAt) return "Cancelling…";
   if (!latestEvent) return "Waiting to start";
   return ACTIVITY_LABELS[latestEvent.type] ?? task.status;
 }
 
-export function toTaskDTO(task: Task, latestEvent: TaskEvent | undefined): TaskDTO {
+export function toTaskDTO(task: Task, latestEvent: TaskEvent | undefined, dependencies: DependencyStatus[] = []): TaskDTO {
   return {
     id: task.id,
     projectId: task.projectId,
@@ -131,6 +175,9 @@ export function toTaskDTO(task: Task, latestEvent: TaskEvent | undefined): TaskD
     currentActivity: deriveCurrentActivity(task, latestEvent),
     selfFixAttempts: task.taskRecord.selfFixAttempts,
     branchName: task.taskRecord.branchName,
+    branchMode: task.branchMode,
+    workingBranch: task.workingBranch,
+    baseBranch: task.baseBranch,
     createdAt: task.createdAt,
     updatedAt: task.updatedAt,
     startedAt: task.startedAt,
@@ -140,6 +187,7 @@ export function toTaskDTO(task: Task, latestEvent: TaskEvent | undefined): TaskD
     pullRequestUrl: task.taskRecord.pullRequest?.url ?? null,
     pullRequestNumber: task.taskRecord.pullRequest?.number ?? null,
     commitSha: task.taskRecord.latestDiffRef,
+    dependencies: dependencies.map(toDependencyStatusDTO),
   };
 }
 
@@ -180,6 +228,18 @@ export function toHumanInputRequestDTO(request: HumanInputRequest): HumanInputRe
     askedAt: request.askedAt,
     answeredAt: request.answeredAt,
   };
+}
+
+/** GET /tasks/:id/branch-state — see /docs/TASK_LIFECYCLE.md "Stale/behind detection" and "Merge/conflict state". */
+export interface BranchStateDTO {
+  aheadBy: number | null;
+  behindBy: number | null;
+  comparable: boolean;
+  mergeState: BranchStateSummary["mergeState"];
+}
+
+export function toBranchStateDTO(summary: BranchStateSummary): BranchStateDTO {
+  return { aheadBy: summary.aheadBy, behindBy: summary.behindBy, comparable: summary.comparable, mergeState: summary.mergeState };
 }
 
 /** GET/POST /integrations/github — see /docs/API.md. Never includes the token itself. */

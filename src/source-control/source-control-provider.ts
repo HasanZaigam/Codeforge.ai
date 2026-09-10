@@ -1,6 +1,6 @@
-import type { GitCredential, HumanReviewFeedbackItem, Project, PullRequestRef } from "../domain/types.js";
+import type { BranchComparisonStatus, GitCredential, HumanReviewFeedbackItem, Project, PullRequestRef, PullRequestStatus } from "../domain/types.js";
 
-export type { GitCredential, PullRequestRef };
+export type { BranchComparisonStatus, GitCredential, PullRequestRef, PullRequestStatus };
 
 export interface OpenPullRequestRequest {
   workspacePath: string;
@@ -61,6 +61,57 @@ export interface SourceControlProvider {
    * A provider with no PR-review concept (e.g. local-git) returns `[]`.
    */
   listPullRequestFeedback(project: Project, pr: PullRequestRef, signal: AbortSignal): Promise<HumanReviewFeedbackItem[]>;
+
+  /**
+   * The PR's current remote state — specifically whether it has been
+   * merged, distinct from `listPullRequestFeedback`'s existing
+   * merged/closed short-circuit (which only needed to know "actionable or
+   * not," not *why*). This is what lets the Orchestrator tell a merge
+   * (→ complete the task as DONE) apart from a plain close-without-merge
+   * (→ stay REVIEW) — see /docs/TASK_LIFECYCLE.md "PR merge sync" and
+   * /docs/GITHUB_INTEGRATION.md "PR state handling". A provider with no
+   * real PR concept (e.g. local-git) always reports `{ state: "open",
+   * merged: false }` — there is nothing external that could have merged it.
+   */
+  getPullRequestStatus(project: Project, pr: PullRequestRef, signal: AbortSignal): Promise<PullRequestStatus>;
+
+  /**
+   * Lists the repository's real remote branch names — used to populate the
+   * "work directly on an existing branch" task-creation UI (see
+   * /docs/API.md, CreateTaskDialog). GitHub: a real API call against
+   * `project.owner`/`project.repo`. Local-git: a best-effort `git ls-remote
+   * --heads` against `project.repoUrl` (no auth, no workspace required) —
+   * returns `[]` if the remote can't be reached rather than throwing, since
+   * this is advisory UI data, not a gate. Never throws for "no branches";
+   * only for a genuine access/configuration failure on a provider that
+   * requires a credential (GitHub with none connected).
+   */
+  listBranches(project: Project, signal: AbortSignal): Promise<string[]>;
+
+  /**
+   * Whether `branch` currently exists on the remote — used at *execution*
+   * time (see Orchestrator.provisionWorkspace), not just task-creation time,
+   * to catch a branch deleted after the task was created but before the
+   * worker started it (see /docs/TASK_LIFECYCLE.md "Branch existence
+   * validation"). Returns `true`/`false` when the provider can determine
+   * this reliably (GitHub: a real API call), or `null` when it genuinely
+   * cannot verify (local-git's best-effort remote reachability — same
+   * "advisory, not a hard gate" policy `listBranches` already documents) —
+   * a `null` result must never be treated as "doesn't exist."
+   */
+  branchExists(project: Project, branch: string, signal: AbortSignal): Promise<boolean | null>;
+
+  /**
+   * Ahead/behind commit counts between `branch` and `baseBranch` — detection
+   * only (see BranchComparisonStatus's own doc comment and
+   * /docs/TASK_LIFECYCLE.md "Stale/behind detection"); this never
+   * rebases/merges anything, and the Orchestrator never calls this as part
+   * of the task-execution control flow — it's read on demand for display
+   * (see TaskService.getBranchState). GitHub: the real compare API.
+   * local-git: real `git rev-list --left-right --count` plumbing against the
+   * remote path — never fabricated for either provider.
+   */
+  getBranchStatus(project: Project, branch: string, baseBranch: string, signal: AbortSignal): Promise<BranchComparisonStatus>;
 }
 
 export class UnknownSourceControlProviderError extends Error {

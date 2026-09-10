@@ -8,6 +8,7 @@ import type { TaskStatus } from "./types.js";
 
 /** Every trigger that can legally move a task between states. */
 export type TaskTransitionTrigger =
+  | "released" // a human explicitly releases a BACKLOG task into TODO (see TaskService.startTask)
   | "claim" // worker picks up a TODO (or answered NEEDS_INPUT) task
   | "blocked" // Orchestrator determines the task cannot safely proceed
   | "gates_passed" // all validation gates + Reviewer approved
@@ -30,6 +31,7 @@ export interface TransitionRule {
  * TaskEvent records, not additional Task states.
  */
 export const TRANSITIONS: readonly TransitionRule[] = [
+  { from: "BACKLOG", trigger: "released", to: "TODO" },
   { from: "TODO", trigger: "claim", to: "WORKING" },
   { from: "WORKING", trigger: "gates_passed", to: "REVIEW" },
   { from: "WORKING", trigger: "blocked", to: "NEEDS_INPUT" },
@@ -38,6 +40,7 @@ export const TRANSITIONS: readonly TransitionRule[] = [
   { from: "NEEDS_INPUT", trigger: "infra_failure", to: "FAILED" },
   { from: "REVIEW", trigger: "accepted", to: "DONE" },
   { from: "REVIEW", trigger: "changes_requested", to: "WORKING" },
+  { from: "BACKLOG", trigger: "cancel", to: "CANCELLED" },
   { from: "TODO", trigger: "cancel", to: "CANCELLED" },
   { from: "WORKING", trigger: "cancel", to: "CANCELLED" },
   { from: "NEEDS_INPUT", trigger: "cancel", to: "CANCELLED" },
@@ -51,6 +54,12 @@ export const TRANSITIONS: readonly TransitionRule[] = [
 //    discarding a result that already passed validation + independent review is a different
 //    capability ("discard"/"reject a finished result") than cancellation, and out of scope here.
 //  - FAILED: already terminal for an unrelated (infrastructure) reason.
+// BACKLOG *does* get a `cancel` row: a task sitting in BACKLOG has exactly the same "nothing is
+// currently executing anywhere" property TODO has (see requestCancellation's TODO/NEEDS_INPUT
+// branch) — it just hasn't even been released to the worker yet. Treating it as not-cancellable
+// would leave a developer who created a task by mistake with no way to remove it except "Start"
+// then "Cancel," which is more surprising than simply allowing the same immediate-finalize path
+// TODO already uses. See TaskRepository.finalizeCancellationOnBacklog.
 // CANCELLED itself has no outgoing rows at all — terminal by design, per
 // /docs/TASK_LIFECYCLE.md "Cancellation": nothing resumes a cancelled task. Repeated cancel
 // requests against an already-CANCELLED task are handled as an idempotent no-op by the

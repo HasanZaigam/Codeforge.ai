@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { buildPlatform } from "../src/platform.js";
-import { createTask } from "../src/orchestrator/task-factory.js";
+import { createReadyTask } from "./helpers/create-ready-task.js";
 import { createFixtureRepo } from "../src/cli/fixture-repo.js";
 import { createSelfFixDemoEngine } from "../src/cli/fixture-engine-handlers.js";
 import { Worker } from "../src/worker/worker.js";
@@ -50,13 +50,16 @@ async function setup(label: string) {
   return { platform, project };
 }
 
-test("Task A, B, C created together are all driven to REVIEW independently by one worker", async () => {
+test("Task A, B, C created together are all driven to REVIEW independently by one worker (capacity >= 3)", async () => {
   const { platform, project } = await setup("multi");
-  const worker = new Worker(platform.tasks, platform.orchestrator, { pollIntervalMs: 60_000 });
+  // Explicit maxConcurrentTasks: 3 — this test is about the worker correctly driving multiple
+  // independent tasks in one tick, not about the WORKER_MAX_CONCURRENT_TASKS cap itself (see
+  // tests/worker-concurrency-limit.test.ts for that).
+  const worker = new Worker(platform.tasks, platform.orchestrator, { pollIntervalMs: 60_000, maxConcurrentTasks: 3 });
 
   const ids = ["A", "B", "C"].map(
     (label) =>
-      createTask(platform.tasks, platform.taskEvents, {
+      createReadyTask(platform.tasks, platform.taskEvents, {
         tenantId: "default",
         projectId: project.id,
         title: `Task ${label}`,
@@ -78,7 +81,7 @@ test("two overlapping tick() calls never both execute the same task", async () =
   const { platform, project } = await setup("overlap");
   const worker = new Worker(platform.tasks, platform.orchestrator, { pollIntervalMs: 60_000 });
 
-  const task = createTask(platform.tasks, platform.taskEvents, {
+  const task = createReadyTask(platform.tasks, platform.taskEvents, {
     tenantId: "default",
     projectId: project.id,
     title: "Fix add()",
@@ -102,7 +105,7 @@ test("two overlapping tick() calls never both execute the same task", async () =
 test("stop() waits for in-flight work before resolving", async () => {
   const { platform, project } = await setup("stop");
   const worker = new Worker(platform.tasks, platform.orchestrator, { pollIntervalMs: 60_000 });
-  createTask(platform.tasks, platform.taskEvents, {
+  createReadyTask(platform.tasks, platform.taskEvents, {
     tenantId: "default",
     projectId: project.id,
     title: "Fix add()",

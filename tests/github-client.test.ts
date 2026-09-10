@@ -110,7 +110,7 @@ test("getPullRequest returns the merged flag, which listPullRequests/createPullR
   try {
     const client = new GitHubClient("fake-token");
     const pr = await client.getPullRequest("acme", "widgets", 7);
-    assert.deepEqual(pr, { number: 7, htmlUrl: "https://github.com/acme/widgets/pull/7", state: "closed", merged: true });
+    assert.deepEqual(pr, { number: 7, htmlUrl: "https://github.com/acme/widgets/pull/7", state: "closed", merged: true, mergeable: null });
   } finally {
     restore();
   }

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { openDatabase } from "./persistence/db.js";
 import { TaskRepository } from "./persistence/repositories/task-repository.js";
+import { TaskDependencyRepository } from "./persistence/repositories/task-dependency-repository.js";
 import { TaskEventRepository } from "./persistence/repositories/task-event-repository.js";
 import { ProjectRepository } from "./persistence/repositories/project-repository.js";
 import { AgentRunRepository } from "./persistence/repositories/agent-run-repository.js";
@@ -30,6 +31,7 @@ import { DEFAULT_ORCHESTRATOR_CONFIG, type OrchestratorConfig } from "./orchestr
 export interface Platform {
   db: DatabaseSync;
   tasks: TaskRepository;
+  taskDependencies: TaskDependencyRepository;
   taskEvents: TaskEventRepository;
   projects: ProjectRepository;
   agentRuns: AgentRunRepository;
@@ -39,6 +41,8 @@ export interface Platform {
   sessions: SessionRepository;
   githubCredentials: GitHubCredentialRepository;
   orchestrator: Orchestrator;
+  /** Exposed so the application layer can resolve a project's provider for read-only operations (e.g. TaskService.listBranches) without duplicating the registry. */
+  sourceControlProviders: SourceControlProviderRegistry;
 }
 
 export interface BuildPlatformOptions {
@@ -61,6 +65,7 @@ export function buildPlatform(options: BuildPlatformOptions): Platform {
   const db = openDatabase(options.dbPath);
 
   const tasks = new TaskRepository(db);
+  const taskDependencies = new TaskDependencyRepository(db);
   const taskEvents = new TaskEventRepository(db);
   const projects = new ProjectRepository(db);
   const agentRuns = new AgentRunRepository(db);
@@ -100,9 +105,24 @@ export function buildPlatform(options: BuildPlatformOptions): Platform {
     engines,
     workspaceProvider,
     sourceControlProviders,
+    taskDependencies,
     options.ownerId ?? `worker-${randomUUID().slice(0, 8)}`,
     { ...DEFAULT_ORCHESTRATOR_CONFIG, ...options.orchestratorConfig },
   );
 
-  return { db, tasks, taskEvents, projects, agentRuns, workspaces, humanInput, users, sessions, githubCredentials, orchestrator };
+  return {
+    db,
+    tasks,
+    taskDependencies,
+    taskEvents,
+    projects,
+    agentRuns,
+    workspaces,
+    humanInput,
+    users,
+    sessions,
+    githubCredentials,
+    orchestrator,
+    sourceControlProviders,
+  };
 }

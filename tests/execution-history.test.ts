@@ -41,6 +41,7 @@ function makeRun(overrides: Partial<AgentRun> = {}): AgentRun {
     cost: null,
     startedAt: "2026-01-01T00:00:00.000Z",
     completedAt: "2026-01-01T00:00:05.000Z",
+    ownerGeneration: 1,
     ...overrides,
   };
 }
@@ -77,6 +78,9 @@ function makeTask(overrides: Partial<Task> = {}): Task {
     goal: "add() returns the wrong result",
     status: "REVIEW",
     taskRecord: { ...EMPTY_TASK_RECORD },
+    branchMode: "new",
+    workingBranch: null,
+    baseBranch: null,
     currentAgentRunId: null,
     workspaceId: null,
     lockOwner: null,
@@ -88,6 +92,8 @@ function makeTask(overrides: Partial<Task> = {}): Task {
     completedAt: null,
     cancelRequestedAt: null,
     cancelRequestedBy: null,
+    lockGeneration: 1,
+    nextReviewCheckAt: null,
     ...overrides,
   };
 }

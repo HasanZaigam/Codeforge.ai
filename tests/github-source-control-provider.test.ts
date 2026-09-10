@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { GitHubSourceControlProvider, classifyGitPushError } from "../src/source-control/github-source-control-provider.js";
 import { CancellationError } from "../src/domain/errors.js";
+import { GitHubNotFoundError } from "../src/integrations/github/github-client.js";
 import type { GitHubCredentialRepository } from "../src/persistence/repositories/github-credential-repository.js";
 import type { GitHubClient, GitHubPullRequestReview, GitHubIssueComment } from "../src/integrations/github/github-client.js";
 import type { Project, PullRequestRef } from "../src/domain/types.js";
@@ -157,6 +158,55 @@ test("listPullRequestFeedback fetches reviews/comments normally for an open PR",
 });
 
 // ---------------------------------------------------------------------------
+// getPullRequestStatus — PR merge sync (see /docs/TASK_LIFECYCLE.md "PR merge sync")
+// ---------------------------------------------------------------------------
+
+test("getPullRequestStatus reports merged:true for a merged PR", async () => {
+  const client = fakeGitHubClient({
+    getPullRequest: async () => ({ number: 1, htmlUrl: "https://github.com/acme/widgets/pull/1", state: "closed", merged: true }),
+  });
+  const provider = new GitHubSourceControlProvider(mockCredentials, mockEncryptionKey, () => client);
+  const pr: PullRequestRef = { provider: "github", id: "1", number: 1, url: null };
+  const status = await provider.getPullRequestStatus(testProject, pr, new AbortController().signal);
+  assert.deepEqual(status, { state: "closed", merged: true, mergeable: null });
+});
+
+test("getPullRequestStatus reports merged:false for a closed-but-not-merged PR", async () => {
+  const client = fakeGitHubClient({
+    getPullRequest: async () => ({ number: 1, htmlUrl: "https://github.com/acme/widgets/pull/1", state: "closed", merged: false }),
+  });
+  const provider = new GitHubSourceControlProvider(mockCredentials, mockEncryptionKey, () => client);
+  const pr: PullRequestRef = { provider: "github", id: "1", number: 1, url: null };
+  const status = await provider.getPullRequestStatus(testProject, pr, new AbortController().signal);
+  assert.deepEqual(status, { state: "closed", merged: false, mergeable: null });
+});
+
+test("getPullRequestStatus reports open/unmerged for an open PR", async () => {
+  const client = fakeGitHubClient({
+    getPullRequest: async () => ({ number: 1, htmlUrl: "https://github.com/acme/widgets/pull/1", state: "open", merged: false }),
+  });
+  const provider = new GitHubSourceControlProvider(mockCredentials, mockEncryptionKey, () => client);
+  const pr: PullRequestRef = { provider: "github", id: "1", number: 1, url: null };
+  const status = await provider.getPullRequestStatus(testProject, pr, new AbortController().signal);
+  assert.deepEqual(status, { state: "open", merged: false, mergeable: null });
+});
+
+test("cancellation racing getPullRequestStatus surfaces as CancellationError", async () => {
+  const controller = new AbortController();
+  const client = fakeGitHubClient({
+    getPullRequest: async () => {
+      controller.abort();
+      const err = new Error("This operation was aborted");
+      err.name = "AbortError";
+      throw err;
+    },
+  });
+  const provider = new GitHubSourceControlProvider(mockCredentials, mockEncryptionKey, () => client);
+  const pr: PullRequestRef = { provider: "github", id: "1", number: 1, url: null };
+  await assert.rejects(() => provider.getPullRequestStatus(testProject, pr, controller.signal), CancellationError);
+});
+
+// ---------------------------------------------------------------------------
 // Cancellation around network GitHub operations
 // ---------------------------------------------------------------------------
 
@@ -228,4 +278,60 @@ test("classifyGitPushError: never treats auth/permission/conflict failures as re
 
 test("classifyGitPushError: an unrecognized error text is conservatively non-retryable", () => {
   assert.equal(classifyGitPushError("fatal: something completely unexpected happened"), "unknown");
+});
+
+// ---------------------------------------------------------------------------
+// Branch existence validation (§8) — see /docs/TASK_LIFECYCLE.md "Branch existence validation"
+// ---------------------------------------------------------------------------
+
+test("branchExists: true when GitHub's branch API finds the branch, false when it 404s — a real, checkable fact, never null", async () => {
+  const client = fakeGitHubClient({ getBranch: async (_o, _r, branch) => (branch === "release" ? { sha: "abc123" } : null) });
+  const provider = new GitHubSourceControlProvider(mockCredentials, mockEncryptionKey, () => client);
+
+  assert.equal(await provider.branchExists(testProject, "release", new AbortController().signal), true);
+  assert.equal(await provider.branchExists(testProject, "deleted-branch", new AbortController().signal), false);
+});
+
+// ---------------------------------------------------------------------------
+// Stale/behind detection (§9) — see /docs/TASK_LIFECYCLE.md "Stale/behind detection"
+// ---------------------------------------------------------------------------
+
+test("getBranchStatus: reports real ahead/behind counts from GitHub's compare API", async () => {
+  const client = fakeGitHubClient({
+    compareCommits: async (_o, _r, base, head) => {
+      assert.equal(base, "main");
+      assert.equal(head, "task/fix-login");
+      return { aheadBy: 2, behindBy: 3, status: "diverged" };
+    },
+  });
+  const provider = new GitHubSourceControlProvider(mockCredentials, mockEncryptionKey, () => client);
+  const status = await provider.getBranchStatus(testProject, "task/fix-login", "main", new AbortController().signal);
+  assert.deepEqual(status, { comparable: true, aheadBy: 2, behindBy: 3 });
+});
+
+test("getBranchStatus: a ref that no longer exists reports comparable:false rather than throwing — advisory display data, never a gate", async () => {
+  const client = fakeGitHubClient({
+    compareCommits: async () => {
+      throw new GitHubNotFoundError("Comparison");
+    },
+  });
+  const provider = new GitHubSourceControlProvider(mockCredentials, mockEncryptionKey, () => client);
+  const status = await provider.getBranchStatus(testProject, "deleted-branch", "main", new AbortController().signal);
+  assert.deepEqual(status, { comparable: false, aheadBy: null, behindBy: null });
+});
+
+// ---------------------------------------------------------------------------
+// Merge/conflict state (§10) — see /docs/TASK_LIFECYCLE.md "Merge/conflict state"
+// ---------------------------------------------------------------------------
+
+test("getPullRequestStatus: surfaces GitHub's own mergeable verdict — true, false, and null (not yet computed) are all passed through, never coerced", async () => {
+  for (const mergeable of [true, false, null]) {
+    const client = fakeGitHubClient({
+      getPullRequest: async () => ({ number: 1, htmlUrl: "https://github.com/acme/widgets/pull/1", state: "open", merged: false, mergeable }),
+    });
+    const provider = new GitHubSourceControlProvider(mockCredentials, mockEncryptionKey, () => client);
+    const pr: PullRequestRef = { provider: "github", id: "1", number: 1, url: null };
+    const status = await provider.getPullRequestStatus(testProject, pr, new AbortController().signal);
+    assert.equal(status.mergeable, mergeable);
+  }
 });

@@ -1,0 +1,57 @@
+# Reverse-proxy + TLS termination + static frontend hosting, for the
+# single-host deployment documented in docs/DEPLOYMENT.md "Production
+# deployment (single-host)". Caddy is chosen over nginx here specifically
+# because it gets automatic HTTPS (ACME/Let's Encrypt, including renewal)
+# from a bare domain name with no separate certbot setup — the smallest
+# amount of TLS ceremony for a single-host MVP. An equivalent nginx config
+# (with certbot handling certificates) works identically if that's already
+# your operator's standard tooling; the proxy behavior below is what matters,
+# not the specific software.
+#
+# Install: https://caddyserver.com/docs/install
+# Deploy:  sudo cp deploy/Caddyfile /etc/caddy/Caddyfile
+#          sudo systemctl reload caddy
+#
+# Replace "your-domain.example.com" with the real public domain pointed at
+# this host's IP via DNS (an A/AAAA record) before reloading — Caddy obtains
+# and renews the certificate for whatever hostname is written here.
+
+your-domain.example.com {
+	# --- Frontend: static build, served directly by Caddy -------------------
+	# `npm --prefix web run build` produces web/dist/ — copy (or symlink) that
+	# directory to the path below as part of your deploy step. Same-origin
+	# with the API below (both behind this one hostname), so the frontend
+	# never needs CORS headers from the API — see docs/DEPLOYMENT.md
+	# "CORS/origin configuration".
+	root * /opt/ai-task-manager/web/dist
+	file_server
+
+	# Single-page app: any path that isn't a real static file falls back to
+	# index.html so client-side routing (React Router-style deep links) works
+	# on a hard refresh, without needing this rule duplicated per route.
+	try_files {path} /index.html
+
+	# --- API: reverse-proxied to the API process, prefix stripped -----------
+	# Matches the exact relationship web/vite.config.ts's dev-time proxy
+	# already establishes (TD-21) — the frontend's apiClient always calls
+	# relative /api/... paths, so this is the only rule that needs to exist
+	# for "no CORS needed" to hold in production too.
+	handle /api/* {
+		uri strip_prefix /api
+		reverse_proxy localhost:3000
+	}
+
+	# Encourage clients to always use HTTPS once it's known to work here.
+	header Strict-Transport-Security "max-age=31536000; includeSubDomains"
+}
+
+# Optional: an internal/ops-only health-check vhost if you want to probe
+# /health and /health/ready without going through the public hostname above
+# (e.g. from an uptime monitor restricted to the host's private network).
+# Uncomment and adjust the bind address if needed:
+#
+# :8443 {
+# 	handle /health* {
+# 		reverse_proxy localhost:3000
+# 	}
+# }

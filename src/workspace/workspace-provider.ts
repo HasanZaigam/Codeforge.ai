@@ -3,9 +3,23 @@ import type { GitCredential, Workspace } from "../domain/types.js";
 export interface ProvisionWorkspaceRequest {
   taskId: string;
   repoUrl: string;
+  /**
+   * The branch to clone from. Mode "new": the base branch a new `taskBranch`
+   * is created from. Mode "existing": identical to `taskBranch` itself — the
+   * clone checks out the target branch directly, and no new branch is ever
+   * created (see `mode`).
+   */
   baseBranch: string;
   /** Deterministic per-task branch name so re-provisioning after a crash is idempotent. */
   taskBranch: string;
+  /**
+   * "new" (default, omitted = "new" for backward compatibility): create
+   * `taskBranch` from `baseBranch`, exactly as this always worked before
+   * branch-mode existed. "existing": check out `taskBranch` directly (it
+   * already exists on the remote) — never creates or renames a branch. See
+   * /docs/TASK_LIFECYCLE.md "Branch modes".
+   */
+  mode?: "new" | "existing";
 }
 
 /**

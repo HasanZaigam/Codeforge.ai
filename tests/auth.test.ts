@@ -300,9 +300,9 @@ test("a user cannot cancel another user's task", async () => {
     const cancelRes = await stranger.fetch(`/tasks/${task.id}/cancel`, { method: "POST" });
     assert.equal(cancelRes.status, 404);
 
-    // Untouched: still TODO, not cancelled by the stranger's attempt.
-    const stillTodo = await json<{ task: { status: string } }>(await owner.fetch(`/tasks/${task.id}`));
-    assert.equal(stillTodo.task.status, "TODO");
+    // Untouched: still BACKLOG, not cancelled by the stranger's attempt.
+    const stillBacklog = await json<{ task: { status: string } }>(await owner.fetch(`/tasks/${task.id}`));
+    assert.equal(stillBacklog.task.status, "BACKLOG");
   } finally {
     await teardown(h);
   }

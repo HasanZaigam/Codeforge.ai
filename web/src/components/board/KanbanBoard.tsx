@@ -12,7 +12,19 @@ import { EmptyState } from "../common/EmptyState.js";
  * deciding to stop a task), so each only appears as an extra column when at
  * least one task actually has that status — see TECHNICAL_DECISIONS.md TD-25.
  */
-export function KanbanBoard({ tasks }: { tasks: TaskDTO[] }) {
+export function KanbanBoard({
+  tasks,
+  defaultBranch,
+  onTaskChanged,
+}: {
+  tasks: TaskDTO[];
+  /** The owning project's default branch — threaded through to each BACKLOG TaskCard's Edit dialog. */
+  defaultBranch: string;
+  onTaskChanged?: (task: TaskDTO) => void;
+}) {
+  // Every task in the project — passed straight through to each TaskCard's Edit dialog, which
+  // needs the full same-project task list to populate its "Depends on" picker (excluding itself).
+  const allTasks = tasks;
   const byStatus = new Map<TaskStatus, TaskDTO[]>();
   for (const task of tasks) {
     const bucket = byStatus.get(task.status) ?? [];
@@ -31,8 +43,8 @@ export function KanbanBoard({ tasks }: { tasks: TaskDTO[] }) {
       {columns.map((status) => {
         const columnTasks = byStatus.get(status) ?? [];
         return (
-          <div className="board-column" key={status}>
-            <div className="board-column-header">
+          <div className={`board-column tone-${STATUS_META[status].tone}`} key={status}>
+            <div className={`board-column-header tone-${STATUS_META[status].tone}`}>
               <span className="board-column-title">{STATUS_META[status].label}</span>
               <span className="board-column-count">{columnTasks.length}</span>
             </div>
@@ -42,7 +54,9 @@ export function KanbanBoard({ tasks }: { tasks: TaskDTO[] }) {
                   No tasks
                 </p>
               ) : (
-                columnTasks.map((task) => <TaskCard key={task.id} task={task} />)
+                columnTasks.map((task) => (
+                  <TaskCard key={task.id} task={task} defaultBranch={defaultBranch} allTasks={allTasks} onChanged={onTaskChanged} />
+                ))
               )}
             </div>
           </div>

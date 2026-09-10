@@ -14,6 +14,7 @@ interface AgentRunRow {
   cost_json: string | null;
   started_at: string;
   completed_at: string | null;
+  owner_generation: number;
 }
 
 function rowToAgentRun(row: AgentRunRow): AgentRun {
@@ -30,6 +31,7 @@ function rowToAgentRun(row: AgentRunRow): AgentRun {
     cost: row.cost_json ? (JSON.parse(row.cost_json) as CostMetadata) : null,
     startedAt: row.started_at,
     completedAt: row.completed_at,
+    ownerGeneration: row.owner_generation,
   };
 }
 
@@ -46,8 +48,8 @@ export class AgentRunRepository {
       .prepare(
         `INSERT INTO agent_runs
           (id, task_id, role, engine, attempt_number, status, input_json,
-           result_json, error, cost_json, started_at, completed_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           result_json, error, cost_json, started_at, completed_at, owner_generation)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         run.id,
@@ -62,15 +64,35 @@ export class AgentRunRepository {
         run.cost ? JSON.stringify(run.cost) : null,
         run.startedAt,
         run.completedAt,
+        run.ownerGeneration,
       );
   }
 
-  complete(id: string, status: AgentRunStatus, result: StepResult | null, error: string | null, cost: CostMetadata | null, now: string): void {
-    this.db
+  /**
+   * Fenced completion: only takes effect if the task this run belongs to is
+   * STILL at the same lock_generation this run was created under (see
+   * `owner_generation`, set at insert time from Orchestrator.runAgent's
+   * captured execution generation). A stale execution — one that has lost
+   * the task's lease to a newer owner since this run started — has its
+   * completion silently rejected here rather than overwriting/clobbering an
+   * AgentRun a newer generation may already be relying on. Returns true iff
+   * this call actually completed the row; the caller (Orchestrator.runAgent)
+   * treats false as a symptom of lease loss, which its own generation-fenced
+   * task saves immediately afterward will independently detect and raise as
+   * LeaseLostError.
+   */
+  complete(id: string, status: AgentRunStatus, result: StepResult | null, error: string | null, cost: CostMetadata | null, now: string): boolean {
+    const outcome = this.db
       .prepare(
-        `UPDATE agent_runs SET status = ?, result_json = ?, error = ?, cost_json = ?, completed_at = ? WHERE id = ?`,
+        `UPDATE agent_runs
+         SET status = ?, result_json = ?, error = ?, cost_json = ?, completed_at = ?
+         WHERE id = ?
+           AND EXISTS (
+             SELECT 1 FROM tasks t WHERE t.id = agent_runs.task_id AND t.lock_generation = agent_runs.owner_generation
+           )`,
       )
       .run(status, result ? JSON.stringify(result) : null, error, cost ? JSON.stringify(cost) : null, now, id);
+    return outcome.changes > 0;
   }
 
   listForTask(taskId: string): AgentRun[] {

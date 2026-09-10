@@ -10,7 +10,7 @@ import { ErrorState } from "../components/common/ErrorState.js";
 export function ProjectBoardPage() {
   const { projectId } = useParams<{ projectId: string }>();
   const { project, error: projectError, loading: projectLoading } = useProject(projectId!);
-  const { tasks, error: tasksError, loading: tasksLoading, refetch, addOptimisticTask } = useProjectTasks(projectId!);
+  const { tasks, error: tasksError, loading: tasksLoading, refetch, addOptimisticTask, replaceTask } = useProjectTasks(projectId!);
   const [creating, setCreating] = useState(false);
 
   if (projectLoading) return <LoadingState label="Loading project…" />;
@@ -33,11 +33,15 @@ export function ProjectBoardPage() {
 
       {tasksLoading && <LoadingState label="Loading tasks…" />}
       {tasksError && !tasksLoading && <ErrorState message="Couldn't load tasks for this project." onRetry={refetch} />}
-      {!tasksLoading && !tasksError && <KanbanBoard tasks={tasks ?? []} />}
+      {!tasksLoading && !tasksError && (
+        <KanbanBoard tasks={tasks ?? []} defaultBranch={project.defaultBranch} onTaskChanged={replaceTask} />
+      )}
 
       {creating && (
         <CreateTaskDialog
           projectId={project.id}
+          defaultBranch={project.defaultBranch}
+          allTasks={tasks ?? []}
           onClose={() => setCreating(false)}
           onCreated={(task) => {
             addOptimisticTask(task);

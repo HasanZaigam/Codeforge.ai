@@ -3,11 +3,13 @@ import { useTask, isActiveStatus } from "../hooks/useTask.js";
 import { useTaskEvents } from "../hooks/useTaskEvents.js";
 import { useTaskInput } from "../hooks/useTaskInput.js";
 import { useTaskReport } from "../hooks/useTaskReport.js";
+import { useBranchState } from "../hooks/useBranchState.js";
 import { TaskHeader } from "../components/task-detail/TaskHeader.js";
 import { ActivityTimeline } from "../components/task-detail/ActivityTimeline.js";
 import { NeedsInputPanel } from "../components/task-detail/NeedsInputPanel.js";
 import { ReportPanel } from "../components/task-detail/ReportPanel.js";
 import { CancelTaskControl } from "../components/task-detail/CancelTaskControl.js";
+import { StartTaskControl } from "../components/task-detail/StartTaskControl.js";
 import { LoadingState } from "../components/common/LoadingState.js";
 import { ErrorState } from "../components/common/ErrorState.js";
 
@@ -18,11 +20,14 @@ export function TaskDetailPage() {
 
   const active = isActiveStatus(task?.status);
   const isNeedsInput = task?.status === "NEEDS_INPUT";
-  const hasEvidence = task ? task.status !== "TODO" : false;
+  // Neither BACKLOG nor TODO has any evidence yet — nothing has executed, so there's no report or
+  // branch state to fetch (the report endpoint pre-dates this milestone's addition of BACKLOG).
+  const hasEvidence = task ? task.status !== "BACKLOG" && task.status !== "TODO" : false;
 
   const { events, error: eventsError } = useTaskEvents(taskId!, active);
   const { input, submit, submitting } = useTaskInput(taskId!, isNeedsInput);
   const { report, error: reportError } = useTaskReport(taskId!, hasEvidence);
+  const { branchState } = useBranchState(taskId!, hasEvidence);
 
   if (taskLoading) return <LoadingState label="Loading task…" />;
   if (taskError || !task) return <ErrorState message="Couldn't load this task." onRetry={refetchTask} />;
@@ -39,9 +44,10 @@ export function TaskDetailPage() {
         ← Back to board
       </Link>
 
-      <TaskHeader task={task} />
+      <TaskHeader task={task} branchState={branchState} />
 
       <div style={{ marginBottom: 24 }}>
+        <StartTaskControl task={task} onStarted={() => refetchTask()} />
         <CancelTaskControl task={task} onCancelled={() => refetchTask()} />
       </div>
 

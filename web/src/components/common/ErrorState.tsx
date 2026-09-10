@@ -4,7 +4,7 @@ export function ErrorState({ message, onRetry }: { message: string; onRetry?: ()
     <div className="error-banner" role="alert">
       <p>{message}</p>
       {onRetry && (
-        <button className="btn btn-secondary" style={{ marginTop: 12 }} onClick={onRetry}>
+        <button type="button" className="btn btn-secondary" style={{ marginTop: 12 }} onClick={onRetry}>
           Try again
         </button>
       )}

@@ -5,12 +5,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { buildPlatform, type Platform } from "../src/platform.js";
-import { createTask } from "../src/orchestrator/task-factory.js";
+import { createReadyTask } from "./helpers/create-ready-task.js";
 import { createFixtureRepo } from "../src/cli/fixture-repo.js";
 import { FixtureCodingEngine } from "../src/coding-engine/fixture-coding-engine.js";
 import { FakeSourceControlProvider } from "./helpers/fake-source-control-provider.js";
 import { CancellationError } from "../src/domain/errors.js";
-import { GitHubAuthError } from "../src/integrations/github/errors.js";
+import { GitHubAuthError, GitHubRateLimitError } from "../src/integrations/github/errors.js";
 import { Worker } from "../src/worker/worker.js";
 import type { EngineInvocationRequest, EngineInvocationResult } from "../src/coding-engine/coding-engine.js";
 import type { HumanReviewFeedbackItem, Project, StepResult } from "../src/domain/types.js";
@@ -52,7 +52,7 @@ async function setupPlatform(label: string) {
 }
 
 function makeTask(platform: Platform, project: Project) {
-  return createTask(platform.tasks, platform.taskEvents, {
+  return createReadyTask(platform.tasks, platform.taskEvents, {
     tenantId: "default",
     projectId: project.id,
     title: "Fix add()",
@@ -421,7 +421,7 @@ test("existing AI-reviewer-approved path is unaffected when no human GitHub feed
 // 18-19. PR state handling: merged / closed PRs are never actionable
 // ---------------------------------------------------------------------------
 
-test("a merged PR's feedback is never processed — no fix cycle, task stays REVIEW, no accidental re-run of implementation", async () => {
+test("a merged PR's feedback is never processed — no fix cycle, task completes to DONE, no accidental re-run of implementation", async () => {
   const { platform, project, scProvider } = await setupPlatform("merged-pr");
   const task = await driveToReview(platform, project);
   const branch = task.taskRecord.branchName!;
@@ -430,10 +430,14 @@ test("a merged PR's feedback is never processed — no fix cycle, task stays REV
 
   const result = await platform.orchestrator.checkHumanReviewFeedback(task.id);
 
-  assert.equal(result.status, "REVIEW", "never re-runs implementation just because a stray review exists on an already-merged PR");
+  // PR-merge sync (see /docs/TASK_LIFECYCLE.md "PR merge sync"): a merged PR is a real, final
+  // acceptance signal — the task completes to DONE — but never via re-running implementation off a
+  // stray review that happens to exist on the now-merged PR.
+  assert.equal(result.status, "DONE", "a merged PR completes the task — closing the REVIEW->DONE sync gap");
   const events = platform.taskEvents.listForTask(task.id).map((e) => e.type);
   assert.ok(!events.includes("HUMAN_REVIEW_DETECTED"));
   assert.ok(!events.includes("HUMAN_REVIEW_CHANGES_REQUESTED"));
+  assert.ok(events.includes("PULL_REQUEST_MERGED"), "the merge is recorded in the task's own activity/event timeline");
   const implementerRuns = platform.agentRuns.listForTask(task.id).filter((r) => r.role === "implementer");
   assert.equal(implementerRuns.length, 1, "only the original pass — no fix cycle was triggered");
 });
@@ -452,7 +456,7 @@ test("a closed (not merged) PR's feedback is never processed either", async () =
   assert.equal(implementerRuns.length, 1);
 });
 
-test("once a PR is merged, a later worker poll never re-triggers implementation for that task", async () => {
+test("once a PR is merged, a later worker poll completes the task to DONE and never re-triggers implementation", async () => {
   const { platform, project, scProvider } = await setupPlatform("merged-pr-worker-poll");
   const task = await driveToReview(platform, project);
   const branch = task.taskRecord.branchName!;
@@ -463,9 +467,198 @@ test("once a PR is merged, a later worker poll never re-triggers implementation 
   await worker.tick();
 
   const result = platform.tasks.findById(task.id)!;
-  assert.equal(result.status, "REVIEW");
+  assert.equal(result.status, "DONE", "the worker's own existing REVIEW poll is what detects the merge — no second poller was added");
   const implementerRuns = platform.agentRuns.listForTask(task.id).filter((r) => r.role === "implementer");
   assert.equal(implementerRuns.length, 1);
+});
+
+// ---------------------------------------------------------------------------
+// PR merge sync — the REVIEW -> DONE gap this milestone closes.
+// See /docs/TASK_LIFECYCLE.md "PR merge sync" and /docs/GITHUB_INTEGRATION.md "PR state handling".
+// ---------------------------------------------------------------------------
+
+test("REVIEW task + OPEN PR: remains REVIEW, no completion event", async () => {
+  const { platform, project, scProvider } = await setupPlatform("sync-open");
+  const task = await driveToReview(platform, project);
+  const branch = task.taskRecord.branchName!;
+  scProvider.setPullRequestState(branch, "open");
+
+  const result = await platform.orchestrator.checkHumanReviewFeedback(task.id);
+
+  assert.equal(result.status, "REVIEW");
+  const events = platform.taskEvents.listForTask(task.id).map((e) => e.type);
+  assert.ok(!events.includes("PULL_REQUEST_MERGED"));
+});
+
+test("REVIEW task + MERGED PR: becomes DONE, records PULL_REQUEST_MERGED with the PR's own number/url, preserves the PR reference", async () => {
+  const { platform, project, scProvider } = await setupPlatform("sync-merged");
+  const task = await driveToReview(platform, project);
+  const branch = task.taskRecord.branchName!;
+  const prBefore = task.taskRecord.pullRequest!;
+  scProvider.setPullRequestState(branch, "merged");
+
+  const result = await platform.orchestrator.checkHumanReviewFeedback(task.id);
+
+  assert.equal(result.status, "DONE");
+  assert.ok(result.completedAt, "completedAt is set on the PR-merge completion path, same as manual accept");
+  assert.deepEqual(result.taskRecord.pullRequest, prBefore, "the PR reference itself is preserved, never cleared or mutated");
+  const events = platform.taskEvents.listForTask(task.id);
+  const merged = events.find((e) => e.type === "PULL_REQUEST_MERGED");
+  assert.ok(merged);
+  assert.equal(merged!.payload.number, prBefore.number);
+  assert.equal(merged!.payload.url, prBefore.url);
+});
+
+test("REVIEW task + CLOSED-not-merged PR: does NOT become DONE, stays REVIEW, no completion event, no new TaskStatus was invented", async () => {
+  const { platform, project, scProvider } = await setupPlatform("sync-closed");
+  const task = await driveToReview(platform, project);
+  const branch = task.taskRecord.branchName!;
+  scProvider.setPullRequestState(branch, "closed");
+
+  const result = await platform.orchestrator.checkHumanReviewFeedback(task.id);
+
+  assert.equal(result.status, "REVIEW", "closed-without-merge is never treated as completion");
+  const events = platform.taskEvents.listForTask(task.id).map((e) => e.type);
+  assert.ok(!events.includes("PULL_REQUEST_MERGED"));
+  assert.ok(!events.includes("TASK_COMPLETED"));
+});
+
+test("already-DONE task + merged PR: no duplicate transition, no duplicate PULL_REQUEST_MERGED event (idempotent across repeated polls)", async () => {
+  const { platform, project, scProvider } = await setupPlatform("sync-idempotent");
+  const task = await driveToReview(platform, project);
+  const branch = task.taskRecord.branchName!;
+  scProvider.setPullRequestState(branch, "merged");
+
+  const first = await platform.orchestrator.checkHumanReviewFeedback(task.id);
+  assert.equal(first.status, "DONE");
+  const completedAtAfterFirst = first.completedAt;
+
+  const second = await platform.orchestrator.checkHumanReviewFeedback(task.id);
+  const third = await platform.orchestrator.checkHumanReviewFeedback(task.id);
+
+  assert.equal(second.status, "DONE");
+  assert.equal(third.status, "DONE");
+  assert.equal(second.completedAt, completedAtAfterFirst, "completedAt is not rewritten by a repeated poll");
+  const mergedEvents = platform.taskEvents.listForTask(task.id).filter((e) => e.type === "PULL_REQUEST_MERGED");
+  assert.equal(mergedEvents.length, 1, "repeated detection of an already-merged PR is harmless — no duplicate finalization/events");
+});
+
+test("worker restart/recovery: a merge that happened while the platform was offline is still detected and completes the task on the next poll", async () => {
+  // Simulates "must work after API/worker restart or crash" (requirement 3): nothing special is
+  // persisted while offline — the task simply sits in REVIEW with its PR, and the very next poll of
+  // a freshly constructed Worker/Orchestrator pair (a stand-in for a fresh process) discovers the
+  // merge exactly the same way a live one would, because the check is stateless (reads GitHub's own
+  // current PR state, not anything the platform itself tracked before "restarting").
+  const { platform, project, scProvider } = await setupPlatform("sync-restart");
+  const task = await driveToReview(platform, project);
+  const branch = task.taskRecord.branchName!;
+  scProvider.setPullRequestState(branch, "merged"); // merge "happened" while nothing was polling
+
+  const workerAfterRestart = new Worker(platform.tasks, platform.orchestrator, { pollIntervalMs: 60_000 });
+  await workerAfterRestart.tick();
+
+  const result = platform.tasks.findById(task.id)!;
+  assert.equal(result.status, "DONE", "the next appropriate poll after a restart eventually detects an already-merged PR");
+});
+
+test("multiple workers/pollers racing the same merged PR: only one finalizes, no double PULL_REQUEST_MERGED event", async () => {
+  const { platform, project, scProvider } = await setupPlatform("sync-race-multi-worker");
+  const task = await driveToReview(platform, project);
+  const branch = task.taskRecord.branchName!;
+  scProvider.setPullRequestState(branch, "merged");
+
+  // Two "processes" (no shared in-memory state, both racing the same atomic DB-level guard) observe
+  // the same merged PR at effectively the same time.
+  const [a, b] = await Promise.all([
+    platform.orchestrator.checkHumanReviewFeedback(task.id),
+    platform.orchestrator.checkHumanReviewFeedback(task.id),
+  ]);
+
+  assert.equal(a.status, "DONE");
+  assert.equal(b.status, "DONE");
+  const mergedEvents = platform.taskEvents.listForTask(task.id).filter((e) => e.type === "PULL_REQUEST_MERGED");
+  assert.equal(mergedEvents.length, 1, "TaskRepository.finalizeReviewAsDoneOnMerge's atomic UPDATE guard lets only one caller actually finalize");
+});
+
+test("GitHub transient error reading PR status: task stays REVIEW, no SOURCE_CONTROL_FAILED event, next poll retries normally", async () => {
+  const { platform, project, scProvider } = await setupPlatform("sync-transient-error");
+  const task = await driveToReview(platform, project);
+  const branch = task.taskRecord.branchName!;
+  scProvider.setPullRequestState(branch, "merged");
+  scProvider.failNextCallToStatus(new Error("fetch failed: socket hang up"));
+
+  const result = await platform.orchestrator.checkHumanReviewFeedback(task.id);
+  assert.equal(result.status, "REVIEW", "a transient failure reading PR status must never fail the task or falsely mark it DONE");
+  const events = platform.taskEvents.listForTask(task.id).map((e) => e.type);
+  assert.ok(!events.includes("SOURCE_CONTROL_FAILED"));
+  assert.ok(!events.includes("PULL_REQUEST_MERGED"));
+
+  const retried = await platform.orchestrator.checkHumanReviewFeedback(task.id);
+  assert.equal(retried.status, "DONE", "the very next poll (no failure scripted) picks the merge up normally");
+});
+
+test("GitHub rate limit reading PR status: existing rate-limit behavior respected (silent, retried, never a false DONE)", async () => {
+  const { platform, project, scProvider } = await setupPlatform("sync-rate-limit");
+  const task = await driveToReview(platform, project);
+  const branch = task.taskRecord.branchName!;
+  scProvider.setPullRequestState(branch, "merged");
+  scProvider.failNextCallToStatus(new GitHubRateLimitError(new Date(Date.now() + 1000), 1000));
+
+  const result = await platform.orchestrator.checkHumanReviewFeedback(task.id);
+  assert.equal(result.status, "REVIEW");
+  const events = platform.taskEvents.listForTask(task.id).map((e) => e.type);
+  assert.ok(!events.includes("SOURCE_CONTROL_FAILED"), "a rate limit is expected to self-heal — no permanent audit-trail entry");
+  assert.ok(!events.includes("PULL_REQUEST_MERGED"));
+});
+
+test("GitHub auth failure reading PR status: surfaced via SOURCE_CONTROL_FAILED, task must NOT incorrectly become DONE", async () => {
+  const { platform, project, scProvider } = await setupPlatform("sync-auth-failure");
+  const task = await driveToReview(platform, project);
+  const branch = task.taskRecord.branchName!;
+  scProvider.setPullRequestState(branch, "merged");
+  scProvider.failNextCallToStatus(new GitHubAuthError());
+
+  const result = await platform.orchestrator.checkHumanReviewFeedback(task.id);
+  assert.equal(result.status, "REVIEW", "an auth failure must never be treated as if the PR were confirmed merged");
+  const events = platform.taskEvents.listForTask(task.id);
+  const failure = events.find((e) => e.type === "SOURCE_CONTROL_FAILED");
+  assert.ok(failure, "a persistent (non-transient) status-read failure must leave a visible audit-trail entry");
+  assert.equal(failure!.payload.step, "check_pull_request_status");
+  assert.ok(!events.some((e) => e.type === "PULL_REQUEST_MERGED"));
+
+  // Reconnecting (no failure scripted this time) lets the task recover and complete on its own.
+  const recovered = await platform.orchestrator.checkHumanReviewFeedback(task.id);
+  assert.equal(recovered.status, "DONE");
+});
+
+test("cancellation race: a cancellation requested against a REVIEW task with a merged PR does not corrupt state — cancel is a documented no-op from REVIEW, merge sync still completes it", async () => {
+  // REVIEW has no outgoing "cancel" transition (see task-state-machine.ts's own doc comment: nothing
+  // is running to interrupt, and discarding an already-reviewed result is a different capability).
+  // A cancellation request racing a merge must not produce a contradictory status.
+  const { platform, project, scProvider } = await setupPlatform("sync-cancel-race");
+  const task = await driveToReview(platform, project);
+  const branch = task.taskRecord.branchName!;
+  scProvider.setPullRequestState(branch, "merged");
+
+  await assert.rejects(() => platform.orchestrator.requestCancellation(task.id, "tester"), /Invalid task transition/);
+
+  const result = await platform.orchestrator.checkHumanReviewFeedback(task.id);
+  assert.equal(result.status, "DONE", "the merge sync still completes the task cleanly; cancellation never partially applied");
+});
+
+test("PR merge sync never re-runs implementation and never opens a second PR", async () => {
+  const { platform, project, scProvider } = await setupPlatform("sync-no-rerun");
+  const task = await driveToReview(platform, project);
+  const branch = task.taskRecord.branchName!;
+  const pullRequestsBefore = scProvider.pullRequestsCreated;
+  scProvider.setPullRequestState(branch, "merged");
+
+  const result = await platform.orchestrator.checkHumanReviewFeedback(task.id);
+
+  assert.equal(result.status, "DONE");
+  assert.equal(scProvider.pullRequestsCreated, pullRequestsBefore, "never opens another PR");
+  const implementerRuns = platform.agentRuns.listForTask(task.id).filter((r) => r.role === "implementer");
+  assert.equal(implementerRuns.length, 1, "never re-runs implementation");
 });
 
 // ---------------------------------------------------------------------------

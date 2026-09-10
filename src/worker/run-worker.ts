@@ -19,12 +19,25 @@ async function main() {
 
   const platform = buildPlatformFromEnv();
   const pollIntervalMs = parsePositiveIntEnv("POLL_INTERVAL_MS", process.env.POLL_INTERVAL_MS, 2000);
+  // Bounded per-worker-process concurrency (see /docs/TASK_LIFECYCLE.md "Worker concurrency and
+  // lease loss"). A small,
+  // conservative default: unbounded dispatch (the pre-Concurrency-V1 behavior) let a single worker
+  // process fan out every claimable TODO/WORKING task at once with no cap on live agent
+  // invocations/child processes/workspace directories.
+  const maxConcurrentTasks = parsePositiveIntEnv("WORKER_MAX_CONCURRENT_TASKS", process.env.WORKER_MAX_CONCURRENT_TASKS, 2);
+  // How often a real GitHub call is allowed to happen for a single REVIEW task's PR — a SEPARATE,
+  // different cadence from `pollIntervalMs` above (which still governs how often tick() itself runs
+  // at all). See WorkerConfig.reviewPollIntervalMs's own doc comment, .env.example, and
+  // /docs/TASK_LIFECYCLE.md "REVIEW polling".
+  const reviewPollIntervalMs = parsePositiveIntEnv("REVIEW_POLL_INTERVAL_MS", process.env.REVIEW_POLL_INTERVAL_MS, 30_000);
 
-  const worker = new Worker(platform.tasks, platform.orchestrator, { pollIntervalMs }, (taskId, err) => {
+  const worker = new Worker(platform.tasks, platform.orchestrator, { pollIntervalMs, maxConcurrentTasks, reviewPollIntervalMs }, (taskId, err) => {
     console.error(`[worker] task ${taskId} raised an unexpected error outside the Orchestrator's own handling:`, err);
   });
 
-  console.log(`[worker] starting, poll interval ${pollIntervalMs}ms, db=${dbPath}`);
+  console.log(
+    `[worker] starting, poll interval ${pollIntervalMs}ms, max concurrent tasks ${maxConcurrentTasks}, review poll interval ${reviewPollIntervalMs}ms, db=${dbPath}`,
+  );
   worker.start();
 
   // `worker.stop()` deliberately does not cancel in-flight task execution —

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { buildPlatform, type Platform, type BuildPlatformOptions } from "../src/platform.js";
-import { createTask } from "../src/orchestrator/task-factory.js";
+import { createReadyTask } from "./helpers/create-ready-task.js";
 import { createFixtureRepo } from "../src/cli/fixture-repo.js";
 import { FixtureCodingEngine } from "../src/coding-engine/fixture-coding-engine.js";
 import { FakeSourceControlProvider } from "./helpers/fake-source-control-provider.js";
@@ -72,7 +72,7 @@ async function setupTwoWorkerPlatform(
 }
 
 function makeTask(platform: Platform, project: Project) {
-  return createTask(platform.tasks, platform.taskEvents, {
+  return createReadyTask(platform.tasks, platform.taskEvents, {
     tenantId: "default",
     projectId: project.id,
     title: "Fix add()",

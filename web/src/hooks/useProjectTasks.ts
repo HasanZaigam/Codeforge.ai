@@ -30,5 +30,17 @@ export function useProjectTasks(projectId: string) {
     [setData],
   );
 
-  return { tasks: data, error, loading, refetch, addOptimisticTask };
+  /**
+   * Swaps one task for its updated version in place — used after an action that changes a single
+   * task's status (e.g. "Start Task" releasing BACKLOG -> TODO) so the board reflects it
+   * immediately, the same "adopt the server's response" pattern addOptimisticTask already uses.
+   */
+  const replaceTask = useCallback(
+    (task: TaskDTO) => {
+      setData((current) => (current ?? []).map((t) => (t.id === task.id ? task : t)));
+    },
+    [setData],
+  );
+
+  return { tasks: data, error, loading, refetch, addOptimisticTask, replaceTask };
 }

@@ -27,6 +27,9 @@ export function makeTask(overrides: Partial<TaskDTO> = {}): TaskDTO {
     currentActivity: "Waiting to start",
     selfFixAttempts: 0,
     branchName: null,
+    branchMode: "new",
+    workingBranch: null,
+    baseBranch: null,
     createdAt: "2026-01-01T00:00:00.000Z",
     updatedAt: "2026-01-01T00:00:00.000Z",
     startedAt: null,
@@ -36,6 +39,7 @@ export function makeTask(overrides: Partial<TaskDTO> = {}): TaskDTO {
     pullRequestUrl: null,
     pullRequestNumber: null,
     commitSha: null,
+    dependencies: [],
     ...overrides,
   };
 }
