@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { dirname, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { openDatabase } from "./persistence/db.js";
 import { TaskRepository } from "./persistence/repositories/task-repository.js";
@@ -6,6 +7,7 @@ import { TaskDependencyRepository } from "./persistence/repositories/task-depend
 import { TaskEventRepository } from "./persistence/repositories/task-event-repository.js";
 import { ProjectRepository } from "./persistence/repositories/project-repository.js";
 import { ProjectWorkspaceRepository } from "./persistence/repositories/project-workspace-repository.js";
+import { ProjectWorkspaceFsManager } from "./project-workspace/project-workspace-fs-manager.js";
 import { AgentRunRepository } from "./persistence/repositories/agent-run-repository.js";
 import { WorkspaceRepository } from "./persistence/repositories/workspace-repository.js";
 import { HumanInputRepository } from "./persistence/repositories/human-input-repository.js";
@@ -36,6 +38,7 @@ export interface Platform {
   taskEvents: TaskEventRepository;
   projects: ProjectRepository;
   projectWorkspaces: ProjectWorkspaceRepository;
+  projectWorkspaceFs: ProjectWorkspaceFsManager;
   agentRuns: AgentRunRepository;
   workspaces: WorkspaceRepository;
   humanInput: HumanInputRepository;
@@ -50,6 +53,15 @@ export interface Platform {
 export interface BuildPlatformOptions {
   dbPath: string;
   workspacesRoot: string;
+  /**
+   * Root for persistent, project-scoped ProjectWorkspace directories (Phase 3, Slice 3) — always a
+   * separate directory from `workspacesRoot` (the existing, unrelated per-task execution
+   * Workspace), never a subdirectory of it. Optional so the 30+ existing call sites that don't
+   * exercise ProjectWorkspace filesystem behavior at all need no change: defaults to a
+   * `project-workspaces` directory alongside `workspacesRoot`'s own parent, which for every test
+   * harness already keeps it inside that test's own isolated temp root.
+   */
+  projectWorkspacesRoot?: string;
   engine: CodingEngine;
   additionalCodingEngines?: CodingEngine[];
   ownerId?: string;
@@ -71,6 +83,9 @@ export function buildPlatform(options: BuildPlatformOptions): Platform {
   const taskEvents = new TaskEventRepository(db);
   const projects = new ProjectRepository(db);
   const projectWorkspaces = new ProjectWorkspaceRepository(db);
+  const projectWorkspaceFs = new ProjectWorkspaceFsManager(
+    options.projectWorkspacesRoot ?? join(dirname(options.workspacesRoot), "project-workspaces"),
+  );
   const agentRuns = new AgentRunRepository(db);
   const workspaces = new WorkspaceRepository(db);
   const humanInput = new HumanInputRepository(db);
@@ -120,6 +135,7 @@ export function buildPlatform(options: BuildPlatformOptions): Platform {
     taskEvents,
     projects,
     projectWorkspaces,
+    projectWorkspaceFs,
     agentRuns,
     workspaces,
     humanInput,

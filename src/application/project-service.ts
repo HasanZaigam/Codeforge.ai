@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { Project, ProjectCommands, ProjectWorkspace } from "../domain/types.js";
 import type { ProjectRepository } from "../persistence/repositories/project-repository.js";
 import type { ProjectWorkspaceRepository } from "../persistence/repositories/project-workspace-repository.js";
+import type { ProjectWorkspaceFsManager } from "../project-workspace/project-workspace-fs-manager.js";
 import type { GitHubIntegrationService } from "./github-integration-service.js";
 import { assertProjectAccess } from "./authorization.js";
 import { InvalidRepositoryError, LocalGitProjectsDisabledError, ProjectWorkspaceMissingError } from "./errors.js";
@@ -52,6 +53,7 @@ export class ProjectService {
   constructor(
     private readonly projects: ProjectRepository,
     private readonly projectWorkspaces: ProjectWorkspaceRepository,
+    private readonly projectWorkspaceFs: ProjectWorkspaceFsManager,
     private readonly github: GitHubIntegrationService,
   ) {}
 
@@ -107,6 +109,14 @@ export class ProjectService {
     };
     this.projectWorkspaces.insert(workspace);
 
+    // Phase 3 — Slice 3: provision the persistent, project-scoped filesystem directory for the
+    // ProjectWorkspace row just inserted. Deliberately after the DB insert, not wrapped together
+    // with it: this codebase has no cross-statement transactions (same posture as the
+    // project/ProjectWorkspace insert pair above), so a filesystem failure here surfaces as a clear
+    // thrown error (ProjectWorkspaceProvisionError) without corrupting or duplicating either DB row
+    // — a subsequent getWorkspace() call self-heals by retrying provisioning (see below).
+    this.projectWorkspaceFs.ensureWorkspace(workspace.id);
+
     return project;
   }
 
@@ -124,6 +134,14 @@ export class ProjectService {
     assertProjectAccess(this.projects, projectId, actorId);
     const workspace = this.projectWorkspaces.findByProjectId(projectId);
     if (!workspace) throw new ProjectWorkspaceMissingError(projectId);
+    // Idempotently (re-)provisions the directory if it's missing — the only real-world case this
+    // ever does anything is a row backfilled by migrations/011_project_workspace.sql for a project
+    // that existed before Slice 3 shipped (never provisioned at creation time), or self-healing
+    // after a prior create()'s filesystem step failed. A row whose directory already exists is left
+    // completely untouched — see ProjectWorkspaceFsManager.ensureWorkspace's own doc comment.
+    // Synchronous (mkdirSync under the hood) so this stays a synchronous method like every other
+    // read on this service, rather than forcing an async signature change onto its route/tests.
+    this.projectWorkspaceFs.ensureWorkspace(workspace.id);
     return workspace;
   }
 

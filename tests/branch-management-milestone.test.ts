@@ -40,7 +40,7 @@ async function setup(label: string) {
   });
   const repoPath = await createFixtureRepo(root);
   const github = new GitHubIntegrationService(platform.githubCredentials, () => Buffer.alloc(32));
-  const projectService = new ProjectService(platform.projects, platform.projectWorkspaces, github);
+  const projectService = new ProjectService(platform.projects, platform.projectWorkspaces, platform.projectWorkspaceFs, github);
   const taskService = new TaskService(
     platform.tasks,
     platform.taskEvents,

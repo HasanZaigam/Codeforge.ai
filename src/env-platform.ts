@@ -17,11 +17,15 @@ export function buildPlatformFromEnv(ownerId?: string): Platform {
   validateSharedConfig(process.env);
   const dbPath = process.env.DB_PATH ?? "./.data/platform.sqlite";
   const workspacesRoot = process.env.WORKSPACES_ROOT ?? "./.data/workspaces";
+  // Deliberately separate from workspacesRoot (the existing, unrelated per-task execution
+  // Workspace) — see project-workspace/project-workspace-fs-manager.ts's own doc comment.
+  const projectWorkspacesRoot = process.env.PROJECT_WORKSPACE_ROOT ?? "./.data/project-workspaces";
   const engine = resolveEngineFromEnv();
 
   return buildPlatform({
     dbPath,
     workspacesRoot,
+    projectWorkspacesRoot,
     engine,
     ownerId: ownerId ?? process.env.WORKER_ID ?? `worker-${randomUUID().slice(0, 8)}`,
     orchestratorConfig: resolveOrchestratorConfigFromEnv(),
