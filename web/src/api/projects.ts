@@ -1,5 +1,12 @@
 import { apiClient } from "./client.js";
-import type { CreateProjectInput, CreateTaskInput, ProjectDTO, TaskDTO, VerifyGitHubRepositoryResult } from "./types.js";
+import type {
+  CreateProjectInput,
+  CreateTaskInput,
+  ProjectDTO,
+  ProjectWorkspaceDTO,
+  TaskDTO,
+  VerifyGitHubRepositoryResult,
+} from "./types.js";
 
 /** GET/POST /projects, GET /projects/:id, GET/POST /projects/:id/tasks — see /docs/API.md. */
 export const projectsApi = {
@@ -14,4 +21,7 @@ export const projectsApi = {
     apiClient.post<{ task: TaskDTO }>(`/projects/${projectId}/tasks`, input).then((r) => r.task),
   /** Real remote branch names, for the "work directly on an existing branch" task-creation picker. Best-effort for local-git projects — see SourceControlProvider.listBranches. */
   listBranches: (projectId: string) => apiClient.get<{ branches: string[] }>(`/projects/${projectId}/branches`).then((r) => r.branches),
+  /** Phase 3 "Project Workspace" (Slice 1, backend) — a durable, project-scoped workspace record. */
+  getWorkspace: (projectId: string) =>
+    apiClient.get<{ workspace: ProjectWorkspaceDTO }>(`/projects/${projectId}/workspace`).then((r) => r.workspace),
 };

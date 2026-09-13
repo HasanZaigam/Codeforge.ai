@@ -1,7 +1,7 @@
 import { Router } from "express";
 import type { ApplicationServices } from "../../application/index.js";
 import { CreateProjectSchema, CreateTaskSchema, VerifyGitHubRepositorySchema } from "../schemas.js";
-import { toProjectDTO, toTaskDTO } from "../dto.js";
+import { toProjectDTO, toProjectWorkspaceDTO, toTaskDTO } from "../dto.js";
 import { asyncHandler } from "../async-handler.js";
 import { dependenciesFor, latestEventFor } from "./task-helpers.js";
 import type { TaskEventRepository } from "../../persistence/repositories/task-event-repository.js";
@@ -46,6 +46,17 @@ export function projectsRouter(services: ApplicationServices, taskEvents: TaskEv
     asyncHandler(async (req, res) => {
       const project = services.projects.get(req.params.projectId!, req.user!.id);
       res.json({ project: toProjectDTO(project) });
+    }),
+  );
+
+  // Phase 3 — Project Workspace, Slice 1. System-created only in this phase: no POST/PUT/PATCH/
+  // DELETE for this resource. OWNER-ONLY, same as every other /projects/:projectId route —
+  // ProjectService.getWorkspace does the assertProjectAccess check itself.
+  router.get(
+    "/projects/:projectId/workspace",
+    asyncHandler(async (req, res) => {
+      const workspace = services.projects.getWorkspace(req.params.projectId!, req.user!.id);
+      res.json({ workspace: toProjectWorkspaceDTO(workspace) });
     }),
   );
 

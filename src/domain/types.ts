@@ -257,6 +257,24 @@ export interface Project {
   updatedAt: string;
 }
 
+/**
+ * Phase 3 — Project Workspace, Slice 1. A first-class persistent domain concept keyed by
+ * `projectId`, one-to-one with `Project` (enforced by `UNIQUE(project_id)` on `project_workspaces`
+ * — see migrations/011_project_workspace.sql). Deliberately NOT the same concept as the existing
+ * task-execution `Workspace` below (keyed by `taskId`, backed by the `workspaces` table/
+ * `WorkspaceRepository`/`WorkspaceProvider`/`src/workspace/*`, provisions an actual working
+ * directory on disk for one task's coding-engine run) — that concept predates this one, is
+ * unrelated to it, and is not touched by this type. `ProjectWorkspace` currently has zero
+ * filesystem footprint; it exists purely as the project-scoped persistence anchor Phase 3 builds
+ * on next.
+ */
+export interface ProjectWorkspace {
+  id: string;
+  projectId: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 // ---------------------------------------------------------------------------
 // AgentRun (one CodingEngineAdapter invocation)
 // ---------------------------------------------------------------------------

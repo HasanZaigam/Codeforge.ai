@@ -2,7 +2,7 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderApp } from "../test/render.js";
-import { makeProject, makeTask } from "../test/fixtures.js";
+import { makeProject, makeTask, makeWorkspace } from "../test/fixtures.js";
 import { projectsApi, tasksApi } from "../api/index.js";
 
 vi.mock("../api/projects.js", () => ({
@@ -14,6 +14,7 @@ vi.mock("../api/projects.js", () => ({
     listTasks: vi.fn(),
     createTask: vi.fn(),
     listBranches: vi.fn(),
+    getWorkspace: vi.fn(),
   },
 }));
 
@@ -39,6 +40,7 @@ describe("ProjectBoardPage", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockedProjectsApi.get.mockResolvedValue(makeProject({ id: "p1", name: "OTT" }));
+    mockedProjectsApi.getWorkspace.mockResolvedValue(makeWorkspace({ id: "w1", projectId: "p1" }));
   });
 
   it("renders tasks grouped into their status columns", async () => {
@@ -273,5 +275,74 @@ describe("ProjectBoardPage", () => {
     await waitFor(() => expect(screen.getByText(/dependency "Write migration" is not completed/i)).toBeInTheDocument());
     expect(screen.getByText("Dependent task")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /▶ Start Task/i })).toBeInTheDocument();
+  });
+
+  describe("Workspace section", () => {
+    it("requests the workspace for the current project", async () => {
+      mockedProjectsApi.listTasks.mockResolvedValue([]);
+      renderApp("/projects/p1");
+      await waitFor(() => expect(mockedProjectsApi.getWorkspace).toHaveBeenCalledWith("p1"));
+    });
+
+    it("renders workspace details once the request resolves", async () => {
+      mockedProjectsApi.listTasks.mockResolvedValue([]);
+      mockedProjectsApi.getWorkspace.mockResolvedValue(
+        makeWorkspace({
+          id: "workspace-xyz",
+          projectId: "p1",
+          createdAt: "2026-01-02T10:00:00.000Z",
+          updatedAt: "2026-01-03T11:00:00.000Z",
+        }),
+      );
+
+      renderApp("/projects/p1");
+
+      await waitFor(() => expect(screen.getByText(/Workspace ID: workspace-xyz/)).toBeInTheDocument());
+      expect(screen.getByText(/Created:/)).toBeInTheDocument();
+      expect(screen.getByText(/Updated:/)).toBeInTheDocument();
+    });
+
+    it("shows a loading state before the workspace request resolves", async () => {
+      let resolveWorkspace!: (value: ReturnType<typeof makeWorkspace>) => void;
+      mockedProjectsApi.getWorkspace.mockReturnValue(
+        new Promise((resolve) => {
+          resolveWorkspace = resolve;
+        }),
+      );
+      mockedProjectsApi.listTasks.mockResolvedValue([]);
+
+      renderApp("/projects/p1");
+
+      expect(await screen.findByText("Loading workspace…")).toBeInTheDocument();
+      resolveWorkspace(makeWorkspace({ id: "workspace-1", projectId: "p1" }));
+      await waitFor(() => expect(screen.queryByText("Loading workspace…")).not.toBeInTheDocument());
+    });
+
+    it("shows a safe error state when the workspace request fails, without breaking the rest of the page", async () => {
+      mockedProjectsApi.getWorkspace.mockRejectedValue(new Error("boom"));
+      mockedProjectsApi.listTasks.mockResolvedValue([
+        makeTask({ id: "t0", title: "Backlog task", status: "BACKLOG" }),
+      ]);
+
+      renderApp("/projects/p1");
+
+      await waitFor(() => expect(screen.getByText("Couldn't load the workspace for this project.")).toBeInTheDocument());
+      // The rest of the page — the board and its tasks — keeps rendering regardless.
+      expect(screen.getByText("Backlog task")).toBeInTheDocument();
+      expect(document.querySelector(".board")).toBeInTheDocument();
+    });
+
+    it("renders a safe fallback, without crashing, for a missing/malformed workspace response", async () => {
+      // @ts-expect-error deliberately malformed to test defensive rendering
+      mockedProjectsApi.getWorkspace.mockResolvedValue(null);
+      mockedProjectsApi.listTasks.mockResolvedValue([
+        makeTask({ id: "t0", title: "Backlog task", status: "BACKLOG" }),
+      ]);
+
+      renderApp("/projects/p1");
+
+      await waitFor(() => expect(screen.getByText("Couldn't load the workspace for this project.")).toBeInTheDocument());
+      expect(screen.getByText("Backlog task")).toBeInTheDocument();
+    });
   });
 });

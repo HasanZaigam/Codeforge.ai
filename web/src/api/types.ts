@@ -271,6 +271,19 @@ export interface BranchStateDTO {
   mergeState: MergeState;
 }
 
+/**
+ * GET /projects/:projectId/workspace response — Phase 3 "Project Workspace" (Slice 1, backend).
+ * This is a distinct concept from a task execution's ephemeral working directory
+ * (see src/workspace/*) — a ProjectWorkspace is a durable, project-scoped record.
+ * There is no separate "status" field on this DTO yet; existence of the row is the signal.
+ */
+export interface ProjectWorkspaceDTO {
+  id: string;
+  projectId: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 /** GET/POST /integrations/github — never includes the token itself. */
 export interface GitHubConnectionDTO {
   connected: boolean;

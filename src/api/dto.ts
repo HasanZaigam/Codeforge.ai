@@ -1,4 +1,4 @@
-import type { HumanInputRequest, Project, Task, TaskEvent, TaskEventType, User } from "../domain/types.js";
+import type { HumanInputRequest, Project, ProjectWorkspace, Task, TaskEvent, TaskEventType, User } from "../domain/types.js";
 import type { BranchStateSummary } from "../reporting/branch-state.js";
 import type { DependencyStatus } from "../persistence/repositories/task-dependency-repository.js";
 
@@ -50,6 +50,22 @@ export function toProjectDTO(project: Project): ProjectDTO {
     commandsDeclared: project.commands ? Object.keys(project.commands) : [],
     createdAt: project.createdAt,
     updatedAt: project.updatedAt,
+  };
+}
+
+export interface ProjectWorkspaceDTO {
+  id: string;
+  projectId: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export function toProjectWorkspaceDTO(workspace: ProjectWorkspace): ProjectWorkspaceDTO {
+  return {
+    id: workspace.id,
+    projectId: workspace.projectId,
+    createdAt: workspace.createdAt,
+    updatedAt: workspace.updatedAt,
   };
 }
 

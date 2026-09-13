@@ -349,3 +349,59 @@ test("POST /tasks/:id/start: releases a BACKLOG task, rejects a second call and 
     await teardown(h);
   }
 });
+
+// Phase 3 — Project Workspace, Slice 1: GET /projects/:projectId/workspace over real HTTP. See
+// tests/project-workspace.test.ts for the repository/service-level coverage (including the
+// GitHub-provider and migration-backfill cases) — this covers only the HTTP-layer contract
+// (owner/non-owner/unknown-id), matching this file's existing "over real HTTP" scope.
+test("GET /projects/:projectId/workspace: 200 with the correct shape for the owner", async () => {
+  const h = await setupHarness("workspace-owner", createSelfFixDemoEngine());
+  try {
+    const { project } = await json<{ project: { id: string } }>(
+      await h.client.fetch("/projects", {
+        method: "POST",
+        body: JSON.stringify({ name: "Fixture", sourceControlProvider: "local-git", repoUrl: h.repoPath, codingEngine: "fixture" }),
+      }),
+    );
+
+    const res = await h.client.fetch(`/projects/${project.id}/workspace`);
+    assert.equal(res.status, 200);
+    const body = await json<{ workspace: { id: string; projectId: string; createdAt: string; updatedAt: string } }>(res);
+    assert.equal(body.workspace.projectId, project.id);
+    assert.ok(body.workspace.id);
+    assert.ok(body.workspace.createdAt);
+    assert.ok(body.workspace.updatedAt);
+  } finally {
+    await teardown(h);
+  }
+});
+
+test("GET /projects/:projectId/workspace: 404 for a non-owner (a real second authenticated user)", async () => {
+  const h = await setupHarness("workspace-non-owner", createSelfFixDemoEngine());
+  try {
+    const { project } = await json<{ project: { id: string } }>(
+      await h.client.fetch("/projects", {
+        method: "POST",
+        body: JSON.stringify({ name: "Fixture", sourceControlProvider: "local-git", repoUrl: h.repoPath, codingEngine: "fixture" }),
+      }),
+    );
+
+    const otherClient = await registerClient(h.baseUrl, "workspace-non-owner-other");
+    const res = await otherClient.fetch(`/projects/${project.id}/workspace`);
+    assert.equal(res.status, 404);
+    const body = await json<{ error: { code: string } }>(res);
+    assert.equal(body.error.code, "NOT_FOUND");
+  } finally {
+    await teardown(h);
+  }
+});
+
+test("GET /projects/:projectId/workspace: 404 for an unknown projectId", async () => {
+  const h = await setupHarness("workspace-unknown", createSelfFixDemoEngine());
+  try {
+    const res = await h.client.fetch("/projects/00000000-0000-0000-0000-000000000000/workspace");
+    assert.equal(res.status, 404);
+  } finally {
+    await teardown(h);
+  }
+});

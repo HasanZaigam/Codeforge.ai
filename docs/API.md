@@ -45,6 +45,7 @@ Every route this API exposes, classified by who may call it. **PUBLIC** = no ses
 | `GET /projects` | AUTHENTICATED (returns only the caller's own projects — no "list everything") |
 | `POST /projects` | AUTHENTICATED (created project is always owned by the caller) |
 | `GET /projects/:projectId` | OWNER-ONLY |
+| `GET /projects/:projectId/workspace` | OWNER-ONLY |
 | `GET /projects/:projectId/tasks` | OWNER-ONLY |
 | `POST /projects/:projectId/tasks` | OWNER-ONLY |
 | `GET /tasks/:taskId` | OWNER-ONLY |
@@ -153,6 +154,9 @@ For `"github"`: `owner`/`repo` are validated against GitHub's own naming rules b
 
 ### `GET /projects/:projectId`
 `{ "project": ProjectDTO }`. `404` if not found.
+
+### `GET /projects/:projectId/workspace` *(added in Phase 3, Slice 1)*
+`{ "workspace": { "id": "...", "projectId": "...", "createdAt": "...", "updatedAt": "..." } }`. `404` if the project doesn't exist or isn't the caller's. Every project gets exactly one `ProjectWorkspace` created automatically at project-creation time (both `"github"` and `"local-git"`) — this endpoint is read-only, system-created data; there is no `POST`/`PUT`/`PATCH`/`DELETE` for it in this phase. Not to be confused with the per-task execution workspace (there is no equivalent read endpoint for that — it's an internal execution detail, never exposed over HTTP).
 
 ### `GET /projects/:projectId/tasks`
 `{ "tasks": TaskDTO[] }` for the project, newest first. `404` if the project doesn't exist.

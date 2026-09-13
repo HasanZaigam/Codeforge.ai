@@ -2,7 +2,7 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderApp } from "../test/render.js";
-import { makeProject, makeTask } from "../test/fixtures.js";
+import { makeProject, makeTask, makeWorkspace } from "../test/fixtures.js";
 import { projectsApi } from "../api/index.js";
 
 vi.mock("../api/projects.js", () => ({
@@ -12,6 +12,7 @@ vi.mock("../api/projects.js", () => ({
     create: vi.fn(),
     listTasks: vi.fn(),
     createTask: vi.fn(),
+    getWorkspace: vi.fn(),
   },
 }));
 
@@ -42,6 +43,7 @@ describe("ProjectsPage", () => {
     mockedProjectsApi.list.mockResolvedValue([makeProject({ id: "p1", name: "OTT" })]);
     mockedProjectsApi.get.mockResolvedValue(makeProject({ id: "p1", name: "OTT" }));
     mockedProjectsApi.listTasks.mockResolvedValue([makeTask({ id: "t1", status: "TODO", title: "Fix bug" })]);
+    mockedProjectsApi.getWorkspace.mockResolvedValue(makeWorkspace({ id: "w1", projectId: "p1" }));
 
     renderApp("/");
     await waitFor(() => expect(screen.getByText("OTT")).toBeInTheDocument());

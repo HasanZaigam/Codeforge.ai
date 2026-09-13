@@ -1,4 +1,12 @@
-import type { AgentRunHistoryItemDTO, HumanInputRequestDTO, ProjectDTO, TaskDTO, TaskEventDTO, TaskReport } from "../api/index.js";
+import type {
+  AgentRunHistoryItemDTO,
+  HumanInputRequestDTO,
+  ProjectDTO,
+  ProjectWorkspaceDTO,
+  TaskDTO,
+  TaskEventDTO,
+  TaskReport,
+} from "../api/index.js";
 
 export function makeProject(overrides: Partial<ProjectDTO> = {}): ProjectDTO {
   return {
@@ -11,6 +19,16 @@ export function makeProject(overrides: Partial<ProjectDTO> = {}): ProjectDTO {
     owner: "example",
     repo: "ott",
     commandsDeclared: ["test"],
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+export function makeWorkspace(overrides: Partial<ProjectWorkspaceDTO> = {}): ProjectWorkspaceDTO {
+  return {
+    id: "workspace-1",
+    projectId: "project-1",
     createdAt: "2026-01-01T00:00:00.000Z",
     updatedAt: "2026-01-01T00:00:00.000Z",
     ...overrides,

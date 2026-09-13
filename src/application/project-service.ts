@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
-import type { Project, ProjectCommands } from "../domain/types.js";
+import type { Project, ProjectCommands, ProjectWorkspace } from "../domain/types.js";
 import type { ProjectRepository } from "../persistence/repositories/project-repository.js";
+import type { ProjectWorkspaceRepository } from "../persistence/repositories/project-workspace-repository.js";
 import type { GitHubIntegrationService } from "./github-integration-service.js";
 import { assertProjectAccess } from "./authorization.js";
-import { InvalidRepositoryError, LocalGitProjectsDisabledError } from "./errors.js";
+import { InvalidRepositoryError, LocalGitProjectsDisabledError, ProjectWorkspaceMissingError } from "./errors.js";
 import { GitHubNotFoundError } from "../integrations/github/github-client.js";
 import { isLocalGitProjectsAllowed } from "../config/startup-config.js";
 import { parseGitHubRepoUrl } from "../api/schemas.js";
@@ -50,6 +51,7 @@ export type CreateProjectInput = CreateGitHubProjectInput | CreateLocalGitProjec
 export class ProjectService {
   constructor(
     private readonly projects: ProjectRepository,
+    private readonly projectWorkspaces: ProjectWorkspaceRepository,
     private readonly github: GitHubIntegrationService,
   ) {}
 
@@ -88,11 +90,41 @@ export class ProjectService {
     }
 
     this.projects.insert(project);
+
+    // Phase 3 — Project Workspace, Slice 1: eager creation, converged after the github/local-git
+    // branch above so it happens exactly once regardless of provider (see
+    // domain/types.ts ProjectWorkspace's own doc comment for why this is a distinct concept from
+    // the existing task-execution Workspace). Project-insert and workspace-insert are two separate
+    // statements — this codebase has no cross-statement transactions (see persistence/db.ts) — but
+    // `UNIQUE(project_id)` on project_workspaces (migrations/011_project_workspace.sql) is the
+    // structural backstop against ever ending up with two, so no transaction wrapper is introduced
+    // just for this.
+    const workspace: ProjectWorkspace = {
+      id: randomUUID(),
+      projectId: project.id,
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.projectWorkspaces.insert(workspace);
+
     return project;
   }
 
   get(id: string, actorId: string): Project {
     return assertProjectAccess(this.projects, id, actorId);
+  }
+
+  /**
+   * Returns the caller's project's `ProjectWorkspace`. `create()` always creates exactly one
+   * eagerly, so a missing row here is a genuinely exceptional, diagnosable data-integrity gap
+   * (see ProjectWorkspaceMissingError's own doc comment for why) — never lazily auto-created here,
+   * which would silently mask whatever produced the gap.
+   */
+  getWorkspace(projectId: string, actorId: string): ProjectWorkspace {
+    assertProjectAccess(this.projects, projectId, actorId);
+    const workspace = this.projectWorkspaces.findByProjectId(projectId);
+    if (!workspace) throw new ProjectWorkspaceMissingError(projectId);
+    return workspace;
   }
 
   list(actorId: string): Project[] {

@@ -5,6 +5,7 @@ import { TaskRepository } from "./persistence/repositories/task-repository.js";
 import { TaskDependencyRepository } from "./persistence/repositories/task-dependency-repository.js";
 import { TaskEventRepository } from "./persistence/repositories/task-event-repository.js";
 import { ProjectRepository } from "./persistence/repositories/project-repository.js";
+import { ProjectWorkspaceRepository } from "./persistence/repositories/project-workspace-repository.js";
 import { AgentRunRepository } from "./persistence/repositories/agent-run-repository.js";
 import { WorkspaceRepository } from "./persistence/repositories/workspace-repository.js";
 import { HumanInputRepository } from "./persistence/repositories/human-input-repository.js";
@@ -34,6 +35,7 @@ export interface Platform {
   taskDependencies: TaskDependencyRepository;
   taskEvents: TaskEventRepository;
   projects: ProjectRepository;
+  projectWorkspaces: ProjectWorkspaceRepository;
   agentRuns: AgentRunRepository;
   workspaces: WorkspaceRepository;
   humanInput: HumanInputRepository;
@@ -68,6 +70,7 @@ export function buildPlatform(options: BuildPlatformOptions): Platform {
   const taskDependencies = new TaskDependencyRepository(db);
   const taskEvents = new TaskEventRepository(db);
   const projects = new ProjectRepository(db);
+  const projectWorkspaces = new ProjectWorkspaceRepository(db);
   const agentRuns = new AgentRunRepository(db);
   const workspaces = new WorkspaceRepository(db);
   const humanInput = new HumanInputRepository(db);
@@ -116,6 +119,7 @@ export function buildPlatform(options: BuildPlatformOptions): Platform {
     taskDependencies,
     taskEvents,
     projects,
+    projectWorkspaces,
     agentRuns,
     workspaces,
     humanInput,

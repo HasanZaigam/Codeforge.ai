@@ -28,20 +28,31 @@ async function setupTwoWorkerPlatform(
     owner?: string | null;
     repo?: string | null;
     additionalSourceControlProviders?: BuildPlatformOptions["additionalSourceControlProviders"];
+    /**
+     * Worker B's own CodingEngine instance, independent of `engine` (worker A's). Defaults to the
+     * same `engine` for every existing test that doesn't care which "side" happens to call the
+     * implementer first. Give this explicitly whenever a test's fixture handler depends on being
+     * called by a SPECIFIC worker (e.g. a gate meant to stall only worker A) — a single shared
+     * engine/handler closure has no way to know which platform is actually calling it, since
+     * neither EngineInvocationRequest nor ContextBundle carries an owner/worker identity (see the
+     * "lease expires before its own first heartbeat renewal" test below for why this matters: it
+     * used to assume worker A always reaches the implementer first, which a real concurrent
+     * fresh-workspace-provisioning race can falsify).
+     */
+    engineB?: FixtureCodingEngine;
   } = {},
 ) {
   const root = await mkdtemp(join(tmpdir(), `concurrency-${label}-`));
   const dbPath = join(root, "platform.sqlite");
   const workspacesRoot = join(root, "workspaces");
-  const buildOpts: BuildPlatformOptions = {
+  const buildOptsCommon = {
     dbPath,
     workspacesRoot,
-    engine,
     orchestratorConfig: options.orchestratorConfig,
     additionalSourceControlProviders: options.additionalSourceControlProviders,
   };
-  const platformA = buildPlatform({ ...buildOpts, ownerId: `${label}-worker-A` });
-  const platformB = buildPlatform({ ...buildOpts, ownerId: `${label}-worker-B` });
+  const platformA = buildPlatform({ ...buildOptsCommon, engine, ownerId: `${label}-worker-A` });
+  const platformB = buildPlatform({ ...buildOptsCommon, engine: options.engineB ?? engine, ownerId: `${label}-worker-B` });
 
   const repoPath = await createFixtureRepo(root);
   const now = new Date().toISOString();
@@ -239,18 +250,35 @@ test("releaseLock is owner-guarded: a stale worker's release cannot un-claim ano
 
 test("a worker whose lease expires before its own first heartbeat renewal stops cleanly once it detects the loss, never corrupting the new owner's completed work", async () => {
   const gate = makeGate();
-  let implementerCalls = 0;
-  const handler = async (request: EngineInvocationRequest): Promise<EngineInvocationResult> => {
-    implementerCalls += 1;
-    if (implementerCalls === 1) await gate.promise; // worker A's first attempt hangs
+  let implementerCallsA = 0;
+  // Worker A's own engine: its first implementer attempt hangs on the gate. Deliberately a
+  // SEPARATE engine instance from worker B's (see setupTwoWorkerPlatform's `engineB` option) —
+  // EngineInvocationRequest/ContextBundle carry no owner/worker identity, so a single shared
+  // handler has no reliable way to know whether it's being called by A or by B. A prior version of
+  // this test shared one handler/counter between both workers and assumed A would always reach the
+  // implementer first; that assumption can be falsified by a real concurrent fresh-workspace-
+  // provisioning race between A and B (both provisioning the same never-before-seen task's
+  // workspace at once — see /docs/TASK_LIFECYCLE.md "Worker concurrency and lease loss" and this
+  // test suite's own workspace-fencing tests, which cover *reused* workspace claims, not two
+  // owners racing a *fresh* one). When that race lands in A's favor for the failure, B's call
+  // becomes the shared counter's "first" call instead and gets wrongly gated, deadlocking the test
+  // (B's own executeTask() is awaited directly below, with no gate-release path of its own). Two
+  // independent engines make the gate structurally A-only, regardless of provisioning timing.
+  const handlerA = async (request: EngineInvocationRequest): Promise<EngineInvocationResult> => {
+    implementerCallsA += 1;
+    if (implementerCallsA === 1) await gate.promise; // worker A's first attempt hangs
     return correctImplementerResult(request);
   };
-  const engine = new FixtureCodingEngine({ implementer: handler, reviewer: approvingReviewerHandler });
+  const engineA = new FixtureCodingEngine({ implementer: handlerA, reviewer: approvingReviewerHandler });
+  // Worker B's engine never gates — B must always be free to recover and complete regardless of
+  // call order.
+  const engineB = new FixtureCodingEngine({ implementer: correctImplementerResult, reviewer: approvingReviewerHandler });
   // Deliberately: taskLeaseMs shorter than leaseHeartbeatIntervalMs, so the very first heartbeat
   // tick fires AFTER the initial lease has already lapsed — the realistic failure mode this
   // mechanism defends against (a heartbeat too infrequent relative to the lease it's renewing).
-  const { platformA, platformB, project } = await setupTwoWorkerPlatform("lease-loss", engine, {
+  const { platformA, platformB, project } = await setupTwoWorkerPlatform("lease-loss", engineA, {
     orchestratorConfig: { taskLeaseMs: 60, leaseHeartbeatIntervalMs: 200 },
+    engineB,
   });
   const task = makeTask(platformA, project);
 

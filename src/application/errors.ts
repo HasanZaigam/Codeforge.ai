@@ -171,6 +171,30 @@ export class CircularDependencyError extends Error {
   }
 }
 
+/**
+ * A `Project` exists (and the caller owns it, so `assertProjectAccess` already passed) but its
+ * `ProjectWorkspace` row is missing — see ProjectService.create's eager-creation invariant
+ * ("every project gets exactly one ProjectWorkspace, right after project insert") and
+ * ProjectService.getWorkspace. This should never happen in a codebase with no cross-statement
+ * transactions guarding that invariant (see db.ts's own doc comment) only if a prior insert
+ * genuinely failed/was interrupted between the two statements, or a project row was inserted
+ * directly (bypassing ProjectService), or the migrations/011_project_workspace.sql backfill was
+ * somehow skipped for a pre-existing project. There's no established "this should never happen"
+ * error class elsewhere in this codebase to reuse, and reusing `NotFoundError` here would be
+ * actively misleading (its whole contract, per assertProjectAccess's own doc comment, is "we never
+ * confirm a resource exists to someone who isn't allowed to see it" — but the project here
+ * unambiguously *does* exist and *is* the caller's). So this gets its own narrow, diagnosable
+ * error instead, mapped to a 500 by the generic error-middleware fallback (logged server-side via
+ * console.error, same as every other unmapped error) rather than any 4xx — this is a server-side
+ * data-integrity gap, never a client mistake.
+ */
+export class ProjectWorkspaceMissingError extends Error {
+  constructor(projectId: string) {
+    super(`Project ${projectId} has no ProjectWorkspace row — expected one to have been created eagerly alongside the project.`);
+    this.name = "ProjectWorkspaceMissingError";
+  }
+}
+
 export class LocalGitProjectsDisabledError extends Error {
   constructor() {
     super(

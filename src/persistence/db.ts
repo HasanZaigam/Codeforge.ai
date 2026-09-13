@@ -46,6 +46,7 @@ export const MIGRATION_FILES = [
   "008_task_dependencies.sql",
   "009_lock_generation.sql",
   "010_review_poll_scheduling.sql",
+  "011_project_workspace.sql",
 ];
 
 function runMigrations(db: DatabaseSync): void {

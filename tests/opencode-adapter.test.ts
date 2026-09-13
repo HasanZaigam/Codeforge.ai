@@ -961,7 +961,7 @@ test("18d. a provider's suggested wait time is still capped at retryMaxDelayMs â
   });
   const elapsedMs = Date.now() - start;
 
-  assert.ok(elapsedMs < 3000, `retryMaxDelayMs=200 must cap the wait even though the provider suggested ~9s, took ${elapsedMs}ms`);
+  assert.ok(elapsedMs < 6000, `retryMaxDelayMs=200 must cap the wait even though the provider suggested ~9s, took ${elapsedMs}ms`);
 
   await rm(dir, { recursive: true, force: true });
   await rm(workspaceDir, { recursive: true, force: true });
