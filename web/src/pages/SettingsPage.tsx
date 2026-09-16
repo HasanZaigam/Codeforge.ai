@@ -11,7 +11,7 @@ export function SettingsPage() {
   const { user } = useAuth();
   const [status, setStatus] = useState<GitHubConnectionDTO>();
   const [error, setError] = useState<string>();
-  const [showConnect, setShowConnect] = useState(false);
+  const [dialogMode, setDialogMode] = useState<"connect" | "replace">();
   const [disconnecting, setDisconnecting] = useState(false);
 
   function load() {
@@ -41,16 +41,20 @@ export function SettingsPage() {
       <div className="page-header">
         <h1>Settings</h1>
       </div>
-      <div className="card card-padded stack">
-        <div>
-          <h3 style={{ marginBottom: 4 }}>Account</h3>
+
+      <div className="stack" style={{ gap: 20 }}>
+        <div className="card card-padded stack" style={{ gap: 4 }}>
+          <h3>Account</h3>
           <p className="text-muted">
-            Signed in as {user?.name} ({user?.email}). This is a single-tenant MVP — there's no team/org management yet, and no
-            self-service password reset (see <code>docs/AUTHENTICATION.md</code> "Known limitations").
+            Signed in as {user?.name} ({user?.email}).
           </p>
         </div>
-        <div>
-          <h3 style={{ marginBottom: 4 }}>GitHub</h3>
+
+        <div className="card card-padded stack" style={{ gap: 8 }}>
+          <div className="page-header" style={{ marginBottom: 0 }}>
+            <h3>GitHub</h3>
+            {status?.connected && <span className="status-badge tone-success">Connected</span>}
+          </div>
           {status === undefined && !error && <LoadingState label="Checking your GitHub connection…" />}
           {error && <ErrorState message={error} onRetry={load} />}
           {status && (
@@ -62,7 +66,14 @@ export function SettingsPage() {
                     {status.connectedAt && ` since ${formatAbsolute(status.connectedAt)}`}. The platform can commit, push, and open
                     Pull Requests on GitHub projects using this account.
                   </p>
-                  <div>
+                  <p className="field-hint">
+                    For security, the connected token itself is never shown again once saved — only its status above. To rotate it,
+                    add a new one below; it immediately replaces the old one.
+                  </p>
+                  <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+                    <button className="btn btn-secondary" onClick={() => setDialogMode("replace")}>
+                      Add new token
+                    </button>
                     <button className="btn btn-secondary" onClick={handleDisconnect} disabled={disconnecting}>
                       {disconnecting ? "Disconnecting…" : "Disconnect GitHub account"}
                     </button>
@@ -75,7 +86,7 @@ export function SettingsPage() {
                     (used for testing) are available.
                   </p>
                   <div>
-                    <button className="btn btn-primary" onClick={() => setShowConnect(true)}>
+                    <button className="btn btn-primary" onClick={() => setDialogMode("connect")}>
                       Connect GitHub account
                     </button>
                   </div>
@@ -86,12 +97,13 @@ export function SettingsPage() {
         </div>
       </div>
 
-      {showConnect && (
+      {dialogMode && (
         <GitHubConnectDialog
-          onClose={() => setShowConnect(false)}
+          variant={dialogMode}
+          onClose={() => setDialogMode(undefined)}
           onConnected={(newStatus) => {
             setStatus(newStatus);
-            setShowConnect(false);
+            setDialogMode(undefined);
           }}
         />
       )}

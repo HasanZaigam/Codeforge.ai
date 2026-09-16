@@ -40,8 +40,8 @@ export function TaskDetailPage() {
 
   return (
     <div>
-      <Link to={`/projects/${task.projectId}`} className="breadcrumb">
-        ← Back to board
+      <Link to={`/projects/${task.projectId}/tasks`} className="breadcrumb">
+        ← Back to tasks
       </Link>
 
       <TaskHeader task={task} branchState={branchState} />

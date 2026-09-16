@@ -45,7 +45,7 @@ export function LoginPage() {
   return (
     <div className="auth-page">
       <div className="card card-padded auth-card">
-        <h1 style={{ marginBottom: 4 }}>AI Developer</h1>
+        <h1 style={{ marginBottom: 4 }}>CodeForge.ai</h1>
         <p className="text-muted" style={{ marginBottom: 24 }}>
           {mode === "login" ? "Sign in to your projects." : "Create an account to get started."}
         </p>

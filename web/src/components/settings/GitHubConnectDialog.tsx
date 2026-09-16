@@ -10,7 +10,18 @@ import { githubIntegrationApi, type GitHubConnectionDTO } from "../../api/index.
  * GitHub authorization" for why a PAT is an explicit, documented dev-only
  * boundary rather than a production-grade GitHub App integration.
  */
-export function GitHubConnectDialog({ onClose, onConnected }: { onClose: () => void; onConnected: (status: GitHubConnectionDTO) => void }) {
+export function GitHubConnectDialog({
+  onClose,
+  onConnected,
+  variant = "connect",
+}: {
+  onClose: () => void;
+  onConnected: (status: GitHubConnectionDTO) => void;
+  /** "replace" reuses the exact same POST /integrations/github (it's already an upsert — see
+   *  GitHubIntegrationService.connect) for a user who is already connected and wants to swap in a
+   *  new/rotated token — only the copy changes, never the request. */
+  variant?: "connect" | "replace";
+}) {
   const [token, setToken] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string>();
@@ -28,8 +39,14 @@ export function GitHubConnectDialog({ onClose, onConnected }: { onClose: () => v
     }
   }
 
+  const isReplace = variant === "replace";
+
   return (
-    <Dialog title="Connect your GitHub account" onClose={onClose}>
+    <Dialog
+      title={isReplace ? "Add a new GitHub token" : "Connect your GitHub account"}
+      description={isReplace ? "This replaces the token currently on file — the old one stops working here immediately." : undefined}
+      onClose={onClose}
+    >
       <form onSubmit={handleSubmit}>
         <div className="field">
           <label htmlFor="github-token">Personal access token</label>
@@ -45,7 +62,8 @@ export function GitHubConnectDialog({ onClose, onConnected }: { onClose: () => v
           />
           <p className="field-hint">
             Needs <code>repo</code> scope so the platform can commit, push, and open Pull Requests on your behalf. The token is
-            encrypted at rest and never shown again, sent to the AI developer, or logged.
+            encrypted at rest and never shown again, sent to the AI developer, or logged — this platform cannot show you back a
+            token you already connected, only replace it with a new one.
           </p>
         </div>
         {error && <ErrorState message={error} />}
@@ -54,7 +72,7 @@ export function GitHubConnectDialog({ onClose, onConnected }: { onClose: () => v
             Cancel
           </button>
           <button type="submit" className="btn btn-primary" disabled={submitting || !token.trim()}>
-            {submitting ? "Connecting…" : "Connect account"}
+            {submitting ? "Connecting…" : isReplace ? "Save new token" : "Connect account"}
           </button>
         </div>
       </form>

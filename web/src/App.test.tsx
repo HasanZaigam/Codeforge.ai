@@ -60,7 +60,7 @@ describe("App (session bootstrap, login, logout)", () => {
     mockedAuthApi.me.mockRejectedValue(new ApiError(401, "UNAUTHENTICATED", "Sign in required"));
 
     renderFullApp("/");
-    await waitFor(() => expect(screen.getByRole("heading", { name: "AI Developer" })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole("heading", { name: "CodeForge.ai" })).toBeInTheDocument());
     expect(screen.getByLabelText(/email/i)).toBeInTheDocument();
     expect(screen.getByLabelText(/password/i)).toBeInTheDocument();
   });

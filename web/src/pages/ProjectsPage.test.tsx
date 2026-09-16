@@ -41,7 +41,7 @@ describe("ProjectsPage", () => {
     await waitFor(() => expect(screen.getByText(/no projects connected yet/i)).toBeInTheDocument());
   });
 
-  it("opening a project navigates to its board and loads its tasks", async () => {
+  it("opening a project navigates to its Overview, and its Tasks tab loads its tasks", async () => {
     mockedProjectsApi.list.mockResolvedValue([makeProject({ id: "p1", name: "OTT" })]);
     mockedProjectsApi.get.mockResolvedValue(makeProject({ id: "p1", name: "OTT" }));
     mockedProjectsApi.listTasks.mockResolvedValue([makeTask({ id: "t1", status: "TODO", title: "Fix bug" })]);
@@ -53,7 +53,11 @@ describe("ProjectsPage", () => {
 
     await userEvent.click(screen.getByText("OTT"));
 
+    // Projects -> Project Overview, a distinct screen from the task board.
     await waitFor(() => expect(screen.getByRole("heading", { name: "OTT" })).toBeInTheDocument());
+    expect(screen.getByRole("link", { name: "Overview" })).toHaveClass("active");
+
+    await userEvent.click(screen.getByRole("link", { name: "Tasks" }));
     expect(mockedProjectsApi.listTasks).toHaveBeenCalledWith("p1");
     await waitFor(() => expect(screen.getByText("Fix bug")).toBeInTheDocument());
   });

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { useProjectContext } from "../../hooks/useProjectContext.js";
 import { projectsApi, ApiError, type ProjectContextDTO } from "../../api/index.js";
 import { ListEditor } from "../common/ListEditor.js";
@@ -132,7 +132,7 @@ export function ProjectContextPanel({ projectId }: { projectId: string }) {
   if (!baseline) return null;
 
   return (
-    <div className="card card-padded stack project-context-panel" style={{ gap: 16 }}>
+    <div className="stack project-context-panel" style={{ gap: 16 }}>
       <div>
         <h3>Project Context</h3>
         <p className="field-hint">Persistent project-level guidance used by CodeForge AI tasks.</p>
@@ -168,43 +168,58 @@ export function ProjectContextPanel({ projectId }: { projectId: string }) {
 
       {saveError && <ErrorState message={saveError} onRetry={handleSave} />}
 
-      <div className="field">
-        <label htmlFor="context-project-name">Project name</label>
-        <input id="context-project-name" value={name} onChange={(e) => setName(e.target.value)} maxLength={200} required />
-      </div>
-      <div className="field">
-        <label htmlFor="context-project-description">Description</label>
-        <textarea id="context-project-description" value={description} onChange={(e) => setDescription(e.target.value)} rows={3} />
+      <div className="card card-padded context-section">
+        <div className="field">
+          <label htmlFor="context-project-name">Project name</label>
+          <input id="context-project-name" value={name} onChange={(e) => setName(e.target.value)} maxLength={200} required />
+        </div>
+        <div className="field" style={{ marginBottom: 0 }}>
+          <label htmlFor="context-project-description">Description</label>
+          <textarea id="context-project-description" value={description} onChange={(e) => setDescription(e.target.value)} rows={3} />
+        </div>
       </div>
 
-      <ListEditor
-        id="context-instructions"
-        label="Instructions"
-        items={instructions}
-        onChange={setInstructions}
-        addLabel="+ Add instruction"
-        emptyHint="No instructions yet."
-      />
-      <ListEditor
-        id="context-architecture"
-        label="Architecture"
-        items={architecture}
-        onChange={setArchitecture}
-        addLabel="+ Add architecture note"
-        emptyHint="No architecture notes yet."
-      />
-      <ListEditor
-        id="context-conventions"
-        label="Conventions"
-        items={conventions}
-        onChange={setConventions}
-        addLabel="+ Add convention"
-        emptyHint="No conventions yet."
-      />
-      <div>
+      <ContextSection title="Instructions" description="High-level instructions for the AI developer.">
+        <ListEditor
+          id="context-instructions"
+          label="Instructions"
+          hideLabel
+          items={instructions}
+          onChange={setInstructions}
+          addLabel="+ Add instruction"
+          emptyHint="No instructions yet."
+        />
+      </ContextSection>
+
+      <ContextSection title="Architecture" description="Technical architecture and design decisions.">
+        <ListEditor
+          id="context-architecture"
+          label="Architecture"
+          hideLabel
+          items={architecture}
+          onChange={setArchitecture}
+          addLabel="+ Add architecture note"
+          emptyHint="No architecture notes yet."
+        />
+      </ContextSection>
+
+      <ContextSection title="Conventions" description="Coding conventions, naming patterns, and standards.">
+        <ListEditor
+          id="context-conventions"
+          label="Conventions"
+          hideLabel
+          items={conventions}
+          onChange={setConventions}
+          addLabel="+ Add convention"
+          emptyHint="No conventions yet."
+        />
+      </ContextSection>
+
+      <ContextSection title="Validation Guidance" description="Guidance for validation and testing (for AI guidance only, not authoritative).">
         <ListEditor
           id="context-validation-commands"
           label="Validation Guidance"
+          hideLabel
           items={validationCommands}
           onChange={setValidationCommands}
           addLabel="+ Add validation guidance"
@@ -214,32 +229,38 @@ export function ProjectContextPanel({ projectId }: { projectId: string }) {
           These commands provide project guidance to the AI. CodeForge's configured project validation commands remain
           authoritative.
         </p>
-      </div>
-      <ListEditor
-        id="context-constraints"
-        label="Constraints"
-        items={constraints}
-        onChange={setConstraints}
-        addLabel="+ Add constraint"
-        emptyHint="No constraints yet."
-      />
+      </ContextSection>
 
-      <div className="stack" style={{ gap: 2 }}>
-        <p className="text-muted">Revision: {baseline.revision}</p>
-        {savedAtIso && <p className="text-muted">Saved {formatAbsolute(savedAtIso)}</p>}
+      <ContextSection title="Constraints" description="Important constraints and limitations.">
+        <ListEditor
+          id="context-constraints"
+          label="Constraints"
+          hideLabel
+          items={constraints}
+          onChange={setConstraints}
+          addLabel="+ Add constraint"
+          emptyHint="No constraints yet."
+        />
+      </ContextSection>
+
+      <div className="card card-padded context-section">
+        <div className="stack" style={{ gap: 2 }}>
+          <p className="text-muted">Revision: {baseline.revision}</p>
+          {savedAtIso && <p className="text-muted">Saved {formatAbsolute(savedAtIso)}</p>}
+        </div>
+
+        <div className="dialog-actions" style={{ justifyContent: "space-between" }}>
+          <span className="field-hint">{dirty ? "Unsaved changes" : "No unsaved changes"}</span>
+          <button type="button" className="btn btn-primary" disabled={!dirty || saving || !name.trim()} onClick={handleSave}>
+            {saving ? "Saving…" : "Save Changes"}
+          </button>
+        </div>
       </div>
 
-      <div className="dialog-actions" style={{ justifyContent: "space-between" }}>
-        <span className="field-hint">{dirty ? "Unsaved changes" : "No unsaved changes"}</span>
-        <button type="button" className="btn btn-primary" disabled={!dirty || saving || !name.trim()} onClick={handleSave}>
-          {saving ? "Saving…" : "Save Changes"}
-        </button>
-      </div>
-
-      <div className="ai-context-preview">
+      <div className="card card-padded context-section ai-context-preview">
         <h4>AI Context Preview</h4>
         <p className="field-hint">
-          This project context is provided to CodeForge's AI developer as bounded project-level guidance. It does not
+          See how this context will be provided to the AI developer. This is bounded project-level guidance — it does not
           override system, security, validation, or orchestration rules.
         </p>
         <button type="button" className="btn btn-secondary" onClick={() => setShowPreview((v) => !v)}>
@@ -247,6 +268,31 @@ export function ProjectContextPanel({ projectId }: { projectId: string }) {
         </button>
         {showPreview && <pre className="ai-context-preview-text">{buildAiContextPreview(baseline)}</pre>}
       </div>
+    </div>
+  );
+}
+
+/**
+ * One visual card per manifest field, matching the redesigned reference layout: a heading +
+ * one-line description + an "Upload MD/PDF" action, with the field's own editor below. The upload
+ * button is intentionally disabled — no backend upload/extraction endpoint exists yet (see
+ * /docs/API.md and src/api/routes/projects.ts), and this redesign must not fake a successful
+ * upload or bypass the existing Project Context PUT contract. It's UI-ready for that future
+ * capability, nothing more.
+ */
+function ContextSection({ title, description, children }: { title: string; description: string; children: ReactNode }) {
+  return (
+    <div className="card card-padded context-section">
+      <div className="context-section-header">
+        <div>
+          <h4>{title}</h4>
+          <p className="field-hint">{description}</p>
+        </div>
+        <button type="button" className="btn btn-secondary" disabled title="File upload isn't available yet.">
+          ⬆ Upload MD/PDF
+        </button>
+      </div>
+      {children}
     </div>
   );
 }

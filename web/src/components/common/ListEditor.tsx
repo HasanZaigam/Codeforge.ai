@@ -12,6 +12,7 @@ export function ListEditor({
   addLabel,
   emptyHint,
   itemPlaceholder,
+  hideLabel,
 }: {
   id: string;
   label: string;
@@ -20,10 +21,15 @@ export function ListEditor({
   addLabel: string;
   emptyHint?: string;
   itemPlaceholder?: string;
+  /** Keeps the field's own accessible label (still read by screen readers) but visually hides it —
+   *  for callers (ProjectContextPanel) that already render an equivalent heading immediately above. */
+  hideLabel?: boolean;
 }) {
   return (
     <div className="field">
-      <label htmlFor={id}>{label}</label>
+      <label htmlFor={id} className={hideLabel ? "sr-only" : undefined}>
+        {label}
+      </label>
       {items.length === 0 && emptyHint && <p className="field-hint">{emptyHint}</p>}
       <div id={id} className="list-editor" role="group" aria-label={label}>
         {items.map((item, index) => (
