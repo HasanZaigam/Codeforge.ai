@@ -20,7 +20,7 @@ export function buildApplicationServices(platform: Platform): ApplicationService
   return {
     auth: new AuthService(platform.users, platform.sessions),
     github,
-    projects: new ProjectService(platform.projects, platform.projectWorkspaces, platform.projectWorkspaceFs, github),
+    projects: new ProjectService(platform.projects, platform.projectWorkspaces, platform.projectWorkspaceFs, platform.projectContext, github),
     tasks: new TaskService(
       platform.tasks,
       platform.taskEvents,

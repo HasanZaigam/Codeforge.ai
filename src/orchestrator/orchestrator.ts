@@ -9,11 +9,14 @@ import type { ProjectRepository } from "../persistence/repositories/project-repo
 import type { AgentRunRepository } from "../persistence/repositories/agent-run-repository.js";
 import type { HumanInputRepository } from "../persistence/repositories/human-input-repository.js";
 import type { WorkspaceRepository } from "../persistence/repositories/workspace-repository.js";
+import type { ProjectWorkspaceRepository } from "../persistence/repositories/project-workspace-repository.js";
+import type { ProjectContextService } from "../project-workspace/project-context-service.js";
 import { EngineExecutionError, type CodingEngineRegistry } from "../coding-engine/coding-engine.js";
 import type { WorkspaceProvider } from "../workspace/workspace-provider.js";
 import type { SourceControlProvider, SourceControlProviderRegistry } from "../source-control/source-control-provider.js";
 import { runValidation } from "../validation/validation-runner.js";
 import { buildImplementerContext, buildReviewerContext } from "./context-builder.js";
+import { loadProjectContextSection } from "./project-context-loader.js";
 import { deriveReviewResult } from "../review/reviewer.js";
 import { buildHumanReviewFeedback, deriveHumanReviewOutcome } from "../review/human-review-feedback.js";
 import { buildPullRequestDescription, buildPullRequestTitle } from "./pull-request-content.js";
@@ -65,6 +68,11 @@ export class Orchestrator {
     private readonly dependencyRepo: TaskDependencyRepository,
     private readonly ownerId: string,
     private readonly config: OrchestratorConfig = DEFAULT_ORCHESTRATOR_CONFIG,
+    // Phase 3, Slice 6 — see project-context-loader.ts. Used ONLY to load bounded, read-only
+    // project-provided context for AI prompts (via loadProjectContextSection); never consulted for
+    // any deterministic orchestration/authorization/lifecycle decision.
+    private readonly projectWorkspaceRepo: ProjectWorkspaceRepository | null = null,
+    private readonly projectContextService: ProjectContextService | null = null,
   ) {}
 
   /**
@@ -737,6 +745,10 @@ export class Orchestrator {
     task.workspaceId = workspace.id;
     this.saveOwned(task, generation, now());
 
+    // Phase 3, Slice 6 — one snapshot per working episode, reused by every implementer/reviewer
+    // call below. See loadProjectContext's own doc comment.
+    const projectContext = this.loadProjectContext(project);
+
     let lastValidation: ValidationResult | null = null;
     let lastImplementerResult: StepResult | null = null;
 
@@ -744,7 +756,7 @@ export class Orchestrator {
     for (;;) {
       this.throwIfCancelled(signal);
       const attemptNumber = this.nextAttemptNumber(task.id, "implementer");
-      const context = buildImplementerContext(task, project, workspace.path, lastValidation);
+      const context = buildImplementerContext(task, project, workspace.path, lastValidation, null, null, projectContext);
       const step = await this.runAgent(task, project, engine, "implementer", context, attemptNumber, signal, generation);
 
       if (step.status === "needs_input" && step.needsInput) {
@@ -794,7 +806,7 @@ export class Orchestrator {
       this.throwIfCancelled(signal);
       const reviewAttemptNumber = this.nextAttemptNumber(task.id, "reviewer");
       this.eventRepo.append(task.id, "REVIEW_STARTED", { attemptNumber: reviewAttemptNumber }, now());
-      const reviewContext = buildReviewerContext(task, project, workspace.path, lastImplementerResult, lastValidation);
+      const reviewContext = buildReviewerContext(task, project, workspace.path, lastImplementerResult, lastValidation, projectContext);
       const reviewStep = await this.runAgent(task, project, engine, "reviewer", reviewContext, reviewAttemptNumber, signal, generation);
       const review = deriveReviewResult(reviewStep);
       this.eventRepo.append(task.id, "REVIEW_COMPLETED", { verdict: review.verdict, findings: review.findings }, now());
@@ -848,7 +860,7 @@ export class Orchestrator {
       // reviewerFeedback (not lastFailure): this fix follows a *passing* validation run — the
       // Implementer needs the Reviewer's findings, not a stale/misleading "validation failed"
       // framing. See context-builder.ts's buildImplementerContext doc comment.
-      const fixContext = buildImplementerContext(task, project, workspace.path, null, review);
+      const fixContext = buildImplementerContext(task, project, workspace.path, null, review, null, projectContext);
       const fixStep = await this.runAgent(task, project, engine, "implementer", fixContext, attemptNumber, signal, generation);
       if (fixStep.status === "needs_input" && fixStep.needsInput) {
         return this.raiseNeedsInput(task, fromImplementerDraft(fixStep.needsInput), generation);
@@ -899,7 +911,7 @@ export class Orchestrator {
     this.throwIfCancelled(signal);
 
     const attemptNumber = this.nextAttemptNumber(taskId, "implementer");
-    const context = buildImplementerContext(task, project, workspace.path, null, null, feedback);
+    const context = buildImplementerContext(task, project, workspace.path, null, null, feedback, this.loadProjectContext(project));
     const engine = this.engines.resolve(project.codingEngine);
     const step = await this.runAgent(task, project, engine, "implementer", context, attemptNumber, signal, generation);
     if (step.status === "needs_input" && step.needsInput) {
@@ -1283,5 +1295,19 @@ export class Orchestrator {
     const project = this.projectRepo.findById(id);
     if (!project) throw new NotFoundError("Project", id);
     return project;
+  }
+
+  /**
+   * Phase 3, Slice 6 — loads this project's bounded, read-only Project Context section once per
+   * working episode (see runWorkingEpisode/runHumanFeedbackFixCycle: every agent invocation within
+   * the same episode reuses this same snapshot, rather than re-reading the manifest before every
+   * individual agent call). `null` when either dependency wasn't wired (older test/CLI callers that
+   * construct an Orchestrator without them — see the constructor's own doc comment) or when
+   * `loadProjectContextSection` itself degrades to `null` (see that function's doc comment for every
+   * case that does).
+   */
+  private loadProjectContext(project: Project): string | null {
+    if (!this.projectWorkspaceRepo || !this.projectContextService) return null;
+    return loadProjectContextSection(project.id, project.name, this.projectWorkspaceRepo, this.projectContextService);
   }
 }

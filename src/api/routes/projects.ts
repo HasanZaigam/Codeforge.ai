@@ -1,7 +1,7 @@
 import { Router } from "express";
 import type { ApplicationServices } from "../../application/index.js";
 import { CreateProjectSchema, CreateTaskSchema, VerifyGitHubRepositorySchema } from "../schemas.js";
-import { toProjectDTO, toProjectWorkspaceDTO, toTaskDTO } from "../dto.js";
+import { toProjectDTO, toProjectWorkspaceDTO, toProjectContextDTO, toTaskDTO } from "../dto.js";
 import { asyncHandler } from "../async-handler.js";
 import { dependenciesFor, latestEventFor } from "./task-helpers.js";
 import type { TaskEventRepository } from "../../persistence/repositories/task-event-repository.js";
@@ -57,6 +57,33 @@ export function projectsRouter(services: ApplicationServices, taskEvents: TaskEv
     asyncHandler(async (req, res) => {
       const workspace = services.projects.getWorkspace(req.params.projectId!, req.user!.id);
       res.json({ workspace: toProjectWorkspaceDTO(workspace) });
+    }),
+  );
+
+  // Phase 3 — Project Context Manifest, Slice 5. OWNER-ONLY, same as every other
+  // /projects/:projectId route. Deliberately narrow: this is the manifest contract only, not a
+  // general file API (see docs/API.md) — ProjectService.getContext lazily creates the default
+  // manifest for a ProjectWorkspace that doesn't have one yet (e.g. a migration-011-backfilled
+  // project), so this never 404s just because a manifest wasn't provisioned yet.
+  router.get(
+    "/projects/:projectId/context",
+    asyncHandler(async (req, res) => {
+      const context = services.projects.getContext(req.params.projectId!, req.user!.id);
+      res.json({ context: toProjectContextDTO(context) });
+    }),
+  );
+
+  // Full replacement, not a partial PATCH — see ProjectContextService.replaceManifest: the
+  // submitted body is validated in full before anything is written, so an invalid PUT can never
+  // partially overwrite a previously-valid manifest. Phase 3, Slice 7 — optimistic concurrency: the
+  // body must include the `revision` the caller believes is current (normally the value it just
+  // got back from GET); a stale/mismatched revision is rejected with 409 PROJECT_CONTEXT_CONFLICT
+  // (currentRevision in the error body) rather than silently overwriting a newer version.
+  router.put(
+    "/projects/:projectId/context",
+    asyncHandler(async (req, res) => {
+      const context = services.projects.updateContext(req.params.projectId!, req.user!.id, req.body);
+      res.json({ context: toProjectContextDTO(context) });
     }),
   );
 

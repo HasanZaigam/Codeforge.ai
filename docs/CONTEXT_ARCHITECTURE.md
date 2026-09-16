@@ -28,9 +28,18 @@ ContextBundle
   projectConventionPointer # e.g. "see CLAUDE.md" — not its contents
   latestDiffState          # if resuming mid-task
   gateFindings[]            # for the Reviewer role only: what the deterministic gates found
+  projectContext            # Phase 3, Slice 6 — see the section below. Bounded, delimited text, or null.
 ```
 
 This bundle is what bounds token growth on long-running or resumed tasks: a task that pauses at `NEEDS INPUT` and resumes a day later does not replay its entire history — the next invocation gets the task record's current state plus the new answer, exactly like handing a fresh engineer a well-written ticket instead of a chat log.
+
+## Project Context Manifest (Phase 3, Slice 6) — a second, deliberately different mechanism
+
+`projectConventionPointer` above (and native `CLAUDE.md`/`AGENTS.md` discovery) stays exactly as described: project source-of-truth conventions live in that project's own repo, never copied into the platform's database. The Project Context Manifest (`.project-context.json`, see `src/project-workspace/project-context-manifest.ts`) is a **separate, deliberately different** mechanism, not a second copy of the same thing:
+
+- It is **platform-stored** (inside the project's persistent `ProjectWorkspace` directory, under `PROJECT_WORKSPACE_ROOT`), not project-repo-stored — because it's operational/organizational guidance a project owner authors *through the platform* (instructions, architecture notes, conventions, validation guidance, constraints), not code-adjacent documentation that belongs in the project's own version control.
+- It is explicitly **untrusted, bounded, and additive** — rendered into a fixed-size, clearly-delimited section (`orchestrator/project-context-section.ts`) and passed alongside, never instead of, everything described above. It can never influence orchestration, authorization, retry limits, branch selection, or validation execution — see [SECURITY_ARCHITECTURE.md](./SECURITY_ARCHITECTURE.md) "Project Context Manifest ≠ security policy".
+- Loading is deterministic, never a retrieval/search system: `task -> project -> ProjectWorkspace -> ProjectContextService -> validated manifest` (`orchestrator/project-context-loader.ts`) — the same fixed lookup chain every time, never scanning the task's own repository files for "context."
 
 ## File hierarchy: which instruction files exist, and where
 

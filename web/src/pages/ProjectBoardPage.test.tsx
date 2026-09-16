@@ -2,7 +2,7 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderApp } from "../test/render.js";
-import { makeProject, makeTask, makeWorkspace } from "../test/fixtures.js";
+import { makeProject, makeProjectContext, makeTask, makeWorkspace } from "../test/fixtures.js";
 import { projectsApi, tasksApi } from "../api/index.js";
 
 vi.mock("../api/projects.js", () => ({
@@ -15,6 +15,8 @@ vi.mock("../api/projects.js", () => ({
     createTask: vi.fn(),
     listBranches: vi.fn(),
     getWorkspace: vi.fn(),
+    getContext: vi.fn(),
+    updateContext: vi.fn(),
   },
 }));
 
@@ -41,6 +43,7 @@ describe("ProjectBoardPage", () => {
     vi.clearAllMocks();
     mockedProjectsApi.get.mockResolvedValue(makeProject({ id: "p1", name: "OTT" }));
     mockedProjectsApi.getWorkspace.mockResolvedValue(makeWorkspace({ id: "w1", projectId: "p1" }));
+    mockedProjectsApi.getContext.mockResolvedValue(makeProjectContext({ project: { name: "OTT" } }));
   });
 
   it("renders tasks grouped into their status columns", async () => {
@@ -177,16 +180,19 @@ describe("ProjectBoardPage", () => {
 
     await userEvent.click(screen.getByRole("button", { name: /✎ Edit/i }));
 
-    // Pre-filled from the task's current configuration.
-    expect(screen.getByLabelText(/title/i)).toHaveValue("Backlog task");
-    expect(screen.getByLabelText(/description/i)).toHaveValue("Original description");
-    expect(screen.getByLabelText("New branch name")).toHaveValue("task/backlog-task");
-    expect(screen.getByLabelText("Base branch")).toHaveValue("main");
+    const dialog = screen.getByRole("dialog");
+    // Pre-filled from the task's current configuration. Scoped to the dialog — the page's own
+    // Project Context panel (Phase 3, Slice 8) also has a "Description" field.
+    expect(within(dialog).getByLabelText(/title/i)).toHaveValue("Backlog task");
+    expect(within(dialog).getByLabelText(/description/i)).toHaveValue("Original description");
+    expect(within(dialog).getByLabelText("New branch name")).toHaveValue("task/backlog-task");
+    expect(within(dialog).getByLabelText("Base branch")).toHaveValue("main");
 
-    const titleInput = screen.getByLabelText(/title/i);
+    const titleInput = within(dialog).getByLabelText(/title/i);
     await userEvent.clear(titleInput);
     await userEvent.type(titleInput, "Updated title");
-    await userEvent.click(screen.getByRole("button", { name: /^Save changes$/i }));
+    // Scoped to the dialog — the page's own Project Context panel also has a "Save Changes" button.
+    await userEvent.click(within(dialog).getByRole("button", { name: /^Save changes$/i }));
 
     expect(mockedTasksApi.edit).toHaveBeenCalledWith("t0", {
       title: "Updated title",
@@ -214,8 +220,14 @@ describe("ProjectBoardPage", () => {
     await waitFor(() => expect(screen.getByText(/no tasks yet/i)).toBeInTheDocument());
 
     await userEvent.click(screen.getByRole("button", { name: /create task/i }));
-    await userEvent.type(screen.getByLabelText(/title/i), "Fix OTP timeout login");
-    await userEvent.type(screen.getByLabelText(/description/i), "Client reports OTP login fails after session timeout.");
+    const createDialog = screen.getByRole("dialog");
+    // Scoped to the dialog — the page's own Project Context panel (Phase 3, Slice 8) also has a
+    // "Description" field.
+    await userEvent.type(within(createDialog).getByLabelText(/title/i), "Fix OTP timeout login");
+    await userEvent.type(
+      within(createDialog).getByLabelText(/description/i),
+      "Client reports OTP login fails after session timeout.",
+    );
     await userEvent.click(screen.getByRole("button", { name: /^create task$/i }));
 
     await waitFor(() => expect(screen.getByText("Fix OTP timeout login")).toBeInTheDocument());
@@ -343,6 +355,54 @@ describe("ProjectBoardPage", () => {
 
       await waitFor(() => expect(screen.getByText("Couldn't load the workspace for this project.")).toBeInTheDocument());
       expect(screen.getByText("Backlog task")).toBeInTheDocument();
+    });
+  });
+
+  describe("Project Context section (Phase 3, Slice 8)", () => {
+    it("renders the Project Context panel alongside Workspace Details, which remains visible", async () => {
+      mockedProjectsApi.listTasks.mockResolvedValue([]);
+      renderApp("/projects/p1");
+
+      await waitFor(() => expect(screen.getByText("Project Context")).toBeInTheDocument());
+      expect(screen.getByLabelText("Project name")).toHaveValue("OTT");
+      // Existing Workspace metadata (Slice 2) stays visible, now under its own "Workspace Details" heading.
+      expect(screen.getByText("Workspace Details")).toBeInTheDocument();
+      expect(screen.getByText(/Workspace ID: w1/)).toBeInTheDocument();
+    });
+
+    it("Project Context loads and is unaffected by the task list/board's own state", async () => {
+      mockedProjectsApi.listTasks.mockResolvedValue([
+        makeTask({ id: "t0", title: "Backlog task", status: "BACKLOG" }),
+      ]);
+      renderApp("/projects/p1");
+
+      await waitFor(() => expect(screen.getByText("Backlog task")).toBeInTheDocument());
+      // Project Context resolved independently — same assertion works regardless of board/task state.
+      expect(screen.getByLabelText("Project name")).toHaveValue("OTT");
+      expect(mockedProjectsApi.getContext).toHaveBeenCalledWith("p1");
+      expect(mockedProjectsApi.getContext).toHaveBeenCalledTimes(1);
+
+      // A board action (starting a task) re-renders the task list but must never re-fetch or reset
+      // the context editor.
+      mockedTasksApi.start.mockResolvedValue(makeTask({ id: "t0", title: "Backlog task", status: "TODO" }));
+      await userEvent.click(screen.getByRole("button", { name: /▶ Start Task/i }));
+      await waitFor(() => expect(screen.queryByRole("button", { name: /▶ Start Task/i })).not.toBeInTheDocument());
+
+      expect(mockedProjectsApi.getContext).toHaveBeenCalledTimes(1);
+      expect(screen.getByLabelText("Project name")).toHaveValue("OTT");
+    });
+
+    it("a Project Context load failure shows a useful error without breaking the rest of the page", async () => {
+      mockedProjectsApi.getContext.mockRejectedValue(new Error("boom"));
+      mockedProjectsApi.listTasks.mockResolvedValue([
+        makeTask({ id: "t0", title: "Backlog task", status: "BACKLOG" }),
+      ]);
+
+      renderApp("/projects/p1");
+
+      await waitFor(() => expect(screen.getByText("Unable to load project context.")).toBeInTheDocument());
+      expect(screen.getByText("Backlog task")).toBeInTheDocument();
+      expect(screen.getByText("Workspace Details")).toBeInTheDocument();
     });
   });
 });

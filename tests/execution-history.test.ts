@@ -15,6 +15,7 @@ function makeContextBundle(overrides: Partial<ContextBundle> = {}): ContextBundl
     reviewEvidence: null,
     reviewerFeedback: null,
     humanReviewFeedback: null,
+    projectContext: null,
     ...overrides,
   };
 }

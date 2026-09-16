@@ -19,6 +19,7 @@ export function buildImplementerPrompt(context: ContextBundle): string {
     context.reviewerFeedback ? buildReviewerFeedbackBlock(context.reviewerFeedback) : "",
     context.humanReviewFeedback ? buildHumanReviewFeedbackBlock(context.humanReviewFeedback) : "",
     `Project conventions: ${context.projectConventionPointer}`,
+    context.projectContext ?? "",
     context.reviewerFeedback || context.humanReviewFeedback
       ? "Work in the existing task workspace and branch — do not start over. Address the feedback above, then run the project's declared checks yourself before finishing."
       : "Investigate the repository at the current working directory, implement the change, and run the project's declared checks yourself before finishing. If you hit a decision only a human can make, stop and clearly state what you discovered, what you tried, and the specific question.",
@@ -76,6 +77,7 @@ export function buildReviewerPrompt(context: ContextBundle): string {
           .map((c) => `${c.name}: ${c.passed ? "pass" : "fail"}`)
           .join(", ")})`
       : "",
+    context.projectContext ?? "",
     "You did not write this change. Review it independently: identify correctness concerns, missing requirements, regressions, risky changes, test gaps, and security concerns where applicable. Do not simply say it looks good — return specific findings or explicitly state you found none.",
     // Deriving a verdict purely from structured findings undercounts real review content: most
     // model responses are prose, not a findings array (see /docs/CODING_ENGINE.md "Output

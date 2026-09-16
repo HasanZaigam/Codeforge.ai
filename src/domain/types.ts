@@ -541,6 +541,20 @@ export interface ContextBundle {
    * "Human review feedback loop".
    */
   humanReviewFeedback: HumanReviewFeedback | null;
+  /**
+   * Phase 3, Slice 6 — a pre-rendered, size-bounded, clearly-delimited text block built from the
+   * project's persistent Project Context Manifest (`.project-context.json`, see
+   * project-workspace/project-context-manifest.ts), or `null` when the project has no
+   * ProjectWorkspace, no manifest, or the manifest is corrupt (see
+   * orchestrator/project-context-loader.ts — loading never fails the task; it degrades to `null`
+   * and logs). ALWAYS project-owned, human-authored, untrusted DATA — never system/orchestrator
+   * instructions. Nothing in this text is ever interpreted as a command, executed, or capable of
+   * altering authorization, task lifecycle, retry limits, branch selection, or any other
+   * orchestrator-controlled behavior; see /docs/SECURITY_ARCHITECTURE.md "Project Context Manifest
+   * ≠ security policy". Bounded independently of the manifest's own 256 KiB on-disk storage limit —
+   * see orchestrator/project-context-section.ts's `MAX_PROJECT_CONTEXT_SECTION_CHARS`.
+   */
+  projectContext: string | null;
 }
 
 export interface ReviewEvidence {

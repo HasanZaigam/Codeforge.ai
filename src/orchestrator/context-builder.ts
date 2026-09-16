@@ -20,6 +20,10 @@ export function buildImplementerContext(
   lastFailure: ValidationResult | null,
   reviewerFeedback: ReviewResult | null = null,
   humanReviewFeedback: HumanReviewFeedback | null = null,
+  // Phase 3, Slice 6 — see domain/types.ts ContextBundle.projectContext's own doc comment. Optional
+  // (defaults to null) so every pre-existing call site/test that doesn't care about project context
+  // needs no change.
+  projectContext: string | null = null,
 ): ContextBundle {
   return {
     taskGoal: task.goal,
@@ -31,6 +35,7 @@ export function buildImplementerContext(
     reviewEvidence: null,
     reviewerFeedback,
     humanReviewFeedback,
+    projectContext,
   };
 }
 
@@ -40,6 +45,8 @@ export function buildReviewerContext(
   workspacePath: string,
   implementerResult: StepResult,
   validation: ValidationResult,
+  // Phase 3, Slice 6 — see buildImplementerContext's own doc comment above.
+  projectContext: string | null = null,
 ): ContextBundle {
   const evidence: ReviewEvidence = {
     implementerSummary: implementerResult.summary,
@@ -59,5 +66,6 @@ export function buildReviewerContext(
     reviewEvidence: evidence,
     reviewerFeedback: null,
     humanReviewFeedback: null,
+    projectContext,
   };
 }

@@ -1,4 +1,5 @@
 import type { HumanInputRequest, Project, ProjectWorkspace, Task, TaskEvent, TaskEventType, User } from "../domain/types.js";
+import type { ProjectContextManifest } from "../project-workspace/project-context-manifest.js";
 import type { BranchStateSummary } from "../reporting/branch-state.js";
 import type { DependencyStatus } from "../persistence/repositories/task-dependency-repository.js";
 
@@ -67,6 +68,25 @@ export function toProjectWorkspaceDTO(workspace: ProjectWorkspace): ProjectWorks
     createdAt: workspace.createdAt,
     updatedAt: workspace.updatedAt,
   };
+}
+
+/**
+ * The validated, normalized Project Context Manifest (Phase 3, Slice 5) — see
+ * project-context-manifest.ts. Its schema is already the API-safe shape (never a filesystem path,
+ * never a secret — see that module's own doc comment), so this is a deliberate identity passthrough
+ * rather than a field-by-field re-mapping; kept as a named DTO function anyway for the same reason
+ * every other read model in this file goes through one: one obvious place to re-tighten this later
+ * if the manifest schema ever grows an internal-only field.
+ *
+ * Includes `revision` (Phase 3, Slice 7) — the optimistic-concurrency counter a client must echo
+ * back on `PUT /projects/:projectId/context` to prove it isn't overwriting a change it hasn't seen
+ * yet. See `PUT`'s own doc comment in `api/routes/projects.ts` and
+ * `ProjectContextService.replaceManifest`.
+ */
+export type ProjectContextDTO = ProjectContextManifest;
+
+export function toProjectContextDTO(manifest: ProjectContextManifest): ProjectContextDTO {
+  return manifest;
 }
 
 export interface TaskDTO {

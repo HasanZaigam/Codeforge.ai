@@ -2,6 +2,7 @@ import { apiClient } from "./client.js";
 import type {
   CreateProjectInput,
   CreateTaskInput,
+  ProjectContextDTO,
   ProjectDTO,
   ProjectWorkspaceDTO,
   TaskDTO,
@@ -24,4 +25,18 @@ export const projectsApi = {
   /** Phase 3 "Project Workspace" (Slice 1, backend) — a durable, project-scoped workspace record. */
   getWorkspace: (projectId: string) =>
     apiClient.get<{ workspace: ProjectWorkspaceDTO }>(`/projects/${projectId}/workspace`).then((r) => r.workspace),
+  /**
+   * Phase 3 "Project Context Manifest" (Slice 5, backend; `revision`/optimistic concurrency added
+   * Slice 7). Never 404s solely because a manifest wasn't provisioned yet — see /docs/API.md.
+   */
+  getContext: (projectId: string) =>
+    apiClient.get<{ context: ProjectContextDTO }>(`/projects/${projectId}/context`).then((r) => r.context),
+  /**
+   * Full replacement (no partial update) — `input.revision` must be the revision the caller most
+   * recently loaded. Rejects with 409 `PROJECT_CONTEXT_CONFLICT` (stale revision) or 409
+   * `PROJECT_CONTEXT_LOCKED` (a concurrent update is in flight) — see ProjectContextPanel, which is
+   * the only caller expected to handle those. See /docs/API.md.
+   */
+  updateContext: (projectId: string, input: ProjectContextDTO) =>
+    apiClient.put<{ context: ProjectContextDTO }>(`/projects/${projectId}/context`, input).then((r) => r.context),
 };

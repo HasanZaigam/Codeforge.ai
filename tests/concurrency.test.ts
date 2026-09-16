@@ -332,7 +332,7 @@ test("the database rejects two AgentRun rows for the same (task, role, attemptNu
     engine: "fixture",
     attemptNumber: 1,
     status: "running" as const,
-    input: { taskGoal: "g", taskPlan: null, priorDecisions: [], repoPath: "/tmp", projectConventionPointer: "", lastFailure: null, reviewEvidence: null, reviewerFeedback: null, humanReviewFeedback: null },
+    input: { taskGoal: "g", taskPlan: null, priorDecisions: [], repoPath: "/tmp", projectConventionPointer: "", lastFailure: null, reviewEvidence: null, reviewerFeedback: null, humanReviewFeedback: null, projectContext: null },
     result: null,
     error: null,
     cost: null,
@@ -521,7 +521,7 @@ test("16. AgentRunRepository.complete: the current execution can complete its ow
   const task = makeTask(platformA, project);
   const genA = platformA.tasks.claimTodo(task.id, "A", 60_000, new Date().toISOString())!;
 
-  const baseInput = { taskGoal: "g", taskPlan: null, priorDecisions: [], repoPath: "/tmp", projectConventionPointer: "", lastFailure: null, reviewEvidence: null, reviewerFeedback: null, humanReviewFeedback: null };
+  const baseInput = { taskGoal: "g", taskPlan: null, priorDecisions: [], repoPath: "/tmp", projectConventionPointer: "", lastFailure: null, reviewEvidence: null, reviewerFeedback: null, humanReviewFeedback: null, projectContext: null };
   platformA.agentRuns.insert({
     id: "run-A",
     taskId: task.id,

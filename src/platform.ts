@@ -8,6 +8,7 @@ import { TaskEventRepository } from "./persistence/repositories/task-event-repos
 import { ProjectRepository } from "./persistence/repositories/project-repository.js";
 import { ProjectWorkspaceRepository } from "./persistence/repositories/project-workspace-repository.js";
 import { ProjectWorkspaceFsManager } from "./project-workspace/project-workspace-fs-manager.js";
+import { ProjectContextService } from "./project-workspace/project-context-service.js";
 import { AgentRunRepository } from "./persistence/repositories/agent-run-repository.js";
 import { WorkspaceRepository } from "./persistence/repositories/workspace-repository.js";
 import { HumanInputRepository } from "./persistence/repositories/human-input-repository.js";
@@ -39,6 +40,7 @@ export interface Platform {
   projects: ProjectRepository;
   projectWorkspaces: ProjectWorkspaceRepository;
   projectWorkspaceFs: ProjectWorkspaceFsManager;
+  projectContext: ProjectContextService;
   agentRuns: AgentRunRepository;
   workspaces: WorkspaceRepository;
   humanInput: HumanInputRepository;
@@ -86,6 +88,7 @@ export function buildPlatform(options: BuildPlatformOptions): Platform {
   const projectWorkspaceFs = new ProjectWorkspaceFsManager(
     options.projectWorkspacesRoot ?? join(dirname(options.workspacesRoot), "project-workspaces"),
   );
+  const projectContext = new ProjectContextService(projectWorkspaceFs);
   const agentRuns = new AgentRunRepository(db);
   const workspaces = new WorkspaceRepository(db);
   const humanInput = new HumanInputRepository(db);
@@ -126,6 +129,8 @@ export function buildPlatform(options: BuildPlatformOptions): Platform {
     taskDependencies,
     options.ownerId ?? `worker-${randomUUID().slice(0, 8)}`,
     { ...DEFAULT_ORCHESTRATOR_CONFIG, ...options.orchestratorConfig },
+    projectWorkspaces,
+    projectContext,
   );
 
   return {
@@ -136,6 +141,7 @@ export function buildPlatform(options: BuildPlatformOptions): Platform {
     projects,
     projectWorkspaces,
     projectWorkspaceFs,
+    projectContext,
     agentRuns,
     workspaces,
     humanInput,

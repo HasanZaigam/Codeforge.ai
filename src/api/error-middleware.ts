@@ -22,6 +22,8 @@ import { IncompleteDependenciesError } from "../domain/errors.js";
 import { NotFoundError as OrchestratorNotFoundError } from "../orchestrator/orchestrator.js";
 import { GitHubNotConnectedError } from "../integrations/github/credential-resolver.js";
 import { GitHubApiError, GitHubAuthError, GitHubNotFoundError, GitHubRateLimitError } from "../integrations/github/github-client.js";
+import { ProjectContextManifestInvalidError, ProjectContextManifestTooLargeError, ProjectContextConflictError } from "../project-workspace/project-context-manifest.js";
+import { ProjectWorkspaceLockTimeoutError } from "../project-workspace/project-workspace-fs-manager.js";
 
 export interface ApiErrorBody {
   error: { code: string; message: string; details?: unknown };
@@ -72,6 +74,29 @@ export function errorMiddleware(err: unknown, _req: Request, res: Response, _nex
   }
   if (err instanceof LocalGitProjectsDisabledError) {
     respond(res, 403, "LOCAL_GIT_PROJECTS_DISABLED", err.message);
+    return;
+  }
+  // Client-caused (an invalid PUT body) — never the stored-manifest-is-corrupt case
+  // (ProjectContextManifestCorruptError, deliberately unmapped here — like
+  // ProjectWorkspaceMissingError, a server-side data-integrity condition, not a client mistake, so
+  // it falls through to the generic 500 below). See project-context-manifest.ts.
+  if (err instanceof ProjectContextManifestInvalidError || err instanceof ProjectContextManifestTooLargeError) {
+    respond(res, 400, "INVALID_PROJECT_CONTEXT", err.message);
+    return;
+  }
+  // Phase 3, Slice 7 — optimistic concurrency: the caller's submitted `revision` no longer matches
+  // the manifest's actual current revision. A normal, expected outcome of concurrent editing, never
+  // a server error — 409, not 500. `currentRevision` lets the client re-fetch and retry safely; see
+  // project-context-manifest.ts ProjectContextConflictError's own doc comment.
+  if (err instanceof ProjectContextConflictError) {
+    respond(res, 409, "PROJECT_CONTEXT_CONFLICT", err.message, { currentRevision: err.currentRevision });
+    return;
+  }
+  // A concurrent replaceManifest call is still holding the lock after the bounded retry budget —
+  // also transient/retry-safe, same 409 posture as the conflict case above (see
+  // ProjectWorkspaceFsManager.withExclusiveLock's own doc comment on this being rare and bounded).
+  if (err instanceof ProjectWorkspaceLockTimeoutError) {
+    respond(res, 409, "PROJECT_CONTEXT_LOCKED", err.message);
     return;
   }
   if (err instanceof InvalidBranchSelectionError) {

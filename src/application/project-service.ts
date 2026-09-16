@@ -3,6 +3,8 @@ import type { Project, ProjectCommands, ProjectWorkspace } from "../domain/types
 import type { ProjectRepository } from "../persistence/repositories/project-repository.js";
 import type { ProjectWorkspaceRepository } from "../persistence/repositories/project-workspace-repository.js";
 import type { ProjectWorkspaceFsManager } from "../project-workspace/project-workspace-fs-manager.js";
+import type { ProjectContextService } from "../project-workspace/project-context-service.js";
+import type { ProjectContextManifest } from "../project-workspace/project-context-manifest.js";
 import type { GitHubIntegrationService } from "./github-integration-service.js";
 import { assertProjectAccess } from "./authorization.js";
 import { InvalidRepositoryError, LocalGitProjectsDisabledError, ProjectWorkspaceMissingError } from "./errors.js";
@@ -54,6 +56,7 @@ export class ProjectService {
     private readonly projects: ProjectRepository,
     private readonly projectWorkspaces: ProjectWorkspaceRepository,
     private readonly projectWorkspaceFs: ProjectWorkspaceFsManager,
+    private readonly projectContext: ProjectContextService,
     private readonly github: GitHubIntegrationService,
   ) {}
 
@@ -117,6 +120,12 @@ export class ProjectService {
     // — a subsequent getWorkspace() call self-heals by retrying provisioning (see below).
     this.projectWorkspaceFs.ensureWorkspace(workspace.id);
 
+    // Phase 3 — Slice 5: establish the default Project Context Manifest for the ProjectWorkspace
+    // just provisioned. Same posture as the filesystem-provisioning step above — no cross-statement
+    // transaction, a failure here surfaces as a clear thrown error, and a subsequent getContext()
+    // call self-heals via ensureManifest's own idempotency (see ProjectContextService).
+    this.projectContext.ensureManifest(workspace.id, project.name);
+
     return project;
   }
 
@@ -147,6 +156,37 @@ export class ProjectService {
 
   list(actorId: string): Project[] {
     return this.projects.listByOwner(actorId);
+  }
+
+  /**
+   * Phase 3, Slice 5 — returns the caller's project's Project Context Manifest, creating the
+   * default one first if none exists yet (the only real-world case: a ProjectWorkspace whose
+   * directory predates this slice, or a migration-011-backfilled project — see
+   * ProjectContextService.ensureManifest's own doc comment). Authorization happens here, at the
+   * application boundary, exactly like `getWorkspace` — `ProjectContextService` itself performs
+   * none.
+   */
+  getContext(projectId: string, actorId: string): ProjectContextManifest {
+    const project = assertProjectAccess(this.projects, projectId, actorId);
+    const workspace = this.projectWorkspaces.findByProjectId(projectId);
+    if (!workspace) throw new ProjectWorkspaceMissingError(projectId);
+    return this.projectContext.ensureManifest(workspace.id, project.name);
+  }
+
+  /**
+   * Phase 3, Slices 5 & 7 — validates and atomically replaces the caller's project's Project
+   * Context Manifest. `input` is untrusted, caller-supplied data (an HTTP PUT body) — see
+   * ProjectContextService.replaceManifest for the validate-before-write guarantee that keeps an
+   * invalid submission from ever touching the previously-stored manifest, and for the
+   * revision-checked optimistic-concurrency guarantee (throws `ProjectContextConflictError`,
+   * mapped to `409` — see error-middleware.ts) that keeps a stale submission from silently
+   * overwriting a newer one.
+   */
+  updateContext(projectId: string, actorId: string, input: unknown): ProjectContextManifest {
+    assertProjectAccess(this.projects, projectId, actorId);
+    const workspace = this.projectWorkspaces.findByProjectId(projectId);
+    if (!workspace) throw new ProjectWorkspaceMissingError(projectId);
+    return this.projectContext.replaceManifest(workspace.id, input);
   }
 
   /**

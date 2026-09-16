@@ -3,6 +3,7 @@ import { Link, useParams } from "react-router-dom";
 import { useProject } from "../hooks/useProject.js";
 import { useProjectTasks } from "../hooks/useProjectTasks.js";
 import { useProjectWorkspace } from "../hooks/useProjectWorkspace.js";
+import { ProjectContextPanel } from "../components/workspace/ProjectContextPanel.js";
 import { KanbanBoard } from "../components/board/KanbanBoard.js";
 import { CreateTaskDialog } from "../components/board/CreateTaskDialog.js";
 import { LoadingState } from "../components/common/LoadingState.js";
@@ -41,20 +42,29 @@ export function ProjectBoardPage() {
 
       <div className="section">
         <h2>Workspace</h2>
-        {workspaceLoading && <LoadingState label="Loading workspace…" />}
-        {!workspaceLoading && (workspaceError || !workspaceValid) && (
-          <ErrorState message="Couldn't load the workspace for this project." />
-        )}
-        {!workspaceLoading && !workspaceError && workspaceValid && (
-          <div className="card card-padded stack" style={{ gap: 4 }}>
-            <p>
-              <span className="status-badge tone-success">Active</span>
-            </p>
-            <p className="text-muted">Workspace ID: {workspace.id}</p>
-            <p className="text-muted">Created: {formatAbsolute(workspace.createdAt)}</p>
-            <p className="text-muted">Updated: {formatAbsolute(workspace.updatedAt)}</p>
-          </div>
-        )}
+
+        {/* Project Context (Phase 3, Slice 8) is deliberately fetched/rendered independently of the
+            workspace-metadata block below — its own hook, its own error handling — so a failure or
+            slow load of one never blocks or resets the other. */}
+        <ProjectContextPanel projectId={project.id} />
+
+        <div className="workspace-details" style={{ marginTop: 16 }}>
+          <h3>Workspace Details</h3>
+          {workspaceLoading && <LoadingState label="Loading workspace…" />}
+          {!workspaceLoading && (workspaceError || !workspaceValid) && (
+            <ErrorState message="Couldn't load the workspace for this project." />
+          )}
+          {!workspaceLoading && !workspaceError && workspaceValid && (
+            <div className="card card-padded stack" style={{ gap: 4 }}>
+              <p>
+                <span className="status-badge tone-success">Active</span>
+              </p>
+              <p className="text-muted">Workspace ID: {workspace.id}</p>
+              <p className="text-muted">Created: {formatAbsolute(workspace.createdAt)}</p>
+              <p className="text-muted">Updated: {formatAbsolute(workspace.updatedAt)}</p>
+            </div>
+          )}
+        </div>
       </div>
 
       {tasksLoading && <LoadingState label="Loading tasks…" />}

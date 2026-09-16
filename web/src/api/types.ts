@@ -284,6 +284,26 @@ export interface ProjectWorkspaceDTO {
   updatedAt: string;
 }
 
+/**
+ * GET/PUT /projects/:projectId/context — Phase 3 "Project Context Manifest" (Slice 5; `revision`
+ * added in Slice 7). Mirrors the backend's validated manifest shape (see
+ * src/project-workspace/project-context-manifest.ts). `revision` is optimistic-concurrency
+ * bookkeeping only — the editor UI never lets a user edit it directly, and it is never rendered
+ * into the AI Context Preview (see lib/projectContextPreview.ts). A `PUT` is a full replacement
+ * (no partial update) and must echo back the `revision` most recently loaded — see
+ * ProjectContextPanel.
+ */
+export interface ProjectContextDTO {
+  version: number;
+  revision: number;
+  project: { name: string; description?: string };
+  instructions: string[];
+  architecture: string[];
+  conventions: string[];
+  validation: { commands: string[] };
+  constraints: string[];
+}
+
 /** GET/POST /integrations/github — never includes the token itself. */
 export interface GitHubConnectionDTO {
   connected: boolean;

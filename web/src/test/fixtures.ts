@@ -1,6 +1,7 @@
 import type {
   AgentRunHistoryItemDTO,
   HumanInputRequestDTO,
+  ProjectContextDTO,
   ProjectDTO,
   ProjectWorkspaceDTO,
   TaskDTO,
@@ -31,6 +32,20 @@ export function makeWorkspace(overrides: Partial<ProjectWorkspaceDTO> = {}): Pro
     projectId: "project-1",
     createdAt: "2026-01-01T00:00:00.000Z",
     updatedAt: "2026-01-01T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+export function makeProjectContext(overrides: Partial<ProjectContextDTO> = {}): ProjectContextDTO {
+  return {
+    version: 1,
+    revision: 1,
+    project: { name: "OTT" },
+    instructions: [],
+    architecture: [],
+    conventions: [],
+    validation: { commands: [] },
+    constraints: [],
     ...overrides,
   };
 }
