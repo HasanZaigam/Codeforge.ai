@@ -25,6 +25,15 @@ export interface LoginInput {
   password: string;
 }
 
+/** Build/test/lint/typecheck commands a project has declared — see ProjectSettingsPage. A check
+ *  with no declared command here is skipped (not failed) by the backend's validation runner. */
+export interface ProjectCommands {
+  build?: string;
+  test?: string;
+  lint?: string;
+  typecheck?: string;
+}
+
 export interface ProjectDTO {
   id: string;
   name: string;
@@ -36,6 +45,7 @@ export interface ProjectDTO {
   owner: string | null;
   repo: string | null;
   commandsDeclared: string[];
+  commands: ProjectCommands | null;
   createdAt: string;
   updatedAt: string;
 }

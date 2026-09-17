@@ -18,7 +18,7 @@ import { CancellationError } from "../../domain/errors.js";
 
 const DEFAULT_BASE_URL = "https://api.github.com";
 const API_VERSION = "2022-11-28";
-const USER_AGENT = "ai-task-manager";
+const USER_AGENT = "codeforge-ai";
 
 /** Bounds so an env var/caller can't accidentally configure a near-infinite or near-zero-delay retry loop — same idea as OpenCodeAdapter's, deliberately not shared code (see error-classifier.ts doc comment). */
 const MAX_ALLOWED_RETRIES = 8;

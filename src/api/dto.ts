@@ -1,4 +1,4 @@
-import type { HumanInputRequest, Project, ProjectWorkspace, Task, TaskEvent, TaskEventType, User } from "../domain/types.js";
+import type { HumanInputRequest, Project, ProjectCommands, ProjectWorkspace, Task, TaskEvent, TaskEventType, User } from "../domain/types.js";
 import type { ProjectContextManifest } from "../project-workspace/project-context-manifest.js";
 import type { BranchStateSummary } from "../reporting/branch-state.js";
 import type { DependencyStatus } from "../persistence/repositories/task-dependency-repository.js";
@@ -34,6 +34,7 @@ export interface ProjectDTO {
   owner: string | null;
   repo: string | null;
   commandsDeclared: string[];
+  commands: ProjectCommands | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -49,6 +50,11 @@ export function toProjectDTO(project: Project): ProjectDTO {
     owner: project.owner,
     repo: project.repo,
     commandsDeclared: project.commands ? Object.keys(project.commands) : [],
+    // The actual declared command strings, not just their names — needed so the frontend's
+    // Project Settings screen can render an editable form pre-filled with the real values, not just
+    // the "which checks exist" summary `commandsDeclared` gives. See
+    // PATCH /projects/:projectId/commands (routes/projects.ts) for how these get set.
+    commands: project.commands,
     createdAt: project.createdAt,
     updatedAt: project.updatedAt,
   };

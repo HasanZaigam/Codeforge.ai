@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState, type ChangeEvent, type ReactNode } from "react";
 import { useProjectContext } from "../../hooks/useProjectContext.js";
 import { projectsApi, ApiError, type ProjectContextDTO } from "../../api/index.js";
 import { ListEditor } from "../common/ListEditor.js";
@@ -6,6 +6,8 @@ import { LoadingState } from "../common/LoadingState.js";
 import { ErrorState } from "../common/ErrorState.js";
 import { buildAiContextPreview } from "../../lib/projectContextPreview.js";
 import { formatAbsolute } from "../../lib/time.js";
+import { CONTEXT_UPLOAD_ACCEPT, extractTextFromFile } from "../../lib/fileTextExtractor.js";
+import { textToListItems } from "../../lib/textToListItems.js";
 
 function arraysEqual(a: readonly string[], b: readonly string[]): boolean {
   return a.length === b.length && a.every((v, i) => v === b[i]);
@@ -179,7 +181,12 @@ export function ProjectContextPanel({ projectId }: { projectId: string }) {
         </div>
       </div>
 
-      <ContextSection title="Instructions" description="High-level instructions for the AI developer.">
+      <ContextSection
+        id="context-instructions"
+        title="Instructions"
+        description="High-level instructions for the AI developer."
+        onUpload={(items) => setInstructions((prev) => [...prev, ...items])}
+      >
         <ListEditor
           id="context-instructions"
           label="Instructions"
@@ -191,7 +198,12 @@ export function ProjectContextPanel({ projectId }: { projectId: string }) {
         />
       </ContextSection>
 
-      <ContextSection title="Architecture" description="Technical architecture and design decisions.">
+      <ContextSection
+        id="context-architecture"
+        title="Architecture"
+        description="Technical architecture and design decisions."
+        onUpload={(items) => setArchitecture((prev) => [...prev, ...items])}
+      >
         <ListEditor
           id="context-architecture"
           label="Architecture"
@@ -203,7 +215,12 @@ export function ProjectContextPanel({ projectId }: { projectId: string }) {
         />
       </ContextSection>
 
-      <ContextSection title="Conventions" description="Coding conventions, naming patterns, and standards.">
+      <ContextSection
+        id="context-conventions"
+        title="Conventions"
+        description="Coding conventions, naming patterns, and standards."
+        onUpload={(items) => setConventions((prev) => [...prev, ...items])}
+      >
         <ListEditor
           id="context-conventions"
           label="Conventions"
@@ -215,7 +232,12 @@ export function ProjectContextPanel({ projectId }: { projectId: string }) {
         />
       </ContextSection>
 
-      <ContextSection title="Validation Guidance" description="Guidance for validation and testing (for AI guidance only, not authoritative).">
+      <ContextSection
+        id="context-validation-commands"
+        title="Validation Guidance"
+        description="Guidance for validation and testing (for AI guidance only, not authoritative)."
+        onUpload={(items) => setValidationCommands((prev) => [...prev, ...items])}
+      >
         <ListEditor
           id="context-validation-commands"
           label="Validation Guidance"
@@ -231,7 +253,12 @@ export function ProjectContextPanel({ projectId }: { projectId: string }) {
         </p>
       </ContextSection>
 
-      <ContextSection title="Constraints" description="Important constraints and limitations.">
+      <ContextSection
+        id="context-constraints"
+        title="Constraints"
+        description="Important constraints and limitations."
+        onUpload={(items) => setConstraints((prev) => [...prev, ...items])}
+      >
         <ListEditor
           id="context-constraints"
           label="Constraints"
@@ -273,14 +300,52 @@ export function ProjectContextPanel({ projectId }: { projectId: string }) {
 }
 
 /**
- * One visual card per manifest field, matching the redesigned reference layout: a heading +
- * one-line description + an "Upload MD/PDF" action, with the field's own editor below. The upload
- * button is intentionally disabled — no backend upload/extraction endpoint exists yet (see
- * /docs/API.md and src/api/routes/projects.ts), and this redesign must not fake a successful
- * upload or bypass the existing Project Context PUT contract. It's UI-ready for that future
- * capability, nothing more.
+ * One visual card per manifest field: a heading + one-line description + an "Upload MD/PDF" action,
+ * with the field's own list editor below. The upload itself is entirely client-side (see
+ * lib/fileTextExtractor.ts) — a .md/.markdown file is just read as text, a .pdf is parsed in-browser
+ * with pdf.js; nothing is sent to any backend endpoint. Extracted lines are only ever *appended* to
+ * this field's in-memory list, exactly as if the user had clicked "+ Add ..." and typed each line
+ * themselves — the user can still edit/remove any of them, and nothing is persisted until they
+ * explicitly click "Save Changes" (the existing revision-aware PUT, completely unchanged).
  */
-function ContextSection({ title, description, children }: { title: string; description: string; children: ReactNode }) {
+function ContextSection({
+  id,
+  title,
+  description,
+  onUpload,
+  children,
+}: {
+  id: string;
+  title: string;
+  description: string;
+  onUpload: (items: string[]) => void;
+  children: ReactNode;
+}) {
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string>();
+  const inputId = `${id}-upload`;
+
+  async function handleFileChange(e: ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // lets the same file be re-selected later (e.g. after fixing its content)
+    if (!file) return;
+    setUploading(true);
+    setUploadError(undefined);
+    try {
+      const text = await extractTextFromFile(file);
+      const items = textToListItems(text);
+      if (items.length === 0) {
+        setUploadError(`Couldn't find any usable text lines in "${file.name}".`);
+        return;
+      }
+      onUpload(items);
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : `Could not read "${file.name}".`);
+    } finally {
+      setUploading(false);
+    }
+  }
+
   return (
     <div className="card card-padded context-section">
       <div className="context-section-header">
@@ -288,10 +353,24 @@ function ContextSection({ title, description, children }: { title: string; descr
           <h4>{title}</h4>
           <p className="field-hint">{description}</p>
         </div>
-        <button type="button" className="btn btn-secondary" disabled title="File upload isn't available yet.">
-          ⬆ Upload MD/PDF
-        </button>
+        <label className="btn btn-secondary context-section-upload" htmlFor={inputId}>
+          {uploading ? "Reading…" : "⬆ Upload MD/PDF"}
+          <input
+            id={inputId}
+            className="sr-only"
+            type="file"
+            accept={CONTEXT_UPLOAD_ACCEPT}
+            disabled={uploading}
+            onChange={handleFileChange}
+          />
+        </label>
       </div>
+      {uploadError && (
+        <p className="field-warning" role="alert">
+          <span aria-hidden="true">⚠</span>
+          <span>{uploadError}</span>
+        </p>
+      )}
       {children}
     </div>
   );

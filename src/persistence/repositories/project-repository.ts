@@ -77,6 +77,41 @@ export class ProjectRepository {
       .run(JSON.stringify(commands), now, id);
   }
 
+  /**
+   * Deletes a project and everything scoped to it — its tasks and every row that in turn belongs
+   * to one of those tasks (events, agent runs, ephemeral workspace records, human input requests,
+   * dependency edges), plus its `project_workspaces` row. Deliberately sequential DELETEs in
+   * child-before-parent order (foreign keys are enforced — see persistence/db.ts's `PRAGMA
+   * foreign_keys = ON`), not wrapped in an explicit transaction — this codebase has no
+   * cross-statement transactions anywhere (see e.g. ProjectService.create's own doc comment on the
+   * same posture); a failure partway through is a diagnosable partial-delete, not silently masked.
+   * Callers must check ProjectService.delete's active-task guard *before* calling this — this
+   * method itself performs no such check, so it must never be called directly from a route.
+   *
+   * Does NOT touch the filesystem — neither the project's persistent ProjectWorkspace directory
+   * (`PROJECT_WORKSPACE_ROOT/<workspaceId>`) nor any of its tasks' ephemeral workspace directories
+   * (`WORKSPACES_ROOT/<taskId>`) are removed. Left as a known limitation (see docs/API.md) rather
+   * than adding a new recursive-filesystem-delete code path — an orphaned directory costs disk
+   * space, not correctness or safety, and can be reclaimed manually if it matters for a given
+   * deployment.
+   */
+  deleteCascade(projectId: string): void {
+    const taskIds = (this.db.prepare("SELECT id FROM tasks WHERE project_id = ?").all(projectId) as { id: string }[]).map((r) => r.id);
+    if (taskIds.length > 0) {
+      const placeholders = taskIds.map(() => "?").join(",");
+      this.db.prepare(`DELETE FROM task_events WHERE task_id IN (${placeholders})`).run(...taskIds);
+      this.db.prepare(`DELETE FROM agent_runs WHERE task_id IN (${placeholders})`).run(...taskIds);
+      this.db.prepare(`DELETE FROM workspaces WHERE task_id IN (${placeholders})`).run(...taskIds);
+      this.db.prepare(`DELETE FROM human_input_requests WHERE task_id IN (${placeholders})`).run(...taskIds);
+      this.db
+        .prepare(`DELETE FROM task_dependencies WHERE task_id IN (${placeholders}) OR depends_on_task_id IN (${placeholders})`)
+        .run(...taskIds, ...taskIds);
+      this.db.prepare("DELETE FROM tasks WHERE project_id = ?").run(projectId);
+    }
+    this.db.prepare("DELETE FROM project_workspaces WHERE project_id = ?").run(projectId);
+    this.db.prepare("DELETE FROM projects WHERE id = ?").run(projectId);
+  }
+
   /** All projects — used only internally (e.g. by tests); the API always scopes by owner. See listByOwner. */
   list(): Project[] {
     const rows = this.db.prepare("SELECT * FROM projects ORDER BY created_at DESC").all() as unknown as ProjectRow[];

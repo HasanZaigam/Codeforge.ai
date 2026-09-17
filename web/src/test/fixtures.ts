@@ -20,6 +20,7 @@ export function makeProject(overrides: Partial<ProjectDTO> = {}): ProjectDTO {
     owner: "example",
     repo: "ott",
     commandsDeclared: ["test"],
+    commands: { test: "npm test" },
     createdAt: "2026-01-01T00:00:00.000Z",
     updatedAt: "2026-01-01T00:00:00.000Z",
     ...overrides,

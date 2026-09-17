@@ -16,14 +16,14 @@
 # this host's IP via DNS (an A/AAAA record) before reloading — Caddy obtains
 # and renews the certificate for whatever hostname is written here.
 
-your-domain.example.com {
+codeforge.ai {
 	# --- Frontend: static build, served directly by Caddy -------------------
 	# `npm --prefix web run build` produces web/dist/ — copy (or symlink) that
 	# directory to the path below as part of your deploy step. Same-origin
 	# with the API below (both behind this one hostname), so the frontend
 	# never needs CORS headers from the API — see docs/DEPLOYMENT.md
 	# "CORS/origin configuration".
-	root * /opt/ai-task-manager/web/dist
+	root * /opt/codeforge/web/dist
 	file_server
 
 	# Single-page app: any path that isn't a real static file falls back to

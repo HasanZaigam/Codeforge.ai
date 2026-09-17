@@ -1,0 +1,36 @@
+# systemd unit for Codeforge.ai worker process — see docs/DEPLOYMENT.md "Production deployment".
+#
+# Install:
+#   sudo cp deploy/systemd/codeforge-worker.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now codeforge-worker
+#
+# This unit reads secrets and environment variables from /etc/codeforge/worker.env
+# (root-owned, 0600, never checked into git).
+
+[Unit]
+Description=Codeforge.ai - worker process
+After=network.target
+
+[Service]
+Type=simple
+User=codeforge
+Group=codeforge
+WorkingDirectory=/opt/codeforge
+EnvironmentFile=/etc/codeforge/worker.env
+ExecStart=/usr/bin/node dist/src/worker/run-worker.js
+Restart=on-failure
+RestartSec=3
+
+TimeoutStopSec=45
+KillSignal=SIGTERM
+
+# --- Hardening ---
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/codeforge/.data
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

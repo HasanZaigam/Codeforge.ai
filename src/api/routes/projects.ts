@@ -1,6 +1,6 @@
 import { Router } from "express";
 import type { ApplicationServices } from "../../application/index.js";
-import { CreateProjectSchema, CreateTaskSchema, VerifyGitHubRepositorySchema } from "../schemas.js";
+import { CreateProjectSchema, CreateTaskSchema, UpdateProjectCommandsSchema, VerifyGitHubRepositorySchema } from "../schemas.js";
 import { toProjectDTO, toProjectWorkspaceDTO, toProjectContextDTO, toTaskDTO } from "../dto.js";
 import { asyncHandler } from "../async-handler.js";
 import { dependenciesFor, latestEventFor } from "./task-helpers.js";
@@ -46,6 +46,30 @@ export function projectsRouter(services: ApplicationServices, taskEvents: TaskEv
     asyncHandler(async (req, res) => {
       const project = services.projects.get(req.params.projectId!, req.user!.id);
       res.json({ project: toProjectDTO(project) });
+    }),
+  );
+
+  // Declares/edits build/test/lint/typecheck after the project already exists — see
+  // ProjectService.updateCommands's own doc comment for why this exists (it was previously
+  // impossible to set these at all outside project creation, which itself has no frontend UI for
+  // them either). Full replacement of the `commands` object, not a per-key merge.
+  router.patch(
+    "/projects/:projectId/commands",
+    asyncHandler(async (req, res) => {
+      const input = UpdateProjectCommandsSchema.parse(req.body);
+      const project = services.projects.updateCommands(req.params.projectId!, req.user!.id, input.commands);
+      res.json({ project: toProjectDTO(project) });
+    }),
+  );
+
+  // Permanently deletes the project and everything scoped to it — see ProjectService.delete's own
+  // doc comment for the active-task guard (409 PROJECT_HAS_ACTIVE_TASKS) and exactly what this
+  // does and does not clean up.
+  router.delete(
+    "/projects/:projectId",
+    asyncHandler(async (req, res) => {
+      services.projects.delete(req.params.projectId!, req.user!.id);
+      res.status(204).end();
     }),
   );
 

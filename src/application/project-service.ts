@@ -2,12 +2,13 @@ import { randomUUID } from "node:crypto";
 import type { Project, ProjectCommands, ProjectWorkspace } from "../domain/types.js";
 import type { ProjectRepository } from "../persistence/repositories/project-repository.js";
 import type { ProjectWorkspaceRepository } from "../persistence/repositories/project-workspace-repository.js";
+import type { TaskRepository } from "../persistence/repositories/task-repository.js";
 import type { ProjectWorkspaceFsManager } from "../project-workspace/project-workspace-fs-manager.js";
 import type { ProjectContextService } from "../project-workspace/project-context-service.js";
 import type { ProjectContextManifest } from "../project-workspace/project-context-manifest.js";
 import type { GitHubIntegrationService } from "./github-integration-service.js";
 import { assertProjectAccess } from "./authorization.js";
-import { InvalidRepositoryError, LocalGitProjectsDisabledError, ProjectWorkspaceMissingError } from "./errors.js";
+import { InvalidRepositoryError, LocalGitProjectsDisabledError, ProjectHasActiveTasksError, ProjectWorkspaceMissingError } from "./errors.js";
 import { GitHubNotFoundError } from "../integrations/github/github-client.js";
 import { isLocalGitProjectsAllowed } from "../config/startup-config.js";
 import { parseGitHubRepoUrl } from "../api/schemas.js";
@@ -58,6 +59,7 @@ export class ProjectService {
     private readonly projectWorkspaceFs: ProjectWorkspaceFsManager,
     private readonly projectContext: ProjectContextService,
     private readonly github: GitHubIntegrationService,
+    private readonly tasks: TaskRepository,
   ) {}
 
   async create(input: CreateProjectInput, ownerId: string): Promise<Project> {
@@ -131,6 +133,39 @@ export class ProjectService {
 
   get(id: string, actorId: string): Project {
     return assertProjectAccess(this.projects, id, actorId);
+  }
+
+  /**
+   * Declares/edits the project's build/test/lint/typecheck commands after creation — the only
+   * mechanism to set them today, since `create()`'s own `commands` input has no corresponding
+   * frontend UI yet. Full replacement, not a per-key merge: a field omitted from `commands` clears
+   * that check (see runValidation's own doc comment — an undeclared check is *skipped*, not
+   * failed, so leaving everything unset means a task gets no automated validation at all).
+   */
+  updateCommands(projectId: string, actorId: string, commands: ProjectCommands): Project {
+    assertProjectAccess(this.projects, projectId, actorId);
+    const now = new Date().toISOString();
+    this.projects.updateCommands(projectId, commands, now);
+    return assertProjectAccess(this.projects, projectId, actorId);
+  }
+
+  /**
+   * Permanently deletes the project and everything scoped to it (see
+   * ProjectRepository.deleteCascade). Blocked with `ProjectHasActiveTasksError` (409) if any task
+   * is TODO/WORKING/NEEDS_INPUT (genuinely queued or executing) or REVIEW (an open Pull Request
+   * still awaiting a human decision) — the caller must cancel or finish those first; this never
+   * force-cancels anything on their behalf. BACKLOG/DONE/FAILED/CANCELLED tasks never block a
+   * delete. Does not touch GitHub (no PR/branch is deleted there) or any filesystem workspace
+   * directory — see ProjectRepository.deleteCascade's own doc comment for that scope boundary.
+   */
+  delete(projectId: string, actorId: string): void {
+    assertProjectAccess(this.projects, projectId, actorId);
+    const blockingStatuses = new Set(["TODO", "WORKING", "NEEDS_INPUT", "REVIEW"]);
+    const blocking = this.tasks.listByProject(projectId).filter((t) => blockingStatuses.has(t.status));
+    if (blocking.length > 0) {
+      throw new ProjectHasActiveTasksError(blocking.map((t) => t.title));
+    }
+    this.projects.deleteCascade(projectId);
   }
 
   /**

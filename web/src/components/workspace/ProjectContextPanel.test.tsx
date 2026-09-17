@@ -273,5 +273,55 @@ describe("ProjectContextPanel", () => {
       expect(preview.textContent).not.toMatch(/revision/i);
       expect(preview.textContent).not.toContain("4");
     });
+
+    describe("Upload MD/PDF", () => {
+      test("uploading a .md file appends its lines to that field's list and marks the form dirty", async () => {
+        renderPanel();
+        await waitFor(() => expect(screen.getByLabelText("Project name")).toBeInTheDocument());
+
+        const constraintsSection = screen.getByRole("heading", { name: "Constraints" }).closest(".context-section") as HTMLElement;
+        const file = new File(["- No direct DB writes from controllers\n- Never log raw tokens"], "constraints.md", {
+          type: "text/markdown",
+        });
+        await userEvent.upload(within(constraintsSection).getByLabelText(/upload md\/pdf/i), file);
+
+        await waitFor(() =>
+          expect(within(constraintsSection).getByDisplayValue("No direct DB writes from controllers")).toBeInTheDocument(),
+        );
+        expect(within(constraintsSection).getByDisplayValue("Never log raw tokens")).toBeInTheDocument();
+        // The original item loaded from the server is still there — upload appends, never replaces.
+        expect(within(constraintsSection).getByDisplayValue("Never touch billing code")).toBeInTheDocument();
+        expect(screen.getByText("Unsaved changes")).toBeInTheDocument();
+      });
+
+      test("an unsupported file type is rejected with a clear error and nothing is added to the list", async () => {
+        renderPanel();
+        await waitFor(() => expect(screen.getByLabelText("Project name")).toBeInTheDocument());
+
+        const instructionsSection = screen.getByRole("heading", { name: "Instructions" }).closest(".context-section") as HTMLElement;
+        const file = new File(["not markdown or pdf"], "notes.txt", { type: "text/plain" });
+        // The input's `accept` attribute is only a picker hint, not a real guarantee (a user can
+        // still drag-drop or rename a file around it) — `applyAccept: false` bypasses
+        // userEvent.upload's own accept-matching so this test can exercise that defensive path.
+        const user = userEvent.setup({ applyAccept: false });
+        await user.upload(within(instructionsSection).getByLabelText(/upload md\/pdf/i), file);
+
+        await waitFor(() => expect(within(instructionsSection).getByRole("alert")).toBeInTheDocument());
+        expect(within(instructionsSection).getByText(/isn't a supported file type/i)).toBeInTheDocument();
+        expect(screen.getByText("No unsaved changes")).toBeInTheDocument();
+      });
+
+      test("an upload never calls the save API by itself — it only affects local, unsaved form state", async () => {
+        renderPanel();
+        await waitFor(() => expect(screen.getByLabelText("Project name")).toBeInTheDocument());
+
+        const architectureSection = screen.getByRole("heading", { name: "Architecture" }).closest(".context-section") as HTMLElement;
+        const file = new File(["A new architecture note"], "architecture.md", { type: "text/markdown" });
+        await userEvent.upload(within(architectureSection).getByLabelText(/upload md\/pdf/i), file);
+
+        await waitFor(() => expect(screen.getByText("Unsaved changes")).toBeInTheDocument());
+        expect(mockedProjectsApi.updateContext).not.toHaveBeenCalled();
+      });
+    });
   });
 });

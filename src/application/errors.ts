@@ -205,3 +205,23 @@ export class LocalGitProjectsDisabledError extends Error {
     this.name = "LocalGitProjectsDisabledError";
   }
 }
+
+/**
+ * DELETE /projects/:projectId was called while at least one of the project's tasks is still
+ * "active" (TODO/WORKING/NEEDS_INPUT — genuinely queued or executing — or REVIEW, which has an
+ * open Pull Request still awaiting a human decision). Deleting the project out from under a task
+ * mid-execution would orphan its lease/workspace mid-run; deleting one with an open PR would erase
+ * the platform's own record of it while GitHub's side still exists. Blocked outright rather than
+ * force-cancelling those tasks on the caller's behalf — cancellation is its own explicit, separate
+ * action (see TaskService.requestCancellation) the caller can take first if that's really what they
+ * want. See ProjectService.delete.
+ */
+export class ProjectHasActiveTasksError extends Error {
+  constructor(blockingTaskTitles: string[]) {
+    super(
+      `This project has ${blockingTaskTitles.length} task(s) that are still active (queued, in progress, or awaiting review): ` +
+        `${blockingTaskTitles.join(", ")}. Cancel or finish them before deleting the project.`,
+    );
+    this.name = "ProjectHasActiveTasksError";
+  }
+}

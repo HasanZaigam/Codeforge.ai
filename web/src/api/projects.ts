@@ -2,6 +2,7 @@ import { apiClient } from "./client.js";
 import type {
   CreateProjectInput,
   CreateTaskInput,
+  ProjectCommands,
   ProjectContextDTO,
   ProjectDTO,
   ProjectWorkspaceDTO,
@@ -39,4 +40,17 @@ export const projectsApi = {
    */
   updateContext: (projectId: string, input: ProjectContextDTO) =>
     apiClient.put<{ context: ProjectContextDTO }>(`/projects/${projectId}/context`, input).then((r) => r.context),
+  /**
+   * Declares/edits build/test/lint/typecheck after the project already exists — the only way to
+   * set these today (project creation's own `commands` field has no frontend UI). Full replacement
+   * of the whole `commands` object — an omitted field clears that check. See ProjectSettingsPage.
+   */
+  updateCommands: (projectId: string, commands: ProjectCommands) =>
+    apiClient.patch<{ project: ProjectDTO }>(`/projects/${projectId}/commands`, { commands }).then((r) => r.project),
+  /**
+   * Permanently deletes the project and everything scoped to it. Rejects with 409
+   * `PROJECT_HAS_ACTIVE_TASKS` if any task is still queued/executing/awaiting review — see
+   * ProjectSettingsPage's Danger Zone, the only caller.
+   */
+  delete: (projectId: string) => apiClient.del<void>(`/projects/${projectId}`),
 };

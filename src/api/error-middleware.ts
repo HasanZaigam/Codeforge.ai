@@ -14,6 +14,7 @@ import {
   InvalidRequestError,
   LocalGitProjectsDisabledError,
   NotFoundError,
+  ProjectHasActiveTasksError,
   SelfDependencyError,
   TaskNotEditableError,
 } from "../application/errors.js";
@@ -74,6 +75,10 @@ export function errorMiddleware(err: unknown, _req: Request, res: Response, _nex
   }
   if (err instanceof LocalGitProjectsDisabledError) {
     respond(res, 403, "LOCAL_GIT_PROJECTS_DISABLED", err.message);
+    return;
+  }
+  if (err instanceof ProjectHasActiveTasksError) {
+    respond(res, 409, "PROJECT_HAS_ACTIVE_TASKS", err.message);
     return;
   }
   // Client-caused (an invalid PUT body) — never the stored-manifest-is-corrupt case

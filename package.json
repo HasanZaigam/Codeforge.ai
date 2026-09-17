@@ -1,8 +1,8 @@
 {
-  "name": "ai-task-manager",
+  "name": "codeforge",
   "version": "0.1.0",
   "private": true,
-  "description": "Autonomous Software Development Platform - backend execution foundation",
+  "description": "Codeforge.ai - Autonomous Software Development Platform",
   "type": "module",
   "engines": {
     "node": ">=22.9.0"

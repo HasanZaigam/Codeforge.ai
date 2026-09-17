@@ -7,14 +7,25 @@ import { z } from "zod";
  * server should assign, or anything else the client shouldn't control.
  */
 
-const CommandsSchema = z
-  .object({
-    build: z.string().trim().min(1).optional(),
-    test: z.string().trim().min(1).optional(),
-    lint: z.string().trim().min(1).optional(),
-    typecheck: z.string().trim().min(1).optional(),
-  })
-  .optional();
+const CommandsShape = z.object({
+  build: z.string().trim().min(1).optional(),
+  test: z.string().trim().min(1).optional(),
+  lint: z.string().trim().min(1).optional(),
+  typecheck: z.string().trim().min(1).optional(),
+});
+
+const CommandsSchema = CommandsShape.optional();
+
+/**
+ * `PATCH /projects/:projectId/commands` — lets an owner declare/edit the build/test/lint/typecheck
+ * commands after a project already exists, not just at creation time. See
+ * ProjectRepository.updateCommands (previously unused — every check `runValidation` doesn't have a
+ * declared command for is silently *skipped*, not failed, so a project connected with no commands at
+ * all currently gets no automated validation whatsoever on any task). A field omitted here clears
+ * that check (declared, not merged) — the request body is the new, complete `commands` object, not a
+ * partial patch of individual keys.
+ */
+export const UpdateProjectCommandsSchema = z.object({ commands: CommandsShape });
 
 // GitHub's own rules: owners/orgs are alphanumeric-and-hyphens, max 39 chars, no leading/trailing
 // hyphen; repo names are alphanumeric/._- , max 100 chars. Validated here — before either string
