@@ -91,9 +91,23 @@ const manifestContentShape = {
  * because it was read; only a subsequent successful `replaceManifest` call ever persists an
  * explicit `revision`. An explicit but invalid `revision` (non-integer, zero, negative) is still
  * rejected — this default only fills in a *missing* field, it never repairs a malformed one.
+ *
+ * `updatedAt` (Phase 3, Slice 8 follow-up) is the ISO timestamp of the last successful
+ * `replaceManifest` call — server-computed only, exactly like `revision` (see that field's own
+ * "never itself the literal value persisted" note on `ProjectContextManifestInputSchema` below):
+ * a client can never set or influence it, it is not part of the compare-and-swap contract, and it
+ * is never rendered into an AI prompt (see orchestrator/project-context-section.ts's own doc
+ * comment on why `revision` is excluded there — the same reasoning applies here: platform
+ * bookkeeping, not project knowledge). Defaults to `null` when absent (a manifest written before
+ * this field existed) rather than fabricating a plausible-looking timestamp for data the platform
+ * never actually recorded.
  */
 export const ProjectContextManifestSchema = z
-  .object({ ...manifestContentShape, revision: RevisionSchema.default(PROJECT_CONTEXT_MANIFEST_INITIAL_REVISION) })
+  .object({
+    ...manifestContentShape,
+    revision: RevisionSchema.default(PROJECT_CONTEXT_MANIFEST_INITIAL_REVISION),
+    updatedAt: z.string().nullable().default(null),
+  })
   .strict();
 
 /**
@@ -105,20 +119,30 @@ export const ProjectContextManifestSchema = z
  * missing `project.name`. See ProjectContextService.replaceManifest for how this value is used as
  * the compare-and-swap's "expected" revision, and is never itself the literal value persisted (the
  * server always computes the actual next revision as `currentOnDisk.revision + 1`).
+ *
+ * Deliberately has no `updatedAt` field at all — unlike `revision`, the client has no legitimate
+ * reason to ever send one (there is no "expected updatedAt" half of any concurrency check), and
+ * `.strict()` means a client that tries anyway gets a clear 400, not a silently-ignored field.
  */
 export const ProjectContextManifestInputSchema = z.object({ ...manifestContentShape, revision: RevisionSchema }).strict();
 
 export type ProjectContextManifest = z.infer<typeof ProjectContextManifestSchema>;
 
 /**
- * The manifest a brand-new (or newly-backfilled) ProjectWorkspace gets — see
- * ProjectContextService.ensureManifest. `projectName` is copied in once, at creation time, purely
- * as informational context (never re-synchronized later — see this module's top-of-file doc
- * comment: the database, not this manifest, remains the authoritative project name). Contains no
- * secrets by construction: there is no field anywhere in this schema capable of holding a
- * credential, token, or key.
+ * The manifest CONTENT a brand-new (or newly-backfilled) ProjectWorkspace gets — see
+ * ProjectContextService.ensureManifest, the only caller that turns this into a persisted
+ * `ProjectContextManifest` (by adding `updatedAt` itself at the moment of persistence — see that
+ * method). `projectName` is copied in once, at creation time, purely as informational context
+ * (never re-synchronized later — see this module's top-of-file doc comment: the database, not this
+ * manifest, remains the authoritative project name). Contains no secrets by construction: there is
+ * no field anywhere in this schema capable of holding a credential, token, or key.
+ *
+ * Deliberately excludes `updatedAt` (unlike the full `ProjectContextManifest` type) — this exact
+ * shape is also what test helpers spread into a `PUT` request body (`ProjectContextManifestInputSchema`
+ * has no `updatedAt` field and rejects one via `.strict()`), so keeping this function's output
+ * "client-shaped" content only, with no server-only bookkeeping mixed in, avoids that entirely.
  */
-export function defaultProjectContextManifest(projectName: string): ProjectContextManifest {
+export function defaultProjectContextManifest(projectName: string): Omit<ProjectContextManifest, "updatedAt"> {
   return {
     version: PROJECT_CONTEXT_MANIFEST_VERSION,
     revision: PROJECT_CONTEXT_MANIFEST_INITIAL_REVISION,
@@ -139,7 +163,9 @@ export function defaultProjectContextManifest(projectName: string): ProjectConte
  * missing `revision`, missing required fields, wrong primitive/array/object types, `.strict()` also
  * rejects unknown extra top-level keys, catching typos rather than silently ignoring them.
  */
-export function validateProjectContextManifest(value: unknown): ProjectContextManifest {
+export type ProjectContextManifestInput = z.infer<typeof ProjectContextManifestInputSchema>;
+
+export function validateProjectContextManifest(value: unknown): ProjectContextManifestInput {
   const result = ProjectContextManifestInputSchema.safeParse(value);
   if (!result.success) {
     throw new ProjectContextManifestInvalidError(summarizeZodIssues(result.error));

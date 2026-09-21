@@ -137,6 +137,87 @@ test("a token GitHub rejects (401) is reported as 400 INVALID_GITHUB_TOKEN, and 
   }
 });
 
+test("POST /integrations/github/verify makes a real GitHub call and reports valid:true for a still-good token", async () => {
+  const h = await setupHarness("verify-valid");
+  const restoreFetch = stubFetch(githubApiStub({ login: "octocat" }));
+  try {
+    const client = await registerClient(h.baseUrl, "verify-valid");
+    await client.fetch("/integrations/github", { method: "POST", body: JSON.stringify({ token: "gh-token-abc123" }) });
+
+    const res = await client.fetch("/integrations/github/verify", { method: "POST" });
+    assert.equal(res.status, 200);
+    const body = await json<{ valid: boolean }>(res);
+    assert.equal(body.valid, true);
+  } finally {
+    restoreFetch();
+    await teardown(h);
+  }
+});
+
+test("POST /integrations/github/verify reports valid:false for a token GitHub itself now rejects — status stays a fast, local DB read that would never catch this on its own", async () => {
+  const h = await setupHarness("verify-invalid");
+  try {
+    const client = await registerClient(h.baseUrl, "verify-invalid");
+    // Connect while the token is still good...
+    const restoreFetchConnect = stubFetch(githubApiStub({ login: "octocat" }));
+    await client.fetch("/integrations/github", { method: "POST", body: JSON.stringify({ token: "gh-token-abc123" }) });
+    restoreFetchConnect();
+
+    // The plain status check is a local DB read only — it has no way to know the token was since
+    // revoked on GitHub's side, so it still says connected.
+    const status = await json<{ connected: boolean }>(await client.fetch("/integrations/github"));
+    assert.equal(status.connected, true, "the cheap status check must still report connected — it never calls GitHub itself");
+
+    // ...but it's since been revoked on GitHub's side.
+    const restoreFetchRevoked = stubFetch((async () => new Response(JSON.stringify({ message: "Bad credentials" }), { status: 401 })) as typeof fetch);
+    try {
+      const verifyRes = await client.fetch("/integrations/github/verify", { method: "POST" });
+      assert.equal(verifyRes.status, 200);
+      const body = await json<{ valid: boolean }>(verifyRes);
+      assert.equal(body.valid, false, "an explicit verify call must actually catch the revoked token, unlike the plain status check");
+    } finally {
+      restoreFetchRevoked();
+    }
+  } finally {
+    await teardown(h);
+  }
+});
+
+test("POST /integrations/github/verify with no connected account fails clearly (409 GITHUB_NOT_CONNECTED), not a false valid:false", async () => {
+  const h = await setupHarness("verify-not-connected");
+  try {
+    const client = await registerClient(h.baseUrl, "verify-not-connected");
+    const res = await client.fetch("/integrations/github/verify", { method: "POST" });
+    assert.equal(res.status, 409);
+    const body = await json<{ error: { code: string } }>(res);
+    assert.equal(body.error.code, "GITHUB_NOT_CONNECTED");
+  } finally {
+    await teardown(h);
+  }
+});
+
+test("POST /integrations/github/verify never reports valid:false for a transient failure (e.g. GitHub 500) — it's a real error, not a token verdict", async () => {
+  const h = await setupHarness("verify-transient");
+  try {
+    const client = await registerClient(h.baseUrl, "verify-transient");
+    const restoreFetchConnect = stubFetch(githubApiStub({ login: "octocat" }));
+    await client.fetch("/integrations/github", { method: "POST", body: JSON.stringify({ token: "gh-token-abc123" }) });
+    restoreFetchConnect();
+
+    const restoreFetchDown = stubFetch((async () => new Response(JSON.stringify({ message: "Internal Server Error" }), { status: 500 })) as typeof fetch);
+    try {
+      const verifyRes = await client.fetch("/integrations/github/verify", { method: "POST" });
+      assert.notEqual(verifyRes.status, 200, "a transient GitHub failure must never be reported as a definitive verify result");
+      const body = await json<Record<string, unknown>>(verifyRes);
+      assert.notEqual(body.valid, false, "a transient failure must never be reported as an invalid token — that would wrongly tell the user to reconnect");
+    } finally {
+      restoreFetchDown();
+    }
+  } finally {
+    await teardown(h);
+  }
+});
+
 test("the stored GitHub credential is encrypted at rest — the raw ciphertext column never contains the plaintext token", async () => {
   const h = await setupHarness("encrypted");
   const restoreFetch = stubFetch(githubApiStub({ login: "octocat" }));

@@ -39,5 +39,17 @@ export function integrationsRouter(services: ApplicationServices): Router {
     }),
   );
 
+  // On-demand, real GitHub API call — see GitHubIntegrationService.verifyConnection's own doc
+  // comment for why GET /integrations/github above deliberately never does this itself. A stale
+  // credential this uncovers is never auto-repaired or disconnected here — the user decides what
+  // to do next (add a new token, or leave it), same posture as every other read in this router.
+  router.post(
+    "/integrations/github/verify",
+    asyncHandler(async (req, res) => {
+      const result = await services.github.verifyConnection(req.user!.id);
+      res.json(result);
+    }),
+  );
+
   return router;
 }

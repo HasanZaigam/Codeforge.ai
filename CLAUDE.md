@@ -20,6 +20,7 @@ Don't duplicate architectural reasoning into this file — it goes stale. Read t
 - [docs/CONTEXT_ARCHITECTURE.md](./docs/CONTEXT_ARCHITECTURE.md) — platform vs. project context, instruction file hierarchy.
 - [docs/MVP_SCOPE.md](./docs/MVP_SCOPE.md) — what ships in v1 and what's explicitly deferred.
 - [docs/TECHNICAL_DECISIONS.md](./docs/TECHNICAL_DECISIONS.md) — decision log with rationale and alternatives considered.
+- [docs/PLATFORM_GAPS.md](./docs/PLATFORM_GAPS.md) — living log of gaps and failure modes found running the platform against real production codebases. Append to it whenever real-world use surfaces a new one.
 - [docs/API.md](./docs/API.md) — the HTTP contract the web UI consumes: endpoints, DTOs, error format, auth boundary.
 - [docs/UI_ARCHITECTURE.md](./docs/UI_ARCHITECTURE.md) — screen structure, component boundaries, polling strategy, responsive strategy.
 - [docs/GITHUB_INTEGRATION.md](./docs/GITHUB_INTEGRATION.md) — GitHub integration, encrypted credential storage, repository/branch validation, PR creation.

@@ -44,4 +44,15 @@ export class ProjectWorkspaceRepository {
       | undefined;
     return row ? rowToProjectWorkspace(row) : null;
   }
+
+  /**
+   * Bumps this row's own `updated_at` — called by ProjectService.updateContext whenever the
+   * ProjectWorkspace's Project Context Manifest is successfully saved, since the manifest is
+   * content that lives inside this ProjectWorkspace. Deliberately narrow (id, not projectId): the
+   * caller already holds the specific ProjectWorkspace row this write targets, same as every other
+   * write in this class taking exactly the identifiers it needs and nothing more.
+   */
+  touchUpdatedAt(id: string, now: string): void {
+    this.db.prepare("UPDATE project_workspaces SET updated_at = ? WHERE id = ?").run(now, id);
+  }
 }

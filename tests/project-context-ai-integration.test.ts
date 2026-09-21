@@ -72,7 +72,7 @@ function giveProjectContext(platform: Platform, project: Project, manifest: Part
   // Phase 3, Slice 7: replaceManifest now requires a matching current `revision` (optimistic
   // concurrency) — ensureManifest establishes the default (revision 1) first, exactly like the real
   // ProjectService.create() flow always does, so the override below can target it deterministically.
-  const defaults = platform.projectContext.ensureManifest(workspace.id, project.name);
+  const { updatedAt: _updatedAt, ...defaults } = platform.projectContext.ensureManifest(workspace.id, project.name);
   platform.projectContext.replaceManifest(workspace.id, { ...defaults, ...manifest, revision: defaults.revision });
   return workspace;
 }
@@ -140,6 +140,7 @@ test("Slice 6: renderProjectContextSection includes every manifest category and 
 test("Slice 6: rendered project context is always within the deterministic size budget", () => {
   const manifest: ProjectContextManifest = {
     ...defaultProjectContextManifest("Widgets"),
+    updatedAt: null,
     instructions: Array.from({ length: 500 }, (_, i) => `Instruction number ${i}: do something specific and non-trivial here.`),
   };
   const rendered = renderProjectContextSection(manifest);
@@ -151,6 +152,7 @@ test("Slice 6: oversized project context truncates only at whole-line boundaries
   const distinctiveButLong = "X".repeat(200);
   const manifest: ProjectContextManifest = {
     ...defaultProjectContextManifest("Widgets"),
+    updatedAt: null,
     instructions: Array.from({ length: 100 }, (_, i) => `${distinctiveButLong}-${i}`),
   };
   const rendered = renderProjectContextSection(manifest);

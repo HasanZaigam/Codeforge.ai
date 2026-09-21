@@ -216,12 +216,21 @@ export class ProjectService {
    * revision-checked optimistic-concurrency guarantee (throws `ProjectContextConflictError`,
    * mapped to `409` — see error-middleware.ts) that keeps a stale submission from silently
    * overwriting a newer one.
+   *
+   * On success, also bumps the owning ProjectWorkspace's own `updatedAt` (see
+   * ProjectWorkspaceRepository.touchUpdatedAt) to the exact same timestamp the manifest itself was
+   * just stamped with — the manifest is content that lives inside this ProjectWorkspace, so a saved
+   * edit is a real update to it too, reflected in the Workspace Details screen the frontend already
+   * shows. Never touched on a rejected write (invalid input, conflict, lock, oversized) — only a
+   * genuinely successful save changes anything.
    */
   updateContext(projectId: string, actorId: string, input: unknown): ProjectContextManifest {
     assertProjectAccess(this.projects, projectId, actorId);
     const workspace = this.projectWorkspaces.findByProjectId(projectId);
     if (!workspace) throw new ProjectWorkspaceMissingError(projectId);
-    return this.projectContext.replaceManifest(workspace.id, input);
+    const updated = this.projectContext.replaceManifest(workspace.id, input);
+    if (updated.updatedAt) this.projectWorkspaces.touchUpdatedAt(workspace.id, updated.updatedAt);
+    return updated;
   }
 
   /**

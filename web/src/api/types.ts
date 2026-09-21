@@ -312,6 +312,9 @@ export interface ProjectContextDTO {
   conventions: string[];
   validation: { commands: string[] };
   constraints: string[];
+  /** Server-computed timestamp of the last successful save — null only for a manifest persisted
+   *  before this field existed. Never client-supplied; see ProjectContextPanel's "Last updated". */
+  updatedAt: string | null;
 }
 
 /** GET/POST /integrations/github — never includes the token itself. */

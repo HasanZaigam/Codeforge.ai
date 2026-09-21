@@ -130,6 +130,14 @@ function githubApiStub(opts: { login?: string; repo?: string; defaultBranch?: st
   }) as typeof fetch;
 }
 
+// `updatedAt` is server-computed (see project-context-manifest.ts) and changes on every successful
+// PUT, so it can never be part of a fixed "expected" object compared with deepEqual — stripped
+// before comparison, and its presence/type asserted separately where it matters.
+function withoutUpdatedAt(context: Record<string, unknown>): Record<string, unknown> {
+  const { updatedAt: _updatedAt, ...rest } = context;
+  return rest;
+}
+
 // `revision: 1` matches the default manifest's starting revision — a project fresh from
 // setupHarness's project-creation flow always starts there, so this is a valid "first PUT" body.
 const VALID_MANIFEST_UPDATE = {
@@ -236,11 +244,17 @@ test("Slice 5: owner can PUT a valid context and the response is the normalized 
     const putRes = await client.fetch(`/projects/${project.id}/context`, { method: "PUT", body: JSON.stringify(VALID_MANIFEST_UPDATE) });
     assert.equal(putRes.status, 200);
     const { context } = await json<{ context: Record<string, unknown> }>(putRes);
-    assert.deepEqual(context, { ...VALID_MANIFEST_UPDATE, revision: 2 }, "a successful PUT persists the NEXT revision, not the client-submitted one verbatim");
+    assert.equal(typeof context.updatedAt, "string", "a successful PUT must stamp a real server-computed updatedAt");
+    assert.deepEqual(
+      withoutUpdatedAt(context),
+      { ...VALID_MANIFEST_UPDATE, revision: 2 },
+      "a successful PUT persists the NEXT revision, not the client-submitted one verbatim",
+    );
 
     const getRes = await client.fetch(`/projects/${project.id}/context`);
     const { context: reread } = await json<{ context: Record<string, unknown> }>(getRes);
-    assert.deepEqual(reread, { ...VALID_MANIFEST_UPDATE, revision: 2 });
+    assert.equal(reread.updatedAt, context.updatedAt, "a plain GET must return the same persisted updatedAt, not a fresh one");
+    assert.deepEqual(withoutUpdatedAt(reread), { ...VALID_MANIFEST_UPDATE, revision: 2 });
   } finally {
     await teardown(h);
   }
@@ -260,7 +274,7 @@ test("Slice 5: PUT normalizes a manifest that omits optional array fields to the
     const putRes = await client.fetch(`/projects/${project.id}/context`, { method: "PUT", body: JSON.stringify(minimal) });
     assert.equal(putRes.status, 200);
     const { context } = await json<{ context: Record<string, unknown> }>(putRes);
-    assert.deepEqual(context, {
+    assert.deepEqual(withoutUpdatedAt(context), {
       version: 1,
       revision: 2,
       project: { name: "Minimal" },
@@ -293,7 +307,7 @@ test("Slice 5: PUT with invalid content is rejected with 400 and does not touch 
 
     const getRes = await client.fetch(`/projects/${project.id}/context`);
     const { context } = await json<{ context: Record<string, unknown> }>(getRes);
-    assert.deepEqual(context, { ...VALID_MANIFEST_UPDATE, revision: 2 }, "the previously-valid manifest must survive an invalid PUT untouched");
+    assert.deepEqual(withoutUpdatedAt(context), { ...VALID_MANIFEST_UPDATE, revision: 2 }, "the previously-valid manifest must survive an invalid PUT untouched");
   } finally {
     await teardown(h);
   }
@@ -321,7 +335,7 @@ test("Slice 5: an oversized PUT is rejected and the existing manifest survives",
 
     const getRes = await client.fetch(`/projects/${project.id}/context`);
     const { context } = await json<{ context: Record<string, unknown> }>(getRes);
-    assert.deepEqual(context, { ...VALID_MANIFEST_UPDATE, revision: 2 });
+    assert.deepEqual(withoutUpdatedAt(context), { ...VALID_MANIFEST_UPDATE, revision: 2 });
   } finally {
     await teardown(h);
   }
@@ -345,10 +359,12 @@ test("Slice 5: sequential valid PUTs are deterministic — same content, revisio
     const { context: c2 } = await json<{ context: Record<string, unknown> }>(res2);
     assert.equal(c2.revision, 3);
 
-    const { revision: r1, ...contentWithoutRevision1 } = c1;
-    const { revision: r2, ...contentWithoutRevision2 } = c2;
+    const { revision: r1, updatedAt: u1, ...contentWithoutRevision1 } = c1;
+    const { revision: r2, updatedAt: u2, ...contentWithoutRevision2 } = c2;
     void r1;
     void r2;
+    void u1;
+    void u2;
     assert.deepEqual(contentWithoutRevision1, contentWithoutRevision2, "identical content each time — only the revision counter differs");
   } finally {
     await teardown(h);

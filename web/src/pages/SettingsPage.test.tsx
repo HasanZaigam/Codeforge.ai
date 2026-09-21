@@ -11,7 +11,7 @@ vi.mock("../api/auth.js", () => ({
 }));
 
 vi.mock("../api/integrations.js", () => ({
-  githubIntegrationApi: { getStatus: vi.fn(), connect: vi.fn(), disconnect: vi.fn() },
+  githubIntegrationApi: { getStatus: vi.fn(), connect: vi.fn(), disconnect: vi.fn(), verify: vi.fn() },
 }));
 
 const mockedAuthApi = vi.mocked(authApi);
@@ -78,5 +78,66 @@ describe("SettingsPage", () => {
 
     await waitFor(() => expect(screen.getByText("boom")).toBeInTheDocument());
     expect(screen.getByText(/Signed in as Dev User/)).toBeInTheDocument();
+  });
+
+  describe("Verify connection", () => {
+    beforeEach(() => {
+      mockedGithubApi.getStatus.mockResolvedValue({ connected: true, githubLogin: "octocat", connectedAt: "2026-01-01T00:00:00.000Z" });
+    });
+
+    it("a valid token shows a clear 'Verified' confirmation", async () => {
+      mockedGithubApi.verify.mockResolvedValue({ valid: true });
+      renderSettings();
+
+      await waitFor(() => expect(screen.getByRole("button", { name: "Verify connection" })).toBeInTheDocument());
+      await userEvent.click(screen.getByRole("button", { name: "Verify connection" }));
+
+      expect(mockedGithubApi.verify).toHaveBeenCalled();
+      await waitFor(() => expect(screen.getByText("Verified")).toBeInTheDocument());
+      expect(screen.getByText(/still works on GitHub/)).toBeInTheDocument();
+    });
+
+    it("a revoked/expired token — still shown as 'Connected' by the cheap status check — is caught by Verify and offers Add new token", async () => {
+      mockedGithubApi.verify.mockResolvedValue({ valid: false });
+      renderSettings();
+
+      await waitFor(() => expect(screen.getByText("Connected")).toBeInTheDocument());
+      await userEvent.click(screen.getByRole("button", { name: "Verify connection" }));
+
+      await waitFor(() => expect(screen.getByText("This token no longer works on GitHub")).toBeInTheDocument());
+      expect(screen.getAllByRole("button", { name: "Add new token" }).length).toBeGreaterThan(0);
+    });
+
+    it("a transient verify failure shows a retryable error, not a false invalid-token verdict", async () => {
+      mockedGithubApi.verify.mockRejectedValue(new Error("network down"));
+      renderSettings();
+
+      await waitFor(() => expect(screen.getByRole("button", { name: "Verify connection" })).toBeInTheDocument());
+      await userEvent.click(screen.getByRole("button", { name: "Verify connection" }));
+
+      await waitFor(() => expect(screen.getByText("network down")).toBeInTheDocument());
+      expect(screen.queryByText("This token no longer works on GitHub")).not.toBeInTheDocument();
+
+      mockedGithubApi.verify.mockResolvedValue({ valid: true });
+      await userEvent.click(screen.getByRole("button", { name: /try again/i }));
+      await waitFor(() => expect(screen.getByText("Verified")).toBeInTheDocument());
+    });
+
+    it("adding a new token clears a stale verify result", async () => {
+      mockedGithubApi.verify.mockResolvedValue({ valid: false });
+      mockedGithubApi.connect.mockResolvedValue({ connected: true, githubLogin: "octocat-new", connectedAt: "2026-01-01T00:00:00.000Z" });
+      renderSettings();
+
+      await waitFor(() => expect(screen.getByRole("button", { name: "Verify connection" })).toBeInTheDocument());
+      await userEvent.click(screen.getByRole("button", { name: "Verify connection" }));
+      await waitFor(() => expect(screen.getByText("This token no longer works on GitHub")).toBeInTheDocument());
+
+      await userEvent.click(screen.getAllByRole("button", { name: "Add new token" })[0]!);
+      await userEvent.type(screen.getByLabelText(/personal access token/i), "ghp_newtoken");
+      await userEvent.click(screen.getByRole("button", { name: "Save new token" }));
+
+      await waitFor(() => expect(screen.getByText("octocat-new")).toBeInTheDocument());
+      expect(screen.queryByText("This token no longer works on GitHub")).not.toBeInTheDocument();
+    });
   });
 });

@@ -36,9 +36,10 @@ export const projectsApi = {
    * Full replacement (no partial update) — `input.revision` must be the revision the caller most
    * recently loaded. Rejects with 409 `PROJECT_CONTEXT_CONFLICT` (stale revision) or 409
    * `PROJECT_CONTEXT_LOCKED` (a concurrent update is in flight) — see ProjectContextPanel, which is
-   * the only caller expected to handle those. See /docs/API.md.
+   * the only caller expected to handle those. See /docs/API.md. `updatedAt` is deliberately excluded
+   * from the input type — it's server-computed only, never something a caller sends.
    */
-  updateContext: (projectId: string, input: ProjectContextDTO) =>
+  updateContext: (projectId: string, input: Omit<ProjectContextDTO, "updatedAt">) =>
     apiClient.put<{ context: ProjectContextDTO }>(`/projects/${projectId}/context`, input).then((r) => r.context),
   /**
    * Declares/edits build/test/lint/typecheck after the project already exists — the only way to

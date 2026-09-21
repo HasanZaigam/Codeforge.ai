@@ -71,6 +71,30 @@ export class GitHubIntegrationService {
   }
 
   /**
+   * `getStatus` above is deliberately a cheap, local, DB-only read — it answers "does this platform
+   * have a stored credential for this user," never "does GitHub still honor it." A token can be
+   * revoked or expired entirely outside this platform (on GitHub's own side), and `getStatus` alone
+   * would keep reporting "Connected" forever — exactly the gap that motivated this method: a real,
+   * on-demand GitHub API call using the stored token, so the Settings screen can tell an end user
+   * the truth instead of only what this platform last remembered.
+   *
+   * Only an `auth`-classified failure (the token itself is rejected — expired, revoked, wrong
+   * scope) is reported as `valid: false`. Anything else (rate limit, network blip, GitHub outage)
+   * rethrows — the caller must not tell the user their token is bad when the real problem is a
+   * transient one; see error-middleware.ts's generic 5xx fallback for how that surfaces instead.
+   */
+  async verifyConnection(userId: string): Promise<{ valid: boolean }> {
+    const client = this.clientForUser(userId); // throws GitHubNotConnectedError if none — see error-middleware.ts
+    try {
+      await client.getAuthenticatedUser();
+      return { valid: true };
+    } catch (err) {
+      if (err instanceof GitHubAuthError) return { valid: false };
+      throw err;
+    }
+  }
+
+  /**
    * Resolves a ready-to-use GitHubClient for `userId` — used by
    * ProjectService to validate a repository at connection time. Throws
    * GitHubNotConnectedError if the user hasn't connected an account.

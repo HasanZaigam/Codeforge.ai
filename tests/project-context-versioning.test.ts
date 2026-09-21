@@ -255,7 +255,63 @@ test("Slice 7: a stale update never overwrites the current content, even partial
 
     const getRes = await client.fetch(`/projects/${projectId}/context`);
     const { context } = await json<{ context: Record<string, unknown> }>(getRes);
-    assert.deepEqual(context, { ...winning, revision: 2 });
+    const { updatedAt: _updatedAt, ...contextWithoutUpdatedAt } = context;
+    assert.deepEqual(contextWithoutUpdatedAt, { ...winning, revision: 2 });
+  } finally {
+    await teardown(h);
+  }
+});
+
+test("Slice 7 follow-up: a successful Project Context save bumps the owning ProjectWorkspace's own updatedAt, to the exact same timestamp", async () => {
+  const h = await setupHarness("touches-workspace");
+  try {
+    const { projectId, client } = await createProject(h, "touches-workspace");
+    const workspaceBefore = h.platform.projectWorkspaces.findByProjectId(projectId);
+    assert.ok(workspaceBefore);
+    const createdAt = workspaceBefore!.updatedAt;
+
+    const putRes = await client.fetch(`/projects/${projectId}/context`, {
+      method: "PUT",
+      body: JSON.stringify({ ...defaultProjectContextManifest("Fixture"), revision: 1, instructions: ["a real edit"] }),
+    });
+    assert.equal(putRes.status, 200);
+    const { context } = await json<{ context: { updatedAt: string } }>(putRes);
+
+    const workspaceAfter = h.platform.projectWorkspaces.findByProjectId(projectId);
+    assert.equal(
+      workspaceAfter!.updatedAt,
+      context.updatedAt,
+      "the ProjectWorkspace's updatedAt must match the manifest's own updatedAt exactly",
+    );
+    assert.notEqual(workspaceAfter!.updatedAt, createdAt, "a real save must actually move the timestamp forward");
+  } finally {
+    await teardown(h);
+  }
+});
+
+test("Slice 7 follow-up: a REJECTED Project Context save (stale revision) never touches the ProjectWorkspace's updatedAt", async () => {
+  const h = await setupHarness("rejected-save-no-touch");
+  try {
+    const { projectId, client } = await createProject(h, "rejected-save-no-touch");
+    await client.fetch(`/projects/${projectId}/context`, {
+      method: "PUT",
+      body: JSON.stringify({ ...defaultProjectContextManifest("Fixture"), revision: 1, instructions: ["first"] }),
+    });
+    const workspaceAfterFirstSave = h.platform.projectWorkspaces.findByProjectId(projectId);
+    const updatedAtAfterFirstSave = workspaceAfterFirstSave!.updatedAt;
+
+    const staleRes = await client.fetch(`/projects/${projectId}/context`, {
+      method: "PUT",
+      body: JSON.stringify({ ...defaultProjectContextManifest("Fixture"), revision: 1, instructions: ["stale, must be rejected"] }),
+    });
+    assert.equal(staleRes.status, 409);
+
+    const workspaceAfterRejection = h.platform.projectWorkspaces.findByProjectId(projectId);
+    assert.equal(
+      workspaceAfterRejection!.updatedAt,
+      updatedAtAfterFirstSave,
+      "a rejected (409) save must never touch the ProjectWorkspace's updatedAt",
+    );
   } finally {
     await teardown(h);
   }
@@ -326,7 +382,7 @@ test("Slice 7: deterministic proof — a caller's cached (now-stale) revision is
   const { service, cleanup } = await newService("cas-proof");
   try {
     const id = randomUUID();
-    const readByBoth = service.ensureManifest(id, "Fixture"); // both A and B "read" this: revision 1
+    const { updatedAt: _readByBothUpdatedAt, ...readByBoth } = service.ensureManifest(id, "Fixture"); // both A and B "read" this: revision 1
     assert.equal(readByBoth.revision, 1);
 
     const afterA = service.replaceManifest(id, { ...readByBoth, revision: 1, instructions: ["A's change"] });
@@ -414,7 +470,7 @@ test("Slice 7: a failed write (permission denied) never advances the revision", 
   try {
     const id = randomUUID();
     const dir = fs.ensureWorkspace(id);
-    const original = service.ensureManifest(id, "Fixture");
+    const { updatedAt: _originalUpdatedAt, ...original } = service.ensureManifest(id, "Fixture");
     assert.equal(original.revision, 1);
 
     await chmod(dir, 0o555);
@@ -455,6 +511,7 @@ test("Slice 7: an explicit but invalid revision value (zero, negative, non-integ
 test("Slice 7: the AI-facing rendered project context never includes the revision counter", () => {
   const manifest: ProjectContextManifest = {
     ...defaultProjectContextManifest("Fixture"),
+    updatedAt: null,
     revision: 7,
     instructions: ["a real instruction the AI should see"],
   };

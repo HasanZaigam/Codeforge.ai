@@ -13,9 +13,14 @@ export function SettingsPage() {
   const [error, setError] = useState<string>();
   const [dialogMode, setDialogMode] = useState<"connect" | "replace">();
   const [disconnecting, setDisconnecting] = useState(false);
+  const [verifying, setVerifying] = useState(false);
+  const [verifyResult, setVerifyResult] = useState<"valid" | "invalid">();
+  const [verifyError, setVerifyError] = useState<string>();
 
   function load() {
     setError(undefined);
+    setVerifyResult(undefined);
+    setVerifyError(undefined);
     githubIntegrationApi
       .getStatus()
       .then(setStatus)
@@ -33,6 +38,27 @@ export function SettingsPage() {
       setError(err instanceof Error ? err.message : "Couldn't disconnect your GitHub account.");
     } finally {
       setDisconnecting(false);
+    }
+  }
+
+  /**
+   * `status.connected` alone only means "this platform has a stored credential" — it's a cheap
+   * local read (see GitHubIntegrationService.getStatus) that can never notice a token revoked or
+   * expired entirely on GitHub's own side. This is the only thing that makes a real GitHub API
+   * call to actually confirm the stored token still works, on demand rather than on every page
+   * load (see githubIntegrationApi.verify).
+   */
+  async function handleVerify() {
+    setVerifying(true);
+    setVerifyError(undefined);
+    setVerifyResult(undefined);
+    try {
+      const { valid } = await githubIntegrationApi.verify();
+      setVerifyResult(valid ? "valid" : "invalid");
+    } catch (err) {
+      setVerifyError(err instanceof Error ? err.message : "Couldn't verify the connection right now. Please try again.");
+    } finally {
+      setVerifying(false);
     }
   }
 
@@ -70,7 +96,14 @@ export function SettingsPage() {
                     For security, the connected token itself is never shown again once saved — only its status above. To rotate it,
                     add a new one below; it immediately replaces the old one.
                   </p>
+                  <p className="field-hint">
+                    "Connected" above only means this platform has a stored token — it can't tell on its own if GitHub has since
+                    revoked or expired it. Use "Verify connection" to check for real, right now.
+                  </p>
                   <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+                    <button className="btn btn-secondary" onClick={handleVerify} disabled={verifying}>
+                      {verifying ? "Verifying…" : "Verify connection"}
+                    </button>
                     <button className="btn btn-secondary" onClick={() => setDialogMode("replace")}>
                       Add new token
                     </button>
@@ -78,6 +111,23 @@ export function SettingsPage() {
                       {disconnecting ? "Disconnecting…" : "Disconnect GitHub account"}
                     </button>
                   </div>
+                  {verifyResult === "valid" && (
+                    <p className="text-muted">
+                      <span className="status-badge tone-success">Verified</span> This token still works on GitHub.
+                    </p>
+                  )}
+                  {verifyResult === "invalid" && (
+                    <div className="field-warning" role="alert">
+                      <div>
+                        <strong>This token no longer works on GitHub</strong>
+                        <p>It was likely revoked or has expired. Add a new token to keep using this connection.</p>
+                      </div>
+                      <button type="button" className="btn btn-secondary" onClick={() => setDialogMode("replace")}>
+                        Add new token
+                      </button>
+                    </div>
+                  )}
+                  {verifyError && <ErrorState message={verifyError} onRetry={handleVerify} />}
                 </>
               ) : (
                 <>
@@ -104,6 +154,9 @@ export function SettingsPage() {
           onConnected={(newStatus) => {
             setStatus(newStatus);
             setDialogMode(undefined);
+            // A new token just replaced the old one — any earlier verify result no longer describes it.
+            setVerifyResult(undefined);
+            setVerifyError(undefined);
           }}
         />
       )}

@@ -46,7 +46,7 @@ export class ProjectContextService {
       return this.readManifest(workspaceId);
     } catch (err) {
       if (err instanceof ProjectWorkspaceFileNotFoundError) {
-        const manifest = defaultProjectContextManifest(projectName);
+        const manifest: ProjectContextManifest = { ...defaultProjectContextManifest(projectName), updatedAt: new Date().toISOString() };
         this.persist(workspaceId, manifest);
         return manifest;
       }
@@ -120,7 +120,7 @@ export class ProjectContextService {
         throw new ProjectContextConflictError(current.revision);
       }
 
-      const next: ProjectContextManifest = { ...candidate, revision: current.revision + 1 };
+      const next: ProjectContextManifest = { ...candidate, revision: current.revision + 1, updatedAt: new Date().toISOString() };
       const serialized = serialize(next);
       const byteLength = Buffer.byteLength(serialized, "utf-8");
       if (byteLength > MAX_PROJECT_CONTEXT_MANIFEST_BYTES) {

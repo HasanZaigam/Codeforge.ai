@@ -48,7 +48,6 @@ export function ProjectContextPanel({ projectId }: { projectId: string }) {
   const [saveError, setSaveError] = useState<string>();
   const [conflict, setConflict] = useState<{ currentRevision: number | null }>();
   const [locked, setLocked] = useState(false);
-  const [savedAtIso, setSavedAtIso] = useState<string>();
   const [showPreview, setShowPreview] = useState(false);
 
   function applyToForm(ctx: ProjectContextDTO) {
@@ -87,7 +86,9 @@ export function ProjectContextPanel({ projectId }: { projectId: string }) {
     setConflict(undefined);
     setLocked(false);
     try {
-      const input: ProjectContextDTO = {
+      // Deliberately typed without `updatedAt` — it's server-computed only (see api/types.ts), the
+      // same "client never sends it" contract `revision` used to be the only example of.
+      const input: Omit<ProjectContextDTO, "updatedAt"> = {
         version: baseline.version,
         revision: baseline.revision,
         project: description.trim() ? { name: name.trim(), description: description.trim() } : { name: name.trim() },
@@ -99,7 +100,6 @@ export function ProjectContextPanel({ projectId }: { projectId: string }) {
       };
       const updated = await projectsApi.updateContext(projectId, input);
       applyToForm(updated);
-      setSavedAtIso(new Date().toISOString());
     } catch (err) {
       if (err instanceof ApiError && err.status === 409 && err.code === "PROJECT_CONTEXT_CONFLICT") {
         const details = err.details as { currentRevision?: number } | undefined;
@@ -273,7 +273,7 @@ export function ProjectContextPanel({ projectId }: { projectId: string }) {
       <div className="card card-padded context-section">
         <div className="stack" style={{ gap: 2 }}>
           <p className="text-muted">Revision: {baseline.revision}</p>
-          {savedAtIso && <p className="text-muted">Saved {formatAbsolute(savedAtIso)}</p>}
+          {baseline.updatedAt && <p className="text-muted">Last updated {formatAbsolute(baseline.updatedAt)}</p>}
         </div>
 
         <div className="dialog-actions" style={{ justifyContent: "space-between" }}>
