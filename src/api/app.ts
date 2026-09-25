@@ -6,6 +6,8 @@ import { errorMiddleware } from "./error-middleware.js";
 import { authRouter } from "./routes/auth.js";
 import { projectsRouter } from "./routes/projects.js";
 import { tasksRouter } from "./routes/tasks.js";
+import { backlogRouter } from "./routes/backlog.js";
+import { opsRouter } from "./routes/ops.js";
 import { integrationsRouter } from "./routes/integrations.js";
 
 /**
@@ -23,7 +25,7 @@ import { integrationsRouter } from "./routes/integrations.js";
  *  - `/auth/*` — public (nothing to authenticate against yet for
  *    register/login); logout/me require a session but 401 cleanly rather
  *    than needing the router-level guard below.
- *  - `/projects/*`, `/tasks/*`, `/integrations/*` — every route requires a
+ *  - `/projects/*`, `/tasks/*`, `/backlog/*`, `/task-proposals/*`, `/integrations/*` — every route requires a
  *    valid session (`requireAuth`), enforced here at the router-mount level,
  *    not per-handler — a new route added to any of these routers is
  *    protected by default, not by remembering to add a check.
@@ -32,6 +34,10 @@ export function buildApp(platform: Platform): Express {
   const services = buildApplicationServices(platform);
 
   const app = express();
+  // Behind a reverse proxy (Caddy — see deploy/Caddyfile), req.ip is the proxy's address unless
+  // Express is told to trust it; the login rate limiter keys on req.ip. Opt-in via TRUST_PROXY
+  // (a hop count, e.g. "1"); unset preserves the previous behavior.
+  if (process.env.TRUST_PROXY) app.set("trust proxy", Number(process.env.TRUST_PROXY));
   app.use(express.json({ limit: "1mb" }));
   app.use(attachUser(services.auth));
 
@@ -56,7 +62,9 @@ export function buildApp(platform: Platform): Express {
   app.use(authRouter(services.auth));
   app.use(requireAuth, projectsRouter(services, platform.taskEvents, platform.taskDependencies));
   app.use(requireAuth, tasksRouter(services, platform.taskEvents, platform.taskDependencies));
+  app.use(requireAuth, backlogRouter(services, platform.taskEvents, platform.taskDependencies));
   app.use(requireAuth, integrationsRouter(services));
+  app.use(requireAuth, opsRouter(platform));
 
   app.use((req, res) => {
     res.status(404).json({ error: { code: "NOT_FOUND", message: `No route for ${req.method} ${req.path}` } });

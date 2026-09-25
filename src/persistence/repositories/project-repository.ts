@@ -96,6 +96,16 @@ export class ProjectRepository {
    * deployment.
    */
   deleteCascade(projectId: string): void {
+    // Phase 4A — the backlog domain, deleted children-first and BEFORE tasks (task_proposals.task_id
+    // references tasks). Everything is scoped by project_id, so nothing outside this project is touched.
+    this.db.prepare("DELETE FROM backlog_events WHERE project_id = ?").run(projectId);
+    this.db.prepare("DELETE FROM task_proposals WHERE project_id = ?").run(projectId);
+    this.db.prepare("DELETE FROM backlog_relationships WHERE project_id = ?").run(projectId);
+    this.db.prepare("DELETE FROM backlog_analysis_jobs WHERE project_id = ?").run(projectId); // before analyses: jobs reference them
+    this.db.prepare("DELETE FROM backlog_analyses WHERE project_id = ?").run(projectId);
+    this.db.prepare("DELETE FROM backlog_items WHERE project_id = ?").run(projectId);
+    this.db.prepare("DELETE FROM repository_indexes WHERE project_id = ?").run(projectId);
+
     const taskIds = (this.db.prepare("SELECT id FROM tasks WHERE project_id = ?").all(projectId) as { id: string }[]).map((r) => r.id);
     if (taskIds.length > 0) {
       const placeholders = taskIds.map(() => "?").join(",");

@@ -2,9 +2,9 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
 import type { OpenPullRequestRequest, SourceControlProvider } from "./source-control-provider.js";
-import type { BranchComparisonStatus, GitCredential, HumanReviewFeedbackItem, Project, PullRequestRef, PullRequestStatus } from "../domain/types.js";
-import { CancellationError } from "../domain/errors.js";
-import { commitAllLocal } from "./git-commit.js";
+import type { BranchComparisonStatus, CommitResult, GitCredential, HumanReviewFeedbackItem, Project, PullRequestRef, PullRequestStatus, PushResult } from "../domain/types.js";
+import { CancellationError, PushVerificationError } from "../domain/errors.js";
+import { assertOnExpectedBranch, commitAllLocal } from "./git-commit.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -45,20 +45,33 @@ export class LocalGitSourceControlProvider implements SourceControlProvider {
     return null; // local fixture/dev remotes need no auth
   }
 
-  async commitAll(_project: Project, workspacePath: string, message: string, signal: AbortSignal): Promise<string> {
-    return commitAllLocal(workspacePath, message, signal);
+  async commitAll(_project: Project, workspacePath: string, message: string, expectedBranch: string, signal: AbortSignal): Promise<CommitResult> {
+    return commitAllLocal(workspacePath, message, expectedBranch, signal);
   }
 
-  async push(_project: Project, workspacePath: string, branch: string, signal: AbortSignal): Promise<void> {
+  /** See GitHubSourceControlProvider.push's doc comment for why this asserts the branch first, pushes by explicit refspec, and verifies the remote ref afterward — the same GAP-015 fix, applied here too since this provider is what the entire test suite and the local demo/CLI harness exercise. */
+  async push(_project: Project, workspacePath: string, branch: string, signal: AbortSignal): Promise<PushResult> {
     if (signal.aborted) throw new CancellationError();
+    await assertOnExpectedBranch(workspacePath, branch, "push", signal);
+    const { stdout: headOut } = await execFileAsync("git", ["rev-parse", "HEAD"], { cwd: workspacePath, signal });
+    const localHead = headOut.trim();
+
     try {
       const { stdout } = await execFileAsync("git", ["remote"], { cwd: workspacePath, signal });
-      if (stdout.trim().length === 0) return; // no remote configured (e.g. bare fixture) — nothing to push to
-      await execFileAsync("git", ["push", "-u", "origin", branch], { cwd: workspacePath, signal });
+      if (stdout.trim().length === 0) return { pushedCommitSha: localHead, remoteBranchSha: null }; // no remote configured (e.g. bare fixture) — nothing to push to, nothing to verify
+      await execFileAsync("git", ["push", "-u", "origin", `HEAD:refs/heads/${branch}`], { cwd: workspacePath, signal });
     } catch (err) {
       if (signal.aborted) throw new CancellationError();
       throw new Error(`push failed for branch "${branch}": ${String(err)}`);
     }
+
+    const { stdout: lsRemoteOut } = await execFileAsync("git", ["ls-remote", "origin", `refs/heads/${branch}`], { cwd: workspacePath, signal });
+    const remoteSha = lsRemoteOut.trim().split(/\s+/)[0];
+    const remoteBranchSha = remoteSha && remoteSha.length > 0 ? remoteSha : null;
+    if (remoteBranchSha !== localHead) {
+      throw new PushVerificationError(branch, localHead, remoteBranchSha);
+    }
+    return { pushedCommitSha: localHead, remoteBranchSha };
   }
 
   async openPullRequest(_project: Project, _request: OpenPullRequestRequest, _signal: AbortSignal): Promise<PullRequestRef> {

@@ -52,8 +52,10 @@ describe("App (session bootstrap, login, logout)", () => {
     expect(screen.queryByLabelText(/email/i)).not.toBeInTheDocument();
 
     rejectMe(new ApiError(401, "UNAUTHENTICATED", "Sign in required"));
-    await waitFor(() => expect(screen.queryByText("Loading…")).not.toBeInTheDocument());
-    expect(screen.getByLabelText(/email/i)).toBeInTheDocument();
+    // Wait for the SCREEN THAT SHOULD APPEAR, not merely for the loading text to vanish: between the two the
+    // tree is briefly empty (redirect + lazy login render), and a synchronous lookup there fails under load.
+    expect(await screen.findByLabelText(/email/i)).toBeInTheDocument();
+    expect(screen.queryByText("Loading…")).not.toBeInTheDocument();
   });
 
   it("redirects to the login screen when there is no valid session", async () => {

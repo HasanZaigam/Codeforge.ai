@@ -42,8 +42,18 @@ test("validateSharedConfig: fixture is fine outside production (unset or any oth
   assert.doesNotThrow(() => validateSharedConfig({ CODING_ENGINE: "fixture", NODE_ENV: "test" }));
 });
 
+const PRODUCTION_BASE = {
+  NODE_ENV: "production",
+  DB_PATH: "/var/lib/codeforge/platform.sqlite",
+  WORKSPACES_ROOT: "/var/lib/codeforge/workspaces",
+  PROJECT_WORKSPACE_ROOT: "/var/lib/codeforge/project-workspaces",
+  CREDENTIAL_ENCRYPTION_KEY: randomBytes(32).toString("base64"),
+};
+
 test("validateSharedConfig: a real production CODING_ENGINE is fine with NODE_ENV=production", () => {
-  assert.doesNotThrow(() => validateSharedConfig({ CODING_ENGINE: "opencode", NODE_ENV: "production" }));
+  // Developer Alpha: production additionally requires explicit absolute storage paths and the
+  // encryption key (see startup-config.ts) — supplied here so this test still isolates the engine rule.
+  assert.doesNotThrow(() => validateSharedConfig({ ...PRODUCTION_BASE, CODING_ENGINE: "opencode" }));
 });
 
 test("validateSharedConfig: CREDENTIAL_ENCRYPTION_KEY is optional — unset is never an error", () => {
@@ -121,7 +131,7 @@ test("validateSharedConfig: rejects a malformed ALLOW_LOCAL_GIT_PROJECTS at star
 
 test("validateSharedConfig: a well-formed ALLOW_LOCAL_GIT_PROJECTS never throws, in any NODE_ENV", () => {
   assert.doesNotThrow(() => validateSharedConfig({ ALLOW_LOCAL_GIT_PROJECTS: "true" }));
-  assert.doesNotThrow(() => validateSharedConfig({ ALLOW_LOCAL_GIT_PROJECTS: "false", NODE_ENV: "production" }));
+  assert.doesNotThrow(() => validateSharedConfig({ ...PRODUCTION_BASE, ALLOW_LOCAL_GIT_PROJECTS: "false" }));
 });
 
 test("isLocalGitProjectsAllowed: allowed by default outside production, regardless of the flag", () => {

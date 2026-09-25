@@ -332,13 +332,16 @@ test("the database rejects two AgentRun rows for the same (task, role, attemptNu
     engine: "fixture",
     attemptNumber: 1,
     status: "running" as const,
-    input: { taskGoal: "g", taskPlan: null, priorDecisions: [], repoPath: "/tmp", projectConventionPointer: "", lastFailure: null, reviewEvidence: null, reviewerFeedback: null, humanReviewFeedback: null, projectContext: null },
+    input: { taskGoal: "g", taskPlan: null, priorDecisions: [], repoPath: "/tmp", projectConventionPointer: "", lastFailure: null, reviewEvidence: null, reviewerFeedback: null, humanReviewFeedback: null, projectContext: null, approvedVerificationChecks: [], verificationEvidence: null, bugFixEvidence: null },
     result: null,
     error: null,
     cost: null,
     startedAt: now,
     completedAt: null,
     ownerGeneration: 1,
+    modelId: null,
+    providerId: null,
+    fallbackIndex: 0,
   });
 
   platformA.agentRuns.insert(makeRun("run-1"));
@@ -521,7 +524,7 @@ test("16. AgentRunRepository.complete: the current execution can complete its ow
   const task = makeTask(platformA, project);
   const genA = platformA.tasks.claimTodo(task.id, "A", 60_000, new Date().toISOString())!;
 
-  const baseInput = { taskGoal: "g", taskPlan: null, priorDecisions: [], repoPath: "/tmp", projectConventionPointer: "", lastFailure: null, reviewEvidence: null, reviewerFeedback: null, humanReviewFeedback: null, projectContext: null };
+  const baseInput = { taskGoal: "g", taskPlan: null, priorDecisions: [], repoPath: "/tmp", projectConventionPointer: "", lastFailure: null, reviewEvidence: null, reviewerFeedback: null, humanReviewFeedback: null, projectContext: null, approvedVerificationChecks: [], verificationEvidence: null, bugFixEvidence: null };
   platformA.agentRuns.insert({
     id: "run-A",
     taskId: task.id,
@@ -536,6 +539,9 @@ test("16. AgentRunRepository.complete: the current execution can complete its ow
     startedAt: new Date().toISOString(),
     completedAt: null,
     ownerGeneration: genA,
+    modelId: null,
+    providerId: null,
+    fallbackIndex: 0,
   });
 
   // Ownership moves on — a new generation takes over the task.
@@ -559,6 +565,9 @@ test("16. AgentRunRepository.complete: the current execution can complete its ow
     startedAt: new Date().toISOString(),
     completedAt: null,
     ownerGeneration: genB,
+    modelId: null,
+    providerId: null,
+    fallbackIndex: 0,
   });
 
   // The stale run (created under genA, now no longer the task's current generation) must fail to complete.

@@ -1,9 +1,11 @@
+import { UsageAccumulator, type StepUsageInput } from "./engine-usage.js";
 import { spawn } from "node:child_process";
 import { resolve as resolvePath } from "node:path";
 import type { CodingEngine, EngineInvocationRequest, EngineInvocationResult } from "./coding-engine.js";
 import { EngineCancelledError, EngineExecutionError, EngineTimeoutError } from "./coding-engine.js";
 import { buildImplementerPrompt, buildReviewerPrompt } from "./prompt-builder.js";
 import { terminateGracefully } from "../process/terminate-gracefully.js";
+import { redactSecrets } from "../security/redact.js";
 import { classifyEngineFailure } from "./engine-failure-classifier.js";
 import { computeBackoffDelayMs, sleepUnlessAborted } from "./retry-backoff.js";
 import type { CostMetadata, Finding, NeedsInputDraft, StepResult } from "../domain/types.js";
@@ -93,31 +95,49 @@ export class OpenCodeAdapter implements CodingEngine {
    */
   async run(request: EngineInvocationRequest): Promise<EngineInvocationResult> {
     const prompt =
-      request.role === "implementer"
-        ? buildImplementerPrompt(request.context)
-        : buildReviewerPrompt(request.context);
+      request.promptOverride ??
+      (request.role === "implementer" ? buildImplementerPrompt(request.context) : buildReviewerPrompt(request.context));
 
+    const selectedModel = request.modelSelection?.modelId ?? this.model;
     const totalAttempts = this.maxRetries + 1;
+    // GAP-034: usage from attempts that did NOT complete normally is real (and billed) — accumulate it across the
+    // whole invocation so it survives on the success path and is attached to whatever error finally ends the run.
+    const carried = new UsageAccumulator({ currency: "USD", pricingSource: "opencode-reported", pricingVersion: null });
+    const withUsage = <E extends { usage: CostMetadata | null }>(err: E): E => {
+      err.usage = carried.toCostMetadata("partial");
+      return err;
+    };
     for (let attempt = 1; attempt <= totalAttempts; attempt++) {
-      const { stdout, stderr, code } = await this.spawnOnce(prompt, request);
+      let spawned: { stdout: string; stderr: string; code: number | null };
+      try {
+        spawned = await this.spawnOnce(prompt, request, carried);
+      } catch (err) {
+        // Timeout / cancellation / spawn failure: spawnOnce already added whatever the process emitted before it stopped.
+        if (err && typeof err === "object" && "usage" in err) withUsage(err as { usage: CostMetadata | null });
+        throw err;
+      }
+      const { stdout, stderr, code } = spawned;
 
       if (code === 0) {
-        return this.parseResult(stdout, stderr, request);
+        return this.parseResult(stdout, stderr, request, carried);
       }
+      carried.addStdout(stdout); // a failed attempt's usage events still happened
 
       const classification = classifyEngineFailure(stdout, stderr, code);
       const isLastAttempt = attempt === totalAttempts;
 
       if (!classification.retryable || isLastAttempt) {
         console.error(
-          `[opencode] model=${this.model ?? "(unset)"} ${request.role} attempt ${attempt}/${totalAttempts} failed permanently ` +
+          `[opencode] model=${selectedModel ?? "(unset)"} ${request.role} attempt ${attempt}/${totalAttempts} failed permanently ` +
             `(category=${classification.category}, retryable=${classification.retryable}): ${classification.reason}`,
         );
-        throw new EngineExecutionError(request.role, classification.reason, {
-          attempts: attempt,
-          retryable: classification.retryable,
-          classification: classification.category,
-        });
+        throw withUsage(
+          new EngineExecutionError(request.role, classification.reason, {
+            attempts: attempt,
+            retryable: classification.retryable,
+            classification: classification.category,
+          }),
+        );
       }
 
       // Respect the provider's own suggested wait (e.g. Gemini's "Please retry in 48.88s" on a
@@ -127,7 +147,7 @@ export class OpenCodeAdapter implements CodingEngine {
       const backoffDelayMs = computeBackoffDelayMs(attempt, this.retryBaseDelayMs, this.retryMaxDelayMs);
       const delayMs = classification.suggestedDelayMs !== null ? Math.min(Math.max(backoffDelayMs, classification.suggestedDelayMs), this.retryMaxDelayMs) : backoffDelayMs;
       console.warn(
-        `[opencode] model=${this.model ?? "(unset)"} ${request.role} attempt ${attempt}/${totalAttempts} failed transiently ` +
+        `[opencode] model=${selectedModel ?? "(unset)"} ${request.role} attempt ${attempt}/${totalAttempts} failed transiently ` +
           `(category=${classification.category}) — retrying in ${delayMs}ms` +
           `${classification.suggestedDelayMs !== null ? ` (provider suggested ${classification.suggestedDelayMs}ms)` : ""}: ${classification.reason}`,
       );
@@ -148,6 +168,7 @@ export class OpenCodeAdapter implements CodingEngine {
   private spawnOnce(
     prompt: string,
     request: EngineInvocationRequest,
+    carried: UsageAccumulator,
   ): Promise<{ stdout: string; stderr: string; code: number | null }> {
     if (request.signal.aborted) {
       return Promise.reject(new EngineCancelledError(request.role));
@@ -155,8 +176,13 @@ export class OpenCodeAdapter implements CodingEngine {
 
     return new Promise((resolve, reject) => {
       const args = ["run", "--format", "json", "--auto"];
-      if (this.model) {
-        args.push("--model", this.model);
+      // V1.1 Slice 5 — the platform's own per-invocation routing decision (see domain/types.ts
+      // ModelSelection) takes precedence over this adapter's own construction-time default; falls
+      // back to the pre-Slice-5 behavior (this.model, from OPENCODE_MODEL) when no selection was
+      // made — see routing/model-registry.ts for when that's the case (e.g. OPENCODE_MODEL unset).
+      const selectedModel = request.modelSelection?.modelId ?? this.model;
+      if (selectedModel) {
+        args.push("--model", selectedModel);
       }
       if (this.extraArgs.length > 0) {
         args.push(...this.extraArgs);
@@ -181,13 +207,17 @@ export class OpenCodeAdapter implements CodingEngine {
       let stderr = "";
       const timer = setTimeout(() => {
         child.kill("SIGKILL");
+        carried.addStdout(stdout); // usage emitted before the kill is real
         reject(new EngineTimeoutError(request.role, request.timeoutMs));
       }, request.timeoutMs);
 
       const onAbort = () => {
         clearTimeout(timer);
         request.signal.removeEventListener("abort", onAbort);
-        terminateGracefully(child).then(() => reject(new EngineCancelledError(request.role)));
+        terminateGracefully(child).then(() => {
+          carried.addStdout(stdout);
+          reject(new EngineCancelledError(request.role));
+        });
       };
       request.signal.addEventListener("abort", onAbort, { once: true });
 
@@ -279,6 +309,7 @@ export class OpenCodeAdapter implements CodingEngine {
     stdout: string,
     stderr: string,
     request: EngineInvocationRequest,
+    carried: UsageAccumulator,
   ): EngineInvocationResult {
     const combinedLogs = stdout + (stderr ? `\n--- STDERR ---\n${stderr}` : "");
     const logExcerpt = combinedLogs.slice(-MAX_LOG_EXCERPT_CHARS);
@@ -288,6 +319,10 @@ export class OpenCodeAdapter implements CodingEngine {
     const genericSegments: string[] = [];
     let isError = false;
     let cost: CostMetadata | null = null;
+    // Real OpenCode usage arrives per STEP on `step_finish` events (see extractFromJsonRecord) — normalized
+    // into the provider-agnostic CostMetadata by engine-usage.ts. Before Phase 4A.2 only legacy flat
+    // fields were read, so real runs recorded no usage at all (GAP-031).
+    const usage = carried; // already holds any usage from earlier failed attempts of this same invocation
     let confidence: StepResult["confidence"] = null;
     let needsInput: NeedsInputDraft | null = null;
     const findings: Finding[] = [];
@@ -317,6 +352,7 @@ export class OpenCodeAdapter implements CodingEngine {
             setCost: (c) => {
               cost = { ...cost, ...c };
             },
+            addStepUsage: (step) => usage.addStep(step),
             setConfidence: (c) => {
               confidence = c;
             },
@@ -356,20 +392,29 @@ export class OpenCodeAdapter implements CodingEngine {
           : "(the coding engine completed without producing a natural-language summary)";
     }
 
+    // Real per-step usage wins over the legacy flat fields when both exist (they never do in practice).
+    // Finished normally ⇒ `complete`: every usage event the engine emitted (including earlier failed attempts) is in.
+    const stepUsage = usage.toCostMetadata("complete");
+    if (stepUsage) cost = { ...(cost as CostMetadata | null), ...stepUsage };
+
+    // Developer Alpha: redact secret-valued env vars from everything agent-produced before it can be
+    // persisted/reported — see security/redact.ts.
+    const env = this.customEnv ?? process.env;
+    const redact = (t: string) => redactSecrets(t, env);
     const result: StepResult = {
       status: isError ? "blocked" : needsInput ? "needs_input" : "completed",
-      summary,
+      summary: redact(summary),
       filesChanged: [...filesChanged].sort(),
       diffRef: null,
       confidence,
-      findings,
+      findings: findings.map((f) => ({ ...f, summary: redact(f.summary) })),
       needsInput,
     };
 
     return {
       result,
       cost,
-      logExcerpt,
+      logExcerpt: redact(logExcerpt),
     };
   }
 
@@ -385,6 +430,7 @@ export class OpenCodeAdapter implements CodingEngine {
       addGenericSegment: (s: string) => void;
       setError: (e: boolean) => void;
       setCost: (c: CostMetadata) => void;
+      addStepUsage: (step: StepUsageInput) => void;
       setConfidence: (c: StepResult["confidence"]) => void;
       setNeedsInput: (n: NeedsInputDraft) => void;
       addFinding: (f: Finding) => void;
@@ -402,6 +448,11 @@ export class OpenCodeAdapter implements CodingEngine {
       const input = state?.input && typeof state.input === "object" ? (state.input as Record<string, unknown>) : null;
       const filePath = input && (typeof input.filePath === "string" ? input.filePath : typeof input.path === "string" ? input.path : null);
       if (filePath) accum.addFileChanged(toRelativeWorkspacePath(filePath, workspacePath));
+    }
+
+    // Real OpenCode shape: {"type": "step_finish", "part": {"type": "step-finish", "tokens": {input, output, reasoning, cache: {read, write}}, "cost": 0.0028}}
+    if ((record.type === "step_finish" || record.type === "step-finish") && part && part.type === "step-finish") {
+      accum.addStepUsage({ tokens: part.tokens as StepUsageInput["tokens"], cost: part.cost });
     }
 
     // Legacy/back-compat flat shapes (FixtureCodingEngine-style test doubles, other engines' JSON).

@@ -16,6 +16,9 @@ function makeContextBundle(overrides: Partial<ContextBundle> = {}): ContextBundl
     reviewerFeedback: null,
     humanReviewFeedback: null,
     projectContext: null,
+    approvedVerificationChecks: [],
+    verificationEvidence: null,
+    bugFixEvidence: null,
     ...overrides,
   };
 }
@@ -43,6 +46,9 @@ function makeRun(overrides: Partial<AgentRun> = {}): AgentRun {
     startedAt: "2026-01-01T00:00:00.000Z",
     completedAt: "2026-01-01T00:00:05.000Z",
     ownerGeneration: 1,
+    modelId: null,
+    providerId: null,
+    fallbackIndex: 0,
     ...overrides,
   };
 }
@@ -68,6 +74,7 @@ const EMPTY_TASK_RECORD: TaskRecord = {
   pullRequest: null,
   processedHumanFeedbackIds: [],
   pendingHumanReviewFeedback: null,
+  bugFixVerification: null,
 };
 
 function makeTask(overrides: Partial<Task> = {}): Task {
@@ -116,7 +123,7 @@ test("buildAgentRunHistory: an original implementer pass is trigger 'initial'", 
 test("buildAgentRunHistory: a self-fix retry (lastFailure present) is trigger 'self_fix_retry'", () => {
   const run = makeRun({
     attemptNumber: 2,
-    input: makeContextBundle({ lastFailure: { status: "failed", checks: [], durationMs: 100 } }),
+    input: makeContextBundle({ lastFailure: { status: "failed", outcome: "checks_failed", checks: [], durationMs: 100 } }),
   });
   const [item] = buildAgentRunHistory([run]);
   assert.equal(item!.trigger, "self_fix_retry");
@@ -126,7 +133,7 @@ test("buildAgentRunHistory: an AI-reviewer-triggered fix pass is trigger 'ai_rev
   const run = makeRun({
     attemptNumber: 2,
     input: makeContextBundle({
-      reviewerFeedback: { verdict: "rejected", findings: [], confidence: "low", summary: "Found an issue." },
+      reviewerFeedback: { verdict: "rejected", findings: [], confidence: "low", summary: "Found an issue.", verificationMethod: "static", verification: null },
     }),
   });
   const [item] = buildAgentRunHistory([run]);
@@ -298,7 +305,10 @@ test("deriveFailureContext: recoveredFromCrash is true whenever any AgentRun was
 test("buildTaskReport: existing fields are completely unchanged, new fields are additive", () => {
   const task = makeTask({ status: "REVIEW" });
   const runs = [makeRun(), makeRun({ id: "r2", role: "reviewer" })];
-  const events = [makeEvent({ type: "TASK_MOVED_TO_REVIEW" })];
+  const events = [
+    makeEvent({ type: "COMMIT_CREATED", payload: { commitSha: "abc123", branch: "task/abc12345", changedFiles: ["add.js"] } }),
+    makeEvent({ type: "TASK_MOVED_TO_REVIEW" }),
+  ];
   const report = buildTaskReport(task, runs, events, "main");
 
   // Existing shape untouched.
@@ -314,6 +324,80 @@ test("buildTaskReport: existing fields are completely unchanged, new fields are 
   assert.equal(report.recoveredFromCrash, false);
   assert.equal(report.failureContext, null);
   assert.equal(typeof report.durations, "object");
+});
+
+// See PLATFORM_GAPS.md GAP-024: "filesChanged" must be the platform's own git evidence, never the
+// coding engine's self-reported StepResult.filesChanged — the two are deliberately made to
+// disagree here so a regression that reads the wrong source is caught immediately.
+test("GAP-024: buildTaskReport.filesChanged comes from the platform's COMMIT_CREATED evidence, not the implementer's self-reported StepResult.filesChanged", () => {
+  const task = makeTask({ status: "REVIEW" });
+  // The implementer's own StepResult claims one file (see makeRun's default: filesChanged: ["add.js"]).
+  const runs = [makeRun()];
+  const events = [
+    makeEvent({
+      type: "COMMIT_CREATED",
+      payload: { commitSha: "abc123", branch: "task/abc12345", changedFiles: ["add.js", "add.test.js", "README.md"] },
+    }),
+  ];
+  const report = buildTaskReport(task, runs, events, "main");
+
+  assert.equal(report.filesChanged, 3, "must reflect the 3 files git evidence shows, not the implementer's claimed 1");
+  assert.deepEqual(report.gitEvidence.changedFiles, ["add.js", "add.test.js", "README.md"]);
+  assert.equal(report.gitEvidence.commitSha, "abc123");
+  assert.equal(report.gitEvidence.branch, "task/abc12345");
+});
+
+test("GAP-024/GAP-004: buildTaskReport carries no git or validation evidence, and validationOutcome is honestly null, when no such event has ever fired", () => {
+  const task = makeTask({ status: "WORKING" });
+  const report = buildTaskReport(task, [], [], "main");
+
+  assert.equal(report.filesChanged, 0);
+  assert.deepEqual(report.gitEvidence, { branch: null, changedFiles: [], commitSha: null, pushedCommitSha: null, remoteBranchSha: null });
+  assert.equal(report.validationOutcome, null);
+  assert.equal(report.reviewVerificationMethod, null);
+});
+
+test("GAP-004: buildTaskReport.validationOutcome distinguishes 'no checks configured' from a genuine pass, even though both are ValidationResult.status === \"passed\"", () => {
+  const task = makeTask({ status: "REVIEW" });
+  const noCommandsReport = buildTaskReport(
+    task,
+    [],
+    [makeEvent({ type: "VALIDATION_COMPLETED", payload: { status: "passed", outcome: "no_checks_configured", checks: [] } })],
+    "main",
+  );
+  assert.equal(noCommandsReport.validationOutcome, "no_checks_configured");
+
+  const realPassReport = buildTaskReport(
+    task,
+    [],
+    [
+      makeEvent({
+        type: "VALIDATION_COMPLETED",
+        payload: { status: "passed", outcome: "checks_passed", checks: [{ name: "test", passed: true, outcome: "passed" }] },
+      }),
+    ],
+    "main",
+  );
+  assert.equal(realPassReport.validationOutcome, "checks_passed");
+});
+
+test("GAP-016: buildTaskReport.reviewVerificationMethod reflects the Reviewer's own declared method, defaulting to 'unknown' rather than assuming thoroughness", () => {
+  const task = makeTask({ status: "REVIEW" });
+  const executed = buildTaskReport(
+    task,
+    [],
+    [makeEvent({ type: "REVIEW_COMPLETED", payload: { verdict: "approved", findings: [], verificationMethod: "executed" } })],
+    "main",
+  );
+  assert.equal(executed.reviewVerificationMethod, "executed");
+
+  const unstated = buildTaskReport(
+    task,
+    [],
+    [makeEvent({ type: "REVIEW_COMPLETED", payload: { verdict: "approved", findings: [] } })],
+    "main",
+  );
+  assert.equal(unstated.reviewVerificationMethod, null, "an event predating this convention must not be read as 'executed'");
 });
 
 test("buildTaskReport: a cancelled task's report carries no failureContext and no fabricated durations", () => {

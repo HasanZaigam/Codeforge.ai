@@ -31,6 +31,7 @@ const TRIGGER_LABEL: Record<AgentRunHistoryItemDTO["trigger"], string> = {
   ai_review_fix: "AI reviewer fix",
   human_review_fix: "Human review fix",
   review: "Independent review",
+  review_verification: "Review follow-up after a platform-run check",
 };
 
 /**
@@ -51,6 +52,12 @@ export function AgentRunHistory({ runs }: { runs: AgentRunHistoryItemDTO[] }) {
           <div className="agent-run-item-header">
             <span className="agent-run-role">{ROLE_LABEL[run.role]}</span>
             <span className="text-muted">attempt {run.attemptNumber}</span>
+            {run.modelId && (
+              <span className="text-muted">
+                {" "}· {run.providerId ?? "unknown"}/{run.modelId}
+                {run.fallbackIndex ? ` (fallback #${run.fallbackIndex})` : ""}
+              </span>
+            )}
             <span className={`status-badge tone-${STATUS_TONE[run.status]}`}>{STATUS_LABEL[run.status]}</span>
             <span className="text-muted">{TRIGGER_LABEL[run.trigger]}</span>
             {run.resumedAfterInterruption && (

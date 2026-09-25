@@ -49,6 +49,7 @@ Goal of the MVP, stated precisely: prove that **one developer can create a plain
 - **Auto-merge / auto-deploy without human approval** — never in scope, at any stage, not just MVP (see [SECURITY_ARCHITECTURE.md](./SECURITY_ARCHITECTURE.md)).
 - **Dedicated observability/tracing stack** — the audit event log suffices for v1 debugging.
 - **Native mobile app.**
+- **Backlog import, project chat, "Start All"/dependency scheduling, cross-task dependency enforcement** — Phases 4B–4E. Phase 4A ([BACKLOG_INTELLIGENCE.md](./BACKLOG_INTELLIGENCE.md)) ships only the backlog/analysis/proposal foundation; it executes nothing.
 - **Cross-project/cross-repository planning** (a task always targets one project).
 
 ## Explicit assumptions made to keep this list decisive

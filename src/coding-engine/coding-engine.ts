@@ -1,4 +1,4 @@
-import type { AgentRole, ContextBundle, CostMetadata, StepResult } from "../domain/types.js";
+import type { AgentRole, ContextBundle, CostMetadata, ModelSelection, StepResult } from "../domain/types.js";
 import { CancellationError } from "../domain/errors.js";
 
 /**
@@ -14,6 +14,30 @@ export interface EngineInvocationRequest {
   workspacePath: string;
   timeoutMs: number;
   signal: AbortSignal;
+  /**
+   * V1.1 Slice 5 — the platform's own routing decision (see domain/types.ts
+   * ModelSelection) for this exact invocation, or `null` when no
+   * ModelRouter/ModelRegistry was wired (older callers) or no candidate
+   * model was configured/eligible (see routing/model-registry.ts). An
+   * adapter that understands per-invocation model selection (OpenCodeAdapter)
+   * uses `modelSelection.modelId`; one that doesn't (ClaudeCodeAdapter,
+   * FixtureCodingEngine) is free to ignore this field entirely and keep its
+   * own prior behavior — this is additive, never a required capability.
+   * Optional (not just nullable) so every pre-Slice-5 call site that builds
+   * an `EngineInvocationRequest` literal directly (tests, in particular)
+   * needs no change — omitted is treated identically to `null`.
+   */
+  modelSelection?: ModelSelection | null;
+  /**
+   * Phase 4A (Backlog Intelligence) — when set, an adapter that renders role prompts (OpenCode,
+   * Claude Code) sends THIS text verbatim instead of building an Implementer/Reviewer prompt from
+   * `context`. This is how a purpose-specific, read-only invocation (backlog analysis) reuses the
+   * existing engine boundary, model routing, cancellation and timeout handling WITHOUT adding an
+   * agent role (see /docs/AGENT_ARCHITECTURE.md — the two-role design is deliberate). Optional and
+   * additive: every existing call site omits it and behaves exactly as before; an adapter that
+   * doesn't render prompts (FixtureCodingEngine) simply receives it and may inspect it.
+   */
+  promptOverride?: string;
 }
 
 export interface EngineInvocationResult {
@@ -23,7 +47,16 @@ export interface EngineInvocationResult {
   logExcerpt: string;
 }
 
-export class EngineTimeoutError extends Error {
+/**
+ * Usage the engine really emitted before an invocation ended abnormally (GAP-034), attached to the error so
+ * the caller can persist it on the failed AgentRun instead of losing it. `null` = none was emitted/captured.
+ */
+export interface FailedInvocationUsage {
+  usage: CostMetadata | null;
+}
+
+export class EngineTimeoutError extends Error implements FailedInvocationUsage {
+  usage: CostMetadata | null = null;
   constructor(role: AgentRole, timeoutMs: number) {
     super(`Coding engine invocation (${role}) exceeded timeout of ${timeoutMs}ms`);
     this.name = "EngineTimeoutError";
@@ -39,7 +72,8 @@ export interface EngineFailureMetadata {
   classification: string;
 }
 
-export class EngineExecutionError extends Error {
+export class EngineExecutionError extends Error implements FailedInvocationUsage {
+  usage: CostMetadata | null = null;
   /** Present only when the adapter performed structured failure classification (currently: OpenCodeAdapter). */
   readonly meta: EngineFailureMetadata | null;
 
@@ -58,7 +92,8 @@ export class EngineExecutionError extends Error {
  * regardless of which layer (coding engine, validation runner) it came
  * from, without needing to know engine-specific error types.
  */
-export class EngineCancelledError extends CancellationError {
+export class EngineCancelledError extends CancellationError implements FailedInvocationUsage {
+  usage: CostMetadata | null = null;
   constructor(role: AgentRole) {
     super(`Coding engine invocation (${role}) was cancelled`);
     this.name = "EngineCancelledError";
@@ -103,4 +138,10 @@ export class CodingEngineRegistry {
     if (!engine) throw new UnknownCodingEngineError(key);
     return engine;
   }
+}
+
+/** The usage an engine error carries, if any (never fabricated: an error with no captured usage yields `null`). */
+export function usageFromError(err: unknown): CostMetadata | null {
+  const usage = (err as Partial<FailedInvocationUsage> | null)?.usage;
+  return usage && typeof usage === "object" ? usage : null;
 }

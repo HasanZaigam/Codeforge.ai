@@ -47,6 +47,10 @@ export const MIGRATION_FILES = [
   "009_lock_generation.sql",
   "010_review_poll_scheduling.sql",
   "011_project_workspace.sql",
+  "012_model_routing.sql",
+  "013_backlog_intelligence.sql",
+  "014_backlog_analysis_jobs.sql",
+  "015_repository_indexes.sql",
 ];
 
 function runMigrations(db: DatabaseSync): void {

@@ -32,6 +32,9 @@ function makeContextBundle(overrides: Partial<ContextBundle> = {}): ContextBundl
     reviewerFeedback: null,
     humanReviewFeedback: null,
     projectContext: null,
+    approvedVerificationChecks: [],
+    verificationEvidence: null,
+    bugFixEvidence: null,
     ...overrides,
   };
 }
@@ -207,7 +210,7 @@ test("4 & 5. role mapping and context passing: builds implementer vs reviewer pr
         implementerSummary: "Implemented cleanly",
         filesChanged: ["index.ts"],
         diffRef: "sha123",
-        validation: { status: "passed", checks: [{ name: "test", command: "npm test", passed: true, exitCode: 0, durationMs: 10, logExcerpt: "" }], durationMs: 10 },
+        validation: { status: "passed", outcome: "checks_passed", checks: [{ name: "test", command: "npm test", passed: true, outcome: "passed", exitCode: 0, durationMs: 10, logExcerpt: "" }], durationMs: 10 },
       },
     }),
     workspacePath: workspaceDir,
@@ -1133,6 +1136,13 @@ test("23. orchestrator: retry exhaustion lands the task in FAILED with exactly o
     workspacesRoot: join(root, "workspaces"),
     engine: adapter,
     ownerId: "opencode-retry-worker",
+    // V1.1 Slice 4 added a SECOND, episode-level retry layer on top of the adapter's own (see
+    // orchestrator/failure-classifier.ts) — disabled here so this test stays a clean, isolated
+    // assertion about the adapter's own retry-exhaustion behavior specifically. The episode-level
+    // layer (which WOULD retry this same classification again, producing more AgentRuns) has its
+    // own dedicated coverage — see "24. orchestrator: episode-level retry recovers from an
+    // adapter-exhausted transient failure" below.
+    orchestratorConfig: { maxInfrastructureRetries: 0 },
   });
 
   const repoPath = await createFixtureRepo(root);
@@ -1181,6 +1191,79 @@ test("23. orchestrator: retry exhaustion lands the task in FAILED with exactly o
   assert.ok(!events.includes("BRANCH_PUSHED"));
 
   assert.equal(readCounter(counterFile), 2, "1 initial + 1 retry (maxRetries=1), never more");
+
+  await rm(dir, { recursive: true, force: true });
+  await rm(root, { recursive: true, force: true });
+});
+
+test("24. orchestrator: episode-level infrastructure retry (V1.1 Slice 4) recovers from a transient failure that already exhausted the adapter's OWN internal retries", async () => {
+  // Adapter-level budget: 2 total attempts (maxRetries=1). Fails 3 times total before succeeding —
+  // genuinely more than the adapter's own retry loop can absorb on its own, so the FIRST episode
+  // attempt's implementer invocation exhausts its adapter-level retries and throws
+  // EngineExecutionError; only the SECOND episode-level attempt (a fresh CodingEngine.run() call,
+  // its own adapter-level retry loop starting over) reaches the 4th real invocation and succeeds.
+  const { execPath, dir, counterFile } = await createEventuallySucceedingExecutable(GEMINI_503_ERROR, 3);
+  const adapter = new OpenCodeAdapter({ executablePath: execPath, env: { ...process.env, ATTEMPT_COUNTER_FILE: counterFile }, maxRetries: 1, retryBaseDelayMs: 5, retryMaxDelayMs: 20 });
+
+  const root = await mkdtemp(join(tmpdir(), "opencode-episode-retry-"));
+  const platform = buildPlatform({
+    dbPath: join(root, "platform.sqlite"),
+    workspacesRoot: join(root, "workspaces"),
+    engine: adapter,
+    ownerId: "opencode-episode-retry-worker",
+    orchestratorConfig: { maxInfrastructureRetries: 1, infrastructureRetryBaseDelayMs: 10, infrastructureRetryMaxDelayMs: 50 },
+  });
+
+  const repoPath = await createFixtureRepo(root);
+  const now = new Date().toISOString();
+  const user = { id: randomUUID(), tenantId: "default", email: "episode-retry@example.com", name: "Tester", passwordHash: "", createdAt: now };
+  platform.users.insert(user);
+  const project: Project = {
+    id: randomUUID(),
+    tenantId: "default",
+    ownerId: user.id,
+    name: "Episode Retry Fixture",
+    repoUrl: repoPath,
+    defaultBranch: "main",
+    codingEngine: "opencode",
+    sourceControlProvider: "local-git",
+    owner: null,
+    repo: null,
+    commands: {},
+    createdAt: now,
+    updatedAt: now,
+  };
+  platform.projects.insert(project);
+
+  const task = createReadyTask(platform.tasks, platform.taskEvents, {
+    tenantId: "default",
+    projectId: project.id,
+    title: "Task recovered by episode-level retry",
+    goal: "Fix add(1, 2) to return 3",
+    createdBy: null,
+  });
+
+  const executedTask = await platform.orchestrator.executeTask(task.id);
+
+  // The mock always reports `result: "Succeeded after retrying"` with no real file edits, so
+  // validation has nothing configured to fail on (commands: {}) — the task reaches REVIEW.
+  assert.equal(executedTask.status, "REVIEW", "the episode-level retry must let the task actually recover and finish, not just avoid a crash");
+  // 4 implementer invocations (adapter attempts 1-2 in episode 1, exhausted; adapter attempts 1-2 in
+  // episode 2, attempt 2 succeeds) + 1 reviewer invocation (same shared mock/engine/counter, its own
+  // first call already past failCount=3, so it succeeds immediately).
+  assert.equal(readCounter(counterFile), 5);
+
+  const runs = platform.agentRuns.listForTask(task.id);
+  const implementerRuns = runs.filter((r) => r.role === "implementer");
+  assert.equal(implementerRuns.length, 2, "one AgentRun per episode-level attempt — the first records the adapter's own exhausted failure, the second records the real success");
+  assert.equal(implementerRuns[0]!.status, "failed");
+  assert.equal(implementerRuns[1]!.status, "completed");
+
+  const events = platform.taskEvents.listForTask(task.id).map((e) => e.type);
+  assert.ok(events.includes("INFRASTRUCTURE_FAILURE_DETECTED"));
+  assert.ok(events.includes("INFRASTRUCTURE_RETRY_SCHEDULED"));
+  assert.ok(events.includes("INFRASTRUCTURE_RETRY_STARTED"));
+  assert.equal(events.filter((t) => t === "WORKSPACE_CREATED").length, 1, "no duplicate workspace provisioning across the episode retry");
 
   await rm(dir, { recursive: true, force: true });
   await rm(root, { recursive: true, force: true });

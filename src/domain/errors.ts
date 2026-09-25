@@ -56,6 +56,61 @@ export class BranchNotFoundAtExecutionError extends Error {
 }
 
 /**
+ * Thrown by the platform-owned commit/push path (see git-commit.ts,
+ * SourceControlProvider.commitAll/push) when the workspace's actual current
+ * git branch does not match the branch the task recorded for itself at
+ * provisioning time. Real-world cause (see PLATFORM_GAPS.md GAP-015): a
+ * coding engine ran its own `git checkout -b` inside the workspace, moving
+ * HEAD off the task's branch, and every step downstream — commit, push, the
+ * independent review, the PR — kept reporting success while the actual work
+ * sat on a branch nobody told the user about. Every caller that can throw
+ * this MUST NOT commit or push when it does; there is no safe fallback
+ * branch to fall back to; a human has to look. Carries both branch names as
+ * plain properties (not just in the message) so the catching code can put
+ * them in a structured TaskEvent payload rather than parsing prose.
+ */
+export class BranchMismatchError extends Error {
+  constructor(
+    public readonly expectedBranch: string,
+    public readonly actualBranch: string,
+    operation: "commit" | "push",
+  ) {
+    super(
+      `Refusing to ${operation}: the workspace is on branch "${actualBranch}", but this task's ` +
+        `recorded branch is "${expectedBranch}". The coding engine likely ran its own git checkout. ` +
+        `Nothing was ${operation === "commit" ? "committed" : "pushed"}.`,
+    );
+    this.name = "BranchMismatchError";
+  }
+}
+
+/**
+ * Thrown by the platform-owned push path when `git push` itself reported
+ * success but reading the remote branch back afterward shows it does not
+ * point at the commit that was just pushed — see PLATFORM_GAPS.md GAP-015's
+ * "A successful git command is not enough if the wrong ref was pushed."
+ * Distinct from BranchMismatchError: this fires when the push looked correct
+ * end to end (right local branch, right refspec, exit 0) and the remote
+ * still disagrees — a state that should be unreachable given the refspec
+ * push this platform now always uses, but is checked for rather than
+ * assumed, because "the command exited 0" was exactly the false confidence
+ * that let GAP-015 through undetected the first time.
+ */
+export class PushVerificationError extends Error {
+  constructor(
+    public readonly branch: string,
+    public readonly expectedSha: string,
+    public readonly remoteSha: string | null,
+  ) {
+    super(
+      `Pushed branch "${branch}" but the remote ref does not confirm it: expected ${expectedSha}, ` +
+        `remote reports ${remoteSha ?? "(no such ref)"}.`,
+    );
+    this.name = "PushVerificationError";
+  }
+}
+
+/**
  * Thrown by Orchestrator.startTask when one or more of the task's explicit dependencies (see
  * /docs/TASK_LIFECYCLE.md "Task dependencies") are not yet DONE — the enforcement point is the same
  * atomic UPDATE...WHERE that flips BACKLOG -> TODO (see TaskRepository.releaseFromBacklog's own doc

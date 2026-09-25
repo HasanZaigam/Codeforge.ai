@@ -49,7 +49,9 @@ describe("CreateProjectDialog", () => {
 
   test("validating a repository URL shows a loading state, then the derived owner/repo/default branch and an editable, auto-suggested project name", async () => {
     const user = userEvent.setup();
-    mockedProjectsApi.verifyGitHubRepo.mockImplementation(() => new Promise((resolve) => setTimeout(() => resolve(VERIFIED), 10)));
+    // Held open by a promise this test resolves (a real 10 ms timer could expire before the loading assertion under load).
+    let resolveVerify!: (v: typeof VERIFIED) => void;
+    mockedProjectsApi.verifyGitHubRepo.mockImplementation(() => new Promise((resolve) => (resolveVerify = resolve)));
     await renderConnected();
 
     await user.type(screen.getByLabelText(/GitHub repository URL/), "https://github.com/HasanZaigam/testing-repo-.git");
@@ -57,6 +59,7 @@ describe("CreateProjectDialog", () => {
 
     expect(screen.getByText(/Checking repository access on GitHub/i)).toBeInTheDocument();
 
+    resolveVerify(VERIFIED);
     await waitFor(() => expect(screen.getByText("Repository verified")).toBeInTheDocument());
     expect(screen.getByText("HasanZaigam")).toBeInTheDocument();
     expect(screen.getByText("testing-repo-")).toBeInTheDocument();

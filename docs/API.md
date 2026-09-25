@@ -57,6 +57,14 @@ Every route this API exposes, classified by who may call it. **PUBLIC** = no ses
 | `POST /tasks/:taskId/input` | OWNER-ONLY |
 | `POST /tasks/:taskId/cancel` | OWNER-ONLY |
 | `POST /tasks/:taskId/check-review-feedback` | OWNER-ONLY |
+| `GET /projects/:projectId/backlog` | OWNER-ONLY *(Phase 4A)* |
+| `POST /projects/:projectId/backlog` | OWNER-ONLY |
+| `GET /backlog/:itemId` | OWNER-ONLY (via the item's project) |
+| `PATCH /backlog/:itemId` | OWNER-ONLY |
+| `POST /backlog/:itemId/reject` · `/analyze` · `/analysis/cancel` · `/proposal` | OWNER-ONLY |
+| `GET /backlog/:itemId/analysis` · `/relationships` | OWNER-ONLY |
+| `GET /task-proposals/:proposalId` | OWNER-ONLY (via the proposal's project) |
+| `POST /task-proposals/:proposalId/approve` · `/reject` · `/convert` | OWNER-ONLY |
 | `GET /integrations/github` | AUTHENTICATED (the caller's own connection status) |
 | `POST /integrations/github` | AUTHENTICATED |
 | `DELETE /integrations/github` | AUTHENTICATED |
@@ -228,6 +236,7 @@ interface TaskReport {
   commitSha: string | null;
   failureReason: string | null;                              // present only when status is FAILED — see TASK_LIFECYCLE.md "Review/fix cycle" for the exhausted-review-cycle case
   agentRuns: AgentRunHistoryItem[];                          // every AgentRun for this task, in order — see "Execution history" below
+  usage: TaskUsageRollup;                                    // task-level usage roll-up (GAP-031/034) — see "Usage roll-up" below
   durations: {                                                // every value derived from existing timestamps — null if not yet computable, never estimated
     totalMs: number | null;
     implementationMs: number | null;
@@ -239,12 +248,25 @@ interface TaskReport {
   failureContext: { stage: string; failedRole: "implementer" | "reviewer" | null; attemptNumber: number | null; recoveredFromCrash: boolean } | null; // present only when status is FAILED
 }
 
+// Usage roll-up (Phase 4A.3, GAP-031) — every AgentRun counted exactly once. A `null` count means NO run reported it (never 0).
+interface TaskUsageRollup {
+  usageStatus: "complete" | "partial" | "unavailable";       // GAP-034: `partial` = some run failed/ended abnormally or reported nothing, so totals are LOWER BOUNDS; `unavailable` = no run reported any
+  runsCounted: number;                                       // AgentRun rows (each is one engine invocation; retries/fallbacks are separate rows)
+  runsWithUsage: number;                                     // runs that reported at least one token field
+  totals: { inputTokens: number | null; outputTokens: number | null; reasoningTokens: number | null; cacheReadTokens: number | null; cacheWriteTokens: number | null };
+  runsReporting: Record<keyof TaskUsageRollup["totals"], number>; // how many runs each total covers (a partial total is visibly partial)
+  providerReportedEstimate: { amount: number; currency: string; runsCovered: number; runsWithoutEstimate: number; sources: string[] } | null; // the ENGINE's own estimate (e.g. "opencode-reported") — not provider-billed; null if none reported or currencies differ
+  codeforgeCalculatedCost: null;                             // always null: CodeForge has no explicit, versioned pricing source
+  byPhase: Record<"implementation" | "fix" | "review" | "verification", { runs: number; totals: /* as above */ object; providerReportedEstimate: object | null }>;
+  runs: Array<{ runId: string; role: "implementer" | "reviewer"; trigger: string; phase: "implementation" | "fix" | "review" | "verification"; attemptNumber: number; status: string; providerId: string | null; modelId: string | null; usage: object | null; usageStatus: "complete" | "partial" | "unavailable"; providerReportedEstimate: { amount: number; currency: string; pricingSource: string; pricingVersion: string | null } | null }>;
+}
+
 interface AgentRunHistoryItem {
   id: string;
   role: "implementer" | "reviewer";
   attemptNumber: number;
   status: "running" | "completed" | "failed" | "timeout" | "cancelled" | "interrupted";
-  trigger: "initial" | "self_fix_retry" | "ai_review_fix" | "human_review_fix" | "review"; // what caused this specific attempt
+  trigger: "initial" | "self_fix_retry" | "ai_review_fix" | "human_review_fix" | "review" | "review_verification"; // what caused this specific attempt (`review_verification` = the Reviewer's follow-up call after the platform ran a check it requested)
   startedAt: string;
   completedAt: string | null;
   summary: string | null;
@@ -311,6 +333,29 @@ The token is verified against the real GitHub API before being stored (encrypted
 
 ### `DELETE /integrations/github` *(added in Step 7)*
 Disconnects the caller's GitHub account — deletes the stored credential entirely (not a soft flag). `204` with no body. Existing GitHub-backed projects are unaffected as records, but any task execution against them will fail (`SOURCE_CONTROL_FAILED` → `FAILED`) until reconnected.
+
+## Backlog *(Phase 4A — see [BACKLOG_INTELLIGENCE.md](./BACKLOG_INTELLIGENCE.md))*
+
+Backlog items are **not tasks**. Every route below is OWNER-ONLY (a foreign or nonexistent id is an identical `404 NOT_FOUND`), every body is validated with a **strict** schema (an unknown key such as `status`, `projectId`, `taskId` or `approved` is `400 INVALID_REQUEST`), and no route starts, schedules or releases a task. Statuses are decided by the platform only; no request can set one.
+
+| Route | Purpose | Success | Notable errors |
+|---|---|---|---|
+| `GET /projects/:projectId/backlog` | Items, newest first, bounded (200) — each with `latestAnalysis {id,status,completedAt}` and `proposal {id,status,taskId}` summaries | `200 { items }` | |
+| `POST /projects/:projectId/backlog` | `{ title (≤300), description (≤10000), externalRef? (≤64, `[A-Za-z0-9._:/#-]`) }` — always `source: "manual"`, status `NEW` | `201 { item }` | `409 DUPLICATE_BACKLOG_REFERENCE` (per project, case-insensitive) |
+| `GET /backlog/:itemId` | Detail: `{ item, latestAnalysis, analysisJob, analysisCount, relationships, proposal, events }`. `analysisJob` = the latest job `{ id, status: QUEUED\|RUNNING\|SUCCEEDED\|FAILED\|CANCELLED, attemptCount, maxAttempts, availableAt (a future value on a QUEUED job = a retry backoff), cancelRequested, failureCategory, failureReason, modelId, providerId, analysisId, createdAt, startedAt, completedAt }` — never claim owner, lease or lock generation | `200` | |
+| `PATCH /backlog/:itemId` | Edit `title`/`description`/`externalRef` (`null` clears). Only while `NEW`/`ANALYZED`/`NEEDS_CLARIFICATION`; a real change resets the item to `NEW`; a no-op change changes nothing | `200 { item }` | `409 INVALID_OPERATION`, `409 DUPLICATE_BACKLOG_REFERENCE` |
+| `POST /backlog/:itemId/reject` | Dismiss the item (idempotent; also rejects its live proposal) | `200 { item }` | `409` while `ANALYZING` or after conversion |
+| `POST /backlog/:itemId/analyze` | **Enqueue** an analysis job. **No model is called in the API process** — a worker claims and runs the job. **Idempotent:** while the item already has a `QUEUED`/`RUNNING` job the SAME job is returned with `enqueued:false` (no new job). See [BACKLOG_INTELLIGENCE.md](./BACKLOG_INTELLIGENCE.md) §4 | `202 { item, job, enqueued }` (item `ANALYZING`, `job.status` `QUEUED`; poll `GET /backlog/:itemId`) | `409 INVALID_OPERATION` (`READY_FOR_TASK`, `CONVERTED`, `REJECTED`) |
+| `POST /backlog/:itemId/analysis/cancel` | Cancel the live analysis: a `QUEUED` job at once, a `RUNNING` one at the owning worker's next heartbeat. The item returns to its pre-analysis status. Idempotent | `202 { item, job }` | `409 INVALID_OPERATION` when nothing is live |
+| `GET /backlog/:itemId/analysis` | The latest analysis, in separate parts: **`result`** = what the model believes (a *proposal*, incl. its `claims` — assertions with no verdict/evidence field); **`platformChecks`** = what CodeForge checked (`candidateFiles` existence, `context`, and `assessment`: platform `evidence[]` (`FILE_EXISTS`/`FILE_NOT_FOUND`/`PATH_MATCH`/`CONTENT_MATCH`/`SYMBOL_MATCH` — declared names from the revision-bound repository index, carrying `revision` — and `SYMBOL_REFERENCE` — a declared name also used elsewhere in a file the platform read — and `CHECK_RESULT`, reserved for the disabled verification seam; evidence carries `revision` where it describes one), per-claim `claims[]` with `status` `SUPPORTED`/`CONTRADICTED`/`UNRESOLVED`/`NOT_CHECKED`, `establishes` (`existence`/`nothing`), platform-written `reason`, `summary`, `confidenceOverridden`, `reconciliation` (Phase 4A.4: the platform's separate conclusion per claim — `IMPLEMENTATION_PRESENT`/`IMPLEMENTATION_POSSIBLE`/`UNRESOLVED`/`NO_CONFLICT`/`CHECK_VERIFIED` with `strength`, a platform-written `explanation`, `behaviorVerified` (false unless a check bound to the claim passed), the analysed `revision`, `ignoredEvidence` for other revisions, and `alreadyImplemented` `strong`/`possible`/`none` — *implementation evidence conflicts with a reported absence; never "fixed"*), `verification[]` (checks the platform judged relevant to behaviour claims; `state` is `not_run` for every analysis today), and `inspection` incl. skipped files; `context.index` = how the repository index contributed (`state`, `revision`, `built`, counts, `complete`) and `context.selection` = how files were chosen (`method` `index`\|`name`, top files with reasons)); **`usage`** = reported token counts (each a number or `null` — never `0` for unknown; whole object `null` when nothing was reported); **`estimatedCost`** = `{ amount, currency, pricingSource, pricingVersion }` or `null` (separate from usage; an engine-reported estimate, not provider-billed); plus failure category/reason/diagnostics if it failed, and model/provider/engine/fallback/duration. The raw cost blob is not exposed | `200 { analysis \| null }` | |
+| `GET /backlog/:itemId/relationships` | Duplicate / dependency **proposals**, each with `direction` (`outgoing`/`incoming`), `other` item, `confidence`, `rationale`, `status` (`PROPOSED`) | `200 { relationships }` | |
+| `POST /backlog/:itemId/proposal` | Build the task proposal deterministically from the latest successful analysis — no model call. Idempotent | `201 { proposal, created:true }` / `200 { …, created:false }` | `409 INVALID_OPERATION` unless the item is `ANALYZED` |
+| `GET /task-proposals/:proposalId` | The proposal (`content` is `null` only for a corrupted stored row). `content.claimAssessments[]` (statement, kind, AI confidence, platform `status`, `establishes`, `reason`, evidence lines) and `content.investigateFirst` carry the platform's evidence assessment; a contradicted claim is never stated as fact in `goal` | `200 { proposal }` | |
+| `POST /task-proposals/:proposalId/approve` | The human approval. Idempotent | `200 { proposal }` | `409` if `REJECTED` or content invalid |
+| `POST /task-proposals/:proposalId/reject` | Reject a `PENDING`/`APPROVED` proposal (item returns to `ANALYZED`). Idempotent | `200 { proposal }` | `409` once converting/converted |
+| `POST /task-proposals/:proposalId/convert` | Convert an **approved** proposal into exactly one ordinary Task via `TaskService.create` (lands in `BACKLOG`) | `201 { proposal, task, alreadyConverted:false }` / `200 { …, alreadyConverted:true }` | `409 INVALID_OPERATION` if not approved/rejected/corrupt; `409 CONVERSION_IN_PROGRESS` (retry) |
+
+Action endpoints (`analyze`, `analysis/cancel`, `reject`, `proposal`, `approve`, `convert`) accept only an empty JSON body. Analysis failures are **not** HTTP errors: a failed job is visible as `analysisJob.status: "FAILED"` and a terminal failure is recorded on the analysis (`status: "failed"`, `failureCategory`: `malformed_output` \| `engine_error` \| `timeout` \| `no_model_available` \| `cancelled` \| `context_error` \| `interrupted`) and reflected in the item's status.
 
 ## Validation
 

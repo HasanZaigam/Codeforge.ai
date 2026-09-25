@@ -74,7 +74,8 @@ describe("ProjectWorkspacePage", () => {
       renderApp("/projects/p1/workspace");
 
       await waitFor(() => expect(screen.getByText("Couldn't load the workspace for this project.")).toBeInTheDocument());
-      expect(screen.getByLabelText("Project name")).toHaveValue("OTT");
+      // Project Context loads independently of the workspace request — wait for IT, not just the error text.
+      await waitFor(() => expect(screen.getByLabelText("Project name")).toHaveValue("OTT"));
     });
 
     it("renders a safe fallback, without crashing, for a missing/malformed workspace response", async () => {

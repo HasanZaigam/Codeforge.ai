@@ -4,15 +4,34 @@ import { buildPullRequestDescription, buildPullRequestTitle } from "../src/orche
 import type { ReviewResult, Task, ValidationResult } from "../src/domain/types.js";
 
 function makeTask(overrides: Partial<Task> = {}): Task {
-  return { title: "Create a README.md file", goal: "Create a README.md file for this repository explaining what the project does.", ...overrides } as Task;
+  return {
+    title: "Create a README.md file",
+    goal: "Create a README.md file for this repository explaining what the project does.",
+    taskRecord: { bugFixVerification: null },
+    ...overrides,
+  } as Task;
 }
 
 function makeValidation(overrides: Partial<ValidationResult> = {}): ValidationResult {
-  return { status: "passed", checks: [{ name: "test", command: "npm test", passed: true, exitCode: 0, durationMs: 10, logExcerpt: "" }], durationMs: 10, ...overrides };
+  return {
+    status: "passed",
+    outcome: "checks_passed",
+    checks: [{ name: "test", command: "npm test", passed: true, outcome: "passed", exitCode: 0, durationMs: 10, logExcerpt: "" }],
+    durationMs: 10,
+    ...overrides,
+  };
 }
 
 function makeReview(overrides: Partial<ReviewResult> = {}): ReviewResult {
-  return { verdict: "approved", findings: [], confidence: "high", summary: "No concerns raised — the README accurately describes the project.", ...overrides };
+  return {
+    verdict: "approved",
+    findings: [],
+    confidence: "high",
+    summary: "No concerns raised — the README accurately describes the project.",
+    verificationMethod: "static",
+    verification: null,
+    ...overrides,
+  };
 }
 
 /**
@@ -69,14 +88,42 @@ test("validation checks render as a readable pass/fail list, and 'no checks decl
   const passing = buildPullRequestDescription(
     makeTask(),
     "summary",
-    makeValidation({ checks: [{ name: "build", command: "npm run build", passed: true, exitCode: 0, durationMs: 1, logExcerpt: "" }, { name: "test", command: "npm test", passed: false, exitCode: 1, durationMs: 1, logExcerpt: "" }] }),
+    makeValidation({
+      checks: [
+        { name: "build", command: "npm run build", passed: true, outcome: "passed", exitCode: 0, durationMs: 1, logExcerpt: "" },
+        { name: "test", command: "npm test", passed: false, outcome: "failed", exitCode: 1, durationMs: 1, logExcerpt: "" },
+      ],
+    }),
     makeReview(),
   );
   assert.ok(passing.includes("- build: passed"));
   assert.ok(passing.includes("- test: failed"));
 
-  const none = buildPullRequestDescription(makeTask(), "summary", makeValidation({ checks: [] }), makeReview());
-  assert.ok(none.includes("No checks were declared for this project."));
+  const none = buildPullRequestDescription(makeTask(), "summary", makeValidation({ checks: [], outcome: "no_checks_configured" }), makeReview());
+  assert.ok(none.includes("nothing was run"), "GAP-004: absent commands must never read like validation passed");
+  assert.ok(!none.includes("passed"), "the 'no checks configured' message must not contain the word 'passed' anywhere");
+});
+
+test("GAP-016: the review's verification method is always shown, and static review is never worded as if it were verified", () => {
+  const staticReview = buildPullRequestDescription(makeTask(), "summary", makeValidation(), makeReview({ verificationMethod: "static" }));
+  assert.ok(staticReview.includes("**Verification:** Static"));
+  assert.ok(!staticReview.includes("independently verified"));
+
+  const executedReview = buildPullRequestDescription(makeTask(), "summary", makeValidation(), makeReview({ verificationMethod: "executed" }));
+  assert.ok(executedReview.includes("**Verification:** Executed"));
+
+  const unknownReview = buildPullRequestDescription(makeTask(), "summary", makeValidation(), makeReview({ verificationMethod: "unknown" }));
+  assert.ok(unknownReview.includes("**Verification:** Not stated"));
+});
+
+test("GAP-024: files-changed section shows the platform's own git evidence, not an AI claim — and is omitted when no evidence was passed", () => {
+  const withEvidence = buildPullRequestDescription(makeTask(), "summary", makeValidation(), makeReview(), ["src/a.ts", "src/b.ts"]);
+  assert.ok(withEvidence.includes("## Files changed"));
+  assert.ok(withEvidence.includes("2 file(s)"));
+  assert.ok(withEvidence.includes("- src/a.ts"));
+
+  const withoutEvidence = buildPullRequestDescription(makeTask(), "summary", makeValidation(), makeReview());
+  assert.ok(!withoutEvidence.includes("## Files changed"));
 });
 
 test("the implementer's summary (now real Markdown from the fixed parser) is embedded verbatim, preserving headings/lists/code — not re-escaped or flattened", () => {

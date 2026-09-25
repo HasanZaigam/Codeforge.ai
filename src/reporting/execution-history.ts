@@ -1,4 +1,4 @@
-import type { AgentRole, AgentRun, AgentRunStatus, Task, TaskEvent } from "../domain/types.js";
+import type { AgentRole, AgentRun, AgentRunStatus, CostMetadata, Task, TaskEvent } from "../domain/types.js";
 import { deriveReviewResult } from "../review/reviewer.js";
 
 /**
@@ -10,7 +10,14 @@ import { deriveReviewResult } from "../review/reviewer.js";
  * parallel event/history system.
  */
 
-export type AgentRunTrigger = "initial" | "self_fix_retry" | "ai_review_fix" | "human_review_fix" | "review";
+export type AgentRunTrigger =
+  | "initial"
+  | "self_fix_retry"
+  | "ai_review_fix"
+  | "human_review_fix"
+  | "review"
+  /** The Reviewer's follow-up call made AFTER the platform executed a check it requested — a model call about verification evidence, distinct from the review itself. */
+  | "review_verification";
 
 export interface AgentRunHistoryItem {
   id: string;
@@ -38,6 +45,18 @@ export interface AgentRunHistoryItem {
   /** True iff the immediately preceding attempt of the same role was left "interrupted" —
    *  i.e. this run is what a crash-recovery resume actually produced. See "Crash recovery". */
   resumedAfterInterruption: boolean;
+  /**
+   * V1.1 Slice 5 — the platform's own routing decision for this exact invocation (see
+   * domain/types.ts ModelSelection/AgentRun.modelId), never the AI's own claim about what ran.
+   * `null` when no ModelRouter/ModelRegistry was wired or no candidate was eligible — see
+   * routing/model-router.ts's own doc comment.
+   */
+  modelId: string | null;
+  providerId: string | null;
+  /** How many DISTINCT models were already attempted for this (task, role) before this one — 0 for the first. */
+  fallbackIndex: number;
+  /** Real token/cost telemetry the coding engine reported, or `null` fields where it didn't expose them — see domain/types.ts CostMetadata. Never fabricated. */
+  cost: CostMetadata | null;
 }
 
 export function buildAgentRunHistory(agentRuns: AgentRun[]): AgentRunHistoryItem[] {
@@ -62,12 +81,16 @@ export function buildAgentRunHistory(agentRuns: AgentRun[]): AgentRunHistoryItem
         ? { reviewerLogin: run.input.humanReviewFeedback.reviewerLogin, comments: run.input.humanReviewFeedback.comments }
         : null,
       resumedAfterInterruption: priorSameRole?.status === "interrupted",
+      modelId: run.modelId,
+      providerId: run.providerId,
+      fallbackIndex: run.fallbackIndex,
+      cost: run.cost,
     };
   });
 }
 
-function deriveTrigger(run: AgentRun): AgentRunTrigger {
-  if (run.role === "reviewer") return "review";
+export function deriveTrigger(run: AgentRun): AgentRunTrigger {
+  if (run.role === "reviewer") return run.input.verificationEvidence ? "review_verification" : "review";
   if (run.input.humanReviewFeedback) return "human_review_fix";
   if (run.input.reviewerFeedback) return "ai_review_fix";
   if (run.input.lastFailure) return "self_fix_retry";

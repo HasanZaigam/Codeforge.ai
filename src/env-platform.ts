@@ -6,6 +6,8 @@ import { createSelfFixDemoEngine } from "./cli/fixture-engine-handlers.js";
 import type { CodingEngine } from "./coding-engine/coding-engine.js";
 import { validateSharedConfig, parsePositiveIntEnv } from "./config/startup-config.js";
 import { DEFAULT_ORCHESTRATOR_CONFIG, type OrchestratorConfig } from "./orchestrator/config.js";
+import { ModelRegistry, UNKNOWN_CAPABILITY_PROFILE, inferProviderId } from "./routing/model-registry.js";
+import { DEFAULT_MAX_ANALYSIS_CONCURRENCY } from "./worker/backlog-analysis-runner.js";
 
 /**
  * Shared environment-driven Platform construction for the standalone API
@@ -29,7 +31,49 @@ export function buildPlatformFromEnv(ownerId?: string): Platform {
     engine,
     ownerId: ownerId ?? process.env.WORKER_ID ?? `worker-${randomUUID().slice(0, 8)}`,
     orchestratorConfig: resolveOrchestratorConfigFromEnv(),
+    modelRegistry: buildModelRegistryFromEnv(engine.key),
+    backlogOptions: { maxAnalysisConcurrency: resolveBacklogAnalysisConcurrency(process.env) },
   });
+}
+
+/**
+ * `MAX_BACKLOG_ANALYSIS_CONCURRENCY` — the GLOBAL cap on concurrently running backlog analyses
+ * across every worker process sharing the database (see docs/BACKLOG_INTELLIGENCE.md "Global
+ * concurrency cap"). Validated at startup (by validateSharedConfig too), with a safe default.
+ */
+function resolveBacklogAnalysisConcurrency(env: NodeJS.ProcessEnv): number {
+  const value = parsePositiveIntEnv("MAX_BACKLOG_ANALYSIS_CONCURRENCY", env.MAX_BACKLOG_ANALYSIS_CONCURRENCY, DEFAULT_MAX_ANALYSIS_CONCURRENCY);
+  console.log(`[config] backlog analysis global concurrency cap=${value}`);
+  return value;
+}
+
+/**
+ * V1.1 Slice 5 — the ONLY model profile production wiring ever registers:
+ * whatever `OPENCODE_MODEL` actually names, for the engine this process
+ * actually resolved (see resolveEngineFromEnv). Deliberately does not
+ * pre-populate profiles for models/providers this environment cannot
+ * actually execute (see this slice's brief, item 25) — when `OPENCODE_MODEL`
+ * is unset, the registry stays empty and the platform routes nothing,
+ * exactly preserving pre-Slice-5 behavior (the coding engine uses its own
+ * construction-time default — see OpenCodeAdapter's own `this.model`
+ * fallback).
+ */
+function buildModelRegistryFromEnv(engineKey: string): ModelRegistry {
+  const registry = new ModelRegistry();
+  const modelId = process.env.OPENCODE_MODEL?.trim();
+  if (engineKey === "opencode" && modelId) {
+    registry.register({
+      modelId,
+      providerId: inferProviderId(modelId),
+      displayName: modelId,
+      engineKey,
+      capability: UNKNOWN_CAPABILITY_PROFILE,
+      contextWindow: null,
+      credentialMode: "managed",
+      enabled: true,
+    });
+  }
+  return registry;
 }
 
 /**
@@ -59,6 +103,33 @@ function resolveOrchestratorConfigFromEnv(): Partial<OrchestratorConfig> {
     DEFAULT_ORCHESTRATOR_CONFIG.reviewPollIntervalMs,
   );
   console.log(`[config] review poll interval=${overrides.reviewPollIntervalMs}ms`);
+
+  // V1.1 Slice 4 (see PLATFORM_GAPS.md GAP-027/GAP-028) — real, always-applicable production knobs
+  // for infrastructure-failure retry, same treatment as REVIEW_POLL_INTERVAL_MS above (always
+  // resolved with its own documented default, not merely a manual-testing override).
+  overrides.maxInfrastructureRetries = parsePositiveIntEnv(
+    "INFRA_MAX_EPISODE_RETRIES",
+    process.env.INFRA_MAX_EPISODE_RETRIES,
+    DEFAULT_ORCHESTRATOR_CONFIG.maxInfrastructureRetries,
+  );
+  overrides.maxInfraCheckRetries = parsePositiveIntEnv(
+    "INFRA_MAX_CHECK_RETRIES",
+    process.env.INFRA_MAX_CHECK_RETRIES,
+    DEFAULT_ORCHESTRATOR_CONFIG.maxInfraCheckRetries,
+  );
+  overrides.infrastructureRetryBaseDelayMs = parsePositiveIntEnv(
+    "INFRA_RETRY_BASE_DELAY_MS",
+    process.env.INFRA_RETRY_BASE_DELAY_MS,
+    DEFAULT_ORCHESTRATOR_CONFIG.infrastructureRetryBaseDelayMs,
+  );
+  overrides.infrastructureRetryMaxDelayMs = parsePositiveIntEnv(
+    "INFRA_RETRY_MAX_DELAY_MS",
+    process.env.INFRA_RETRY_MAX_DELAY_MS,
+    DEFAULT_ORCHESTRATOR_CONFIG.infrastructureRetryMaxDelayMs,
+  );
+  console.log(
+    `[config] infrastructure retry: episode max=${overrides.maxInfrastructureRetries} check max=${overrides.maxInfraCheckRetries} backoff=${overrides.infrastructureRetryBaseDelayMs}-${overrides.infrastructureRetryMaxDelayMs}ms`,
+  );
   return overrides;
 }
 

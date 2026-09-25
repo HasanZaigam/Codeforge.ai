@@ -37,7 +37,7 @@ async function setupHarness(label: string): Promise<Harness> {
   const repoPath = await createFixtureRepo(root);
   const app = buildApp(platform);
   const server = await new Promise<Server>((resolve) => {
-    const s = app.listen(0, () => resolve(s));
+    const s = app.listen(0, "127.0.0.1", () => resolve(s));
   });
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("expected a TCP address");

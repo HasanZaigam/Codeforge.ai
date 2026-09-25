@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { BranchMode, Task, TaskRecord } from "../domain/types.js";
+import type { BranchMode, BugFixVerificationContract, Task, TaskRecord } from "../domain/types.js";
 import type { TaskRepository } from "../persistence/repositories/task-repository.js";
 import type { TaskEventRepository } from "../persistence/repositories/task-event-repository.js";
 
@@ -16,6 +16,27 @@ export interface CreateTaskInput {
   workingBranch?: string | null;
   /** Mode "new" only: overrides the project's default branch as the branch to create from. */
   baseBranch?: string | null;
+  /**
+   * V1.1 Slice 3 — opt-in bug-fix verification contract (see domain/types.ts
+   * BugFixVerificationContract). Omitted/undefined for every ordinary task —
+   * every existing call site keeps today's exact behavior (no reproduction,
+   * no fix verification). When set, `checkId` must already be an approved,
+   * project-configured check; the orchestrator enforces this at execution
+   * time (see review/bug-fix-verification.ts) rather than here, so task
+   * creation never needs a live Project lookup just to validate this.
+   */
+  bugFixVerification?: BugFixVerificationContract | null;
+  /**
+   * Phase 4A — a caller-reserved task id. Omitted (every existing call site) means a fresh random
+   * id, exactly as before. The backlog-conversion path reserves the id on the approved TaskProposal
+   * BEFORE creating the task, so a crash between "task created" and "proposal marked converted"
+   * can be retried without ever inserting a second Task: the primary key makes a duplicate insert
+   * structurally impossible, and the retry finds the already-created task and just finalizes. Never
+   * reachable from the HTTP API (CreateTaskSchema has no such field).
+   */
+  id?: string;
+  /** Phase 4A — provenance recorded on the TASK_CREATED event (which backlog item / approved proposal this task came from). Informational only; nothing reads it to make a decision. */
+  origin?: { backlogItemId: string; taskProposalId: string };
 }
 
 const EMPTY_TASK_RECORD: TaskRecord = {
@@ -28,13 +49,23 @@ const EMPTY_TASK_RECORD: TaskRecord = {
   pullRequest: null,
   processedHumanFeedbackIds: [],
   pendingHumanReviewFeedback: null,
+  bugFixVerification: null,
 };
+
+/**
+ * `EMPTY_TASK_RECORD.bugFixVerification` is always `null` in the shared
+ * literal above — this only builds the real value for the one call site
+ * that opts in (see `createTask` below).
+ */
+function initialBugFixVerification(contract: BugFixVerificationContract | null | undefined): TaskRecord["bugFixVerification"] {
+  return contract ? { contract, reproduction: null, fixVerification: null } : null;
+}
 
 /** The only place a Task row is created — keeps FR-3's contract (goal in, executable task out) in one place. */
 export function createTask(taskRepo: TaskRepository, eventRepo: TaskEventRepository, input: CreateTaskInput): Task {
   const now = new Date().toISOString();
   const task: Task = {
-    id: randomUUID(),
+    id: input.id ?? randomUUID(),
     tenantId: input.tenantId,
     projectId: input.projectId,
     title: input.title,
@@ -46,7 +77,7 @@ export function createTask(taskRepo: TaskRepository, eventRepo: TaskEventReposit
     // TaskRepository.insert() always writes `task.status` explicitly (never omits the column), so
     // that stale default is never actually reached by any code path.
     status: "BACKLOG",
-    taskRecord: { ...EMPTY_TASK_RECORD },
+    taskRecord: { ...EMPTY_TASK_RECORD, bugFixVerification: initialBugFixVerification(input.bugFixVerification) },
     branchMode: input.branchMode ?? "new",
     workingBranch: input.workingBranch ?? null,
     baseBranch: input.baseBranch ?? null,
@@ -65,6 +96,11 @@ export function createTask(taskRepo: TaskRepository, eventRepo: TaskEventReposit
     nextReviewCheckAt: null,
   };
   taskRepo.insert(task);
-  eventRepo.append(task.id, "TASK_CREATED", { title: task.title, goal: task.goal, projectId: task.projectId }, now);
+  eventRepo.append(
+    task.id,
+    "TASK_CREATED",
+    { title: task.title, goal: task.goal, projectId: task.projectId, ...(input.origin ? { origin: input.origin } : {}) },
+    now,
+  );
   return task;
 }

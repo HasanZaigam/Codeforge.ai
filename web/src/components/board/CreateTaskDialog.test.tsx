@@ -122,7 +122,11 @@ describe("CreateTaskDialog branch mode", () => {
 
   test("switching to 'existing branch' mode loads the repository's real branch list and requires a selection", async () => {
     const user = userEvent.setup();
-    mockedProjectsApi.listBranches.mockImplementation(() => new Promise((resolve) => setTimeout(() => resolve(["main", "develop"]), 10)));
+    // DETERMINISM: the request is held open by a promise THIS TEST resolves, so the transient "Loading
+    // branches…" state is observable for exactly as long as the test needs — never dependent on how fast the
+    // machine runs (a real 10 ms timer used to expire before the assertion under CPU load).
+    let resolveBranches!: (branches: string[]) => void;
+    mockedProjectsApi.listBranches.mockImplementation(() => new Promise((resolve) => (resolveBranches = resolve)));
     renderDialog();
     await fillTitleAndDescription();
 
@@ -130,6 +134,7 @@ describe("CreateTaskDialog branch mode", () => {
     expect(screen.getByText(/Loading branches/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /^Create task$/i })).toBeDisabled();
 
+    resolveBranches(["main", "develop"]);
     await waitFor(() => expect(screen.getByLabelText("Existing branch")).toBeInTheDocument());
     expect(screen.getByRole("option", { name: "develop" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /^Create task$/i })).toBeDisabled();

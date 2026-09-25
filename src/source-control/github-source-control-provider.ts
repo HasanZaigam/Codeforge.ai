@@ -1,9 +1,9 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { OpenPullRequestRequest, SourceControlProvider } from "./source-control-provider.js";
-import type { BranchComparisonStatus, GitCredential, HumanReviewFeedbackItem, Project, PullRequestRef, PullRequestStatus } from "../domain/types.js";
-import { CancellationError } from "../domain/errors.js";
-import { commitAllLocal } from "./git-commit.js";
+import type { BranchComparisonStatus, CommitResult, GitCredential, HumanReviewFeedbackItem, Project, PullRequestRef, PullRequestStatus, PushResult } from "../domain/types.js";
+import { CancellationError, PushVerificationError } from "../domain/errors.js";
+import { assertOnExpectedBranch, commitAllLocal } from "./git-commit.js";
 import { gitCredentialEnv } from "./git-credential-env.js";
 import { GitHubClient, GitHubNotFoundError } from "../integrations/github/github-client.js";
 import { resolveGitHubToken } from "../integrations/github/credential-resolver.js";
@@ -70,8 +70,8 @@ export class GitHubSourceControlProvider implements SourceControlProvider {
     return { header: `Authorization: Basic ${basic}` };
   }
 
-  async commitAll(_project: Project, workspacePath: string, message: string, signal: AbortSignal): Promise<string> {
-    return commitAllLocal(workspacePath, message, signal); // purely local — no credential needed to commit
+  async commitAll(_project: Project, workspacePath: string, message: string, expectedBranch: string, signal: AbortSignal): Promise<CommitResult> {
+    return commitAllLocal(workspacePath, message, expectedBranch, signal); // purely local — no credential needed to commit
   }
 
   /**
@@ -84,9 +84,32 @@ export class GitHubSourceControlProvider implements SourceControlProvider {
    * see /docs/GITHUB_INTEGRATION.md "Push behavior"; no duplicate commit is
    * ever created by a push retry, since commits are made once, before this
    * is ever called (see `commitAll`/`commitAllLocal`'s own idempotency).
+   *
+   * Three things changed from the original implementation, all closing the
+   * same real failure (see PLATFORM_GAPS.md GAP-015 — an agent moved the
+   * workspace off its task branch, and this method pushed the untouched
+   * local branch of that name, reported success, and the task's approved
+   * work never left the machine):
+   *
+   * 1. `assertOnExpectedBranch` runs first — if the workspace is not on
+   *    `branch`, this throws BranchMismatchError and never calls `git push`
+   *    at all.
+   * 2. The push itself uses an explicit refspec (`HEAD:refs/heads/<branch>`)
+   *    rather than `origin <branch>` by name — it always pushes "whatever
+   *    commit HEAD points at right now," the same subject the assertion
+   *    above just checked, never "whatever local branch happens to share
+   *    that name."
+   * 3. After a successful push, the remote ref is read back (`git
+   *    ls-remote`) and compared to local HEAD before this returns —
+   *    `git push` exiting 0 is treated as necessary, not sufficient,
+   *    evidence that the intended branch was actually updated.
    */
-  async push(project: Project, workspacePath: string, branch: string, signal: AbortSignal): Promise<void> {
+  async push(project: Project, workspacePath: string, branch: string, signal: AbortSignal): Promise<PushResult> {
     if (signal.aborted) throw new CancellationError();
+    await assertOnExpectedBranch(workspacePath, branch, "push", signal);
+    const { stdout: headOut } = await execFileAsync("git", ["rev-parse", "HEAD"], { cwd: workspacePath, signal });
+    const localHead = headOut.trim();
+
     const token = this.tokenFor(project);
     const basic = Buffer.from(`x-access-token:${token}`).toString("base64");
     const credential = { header: `Authorization: Basic ${basic}` };
@@ -95,8 +118,8 @@ export class GitHubSourceControlProvider implements SourceControlProvider {
     const maxAttempts = PUSH_MAX_RETRIES + 1;
     for (let attempt = 1; ; attempt++) {
       try {
-        await execFileAsync("git", ["push", "-u", "origin", branch], { cwd: workspacePath, signal, env });
-        return;
+        await execFileAsync("git", ["push", "-u", "origin", `HEAD:refs/heads/${branch}`], { cwd: workspacePath, signal, env });
+        break;
       } catch (err) {
         if (signal.aborted) throw new CancellationError();
         const stderr = sanitize(err);
@@ -111,6 +134,19 @@ export class GitHubSourceControlProvider implements SourceControlProvider {
         await sleepUnlessAborted(delayMs, signal, () => new CancellationError());
       }
     }
+
+    const remoteBranchSha = await this.readRemoteBranchSha(workspacePath, branch, env, signal);
+    if (remoteBranchSha !== localHead) {
+      throw new PushVerificationError(branch, localHead, remoteBranchSha);
+    }
+    return { pushedCommitSha: localHead, remoteBranchSha };
+  }
+
+  /** `git ls-remote origin <branch>` — the remote's own current answer for what `branch` points at, read fresh after every push rather than trusted from the push command's own exit code. Returns `null` if the ref genuinely isn't there (never treated as "matches"). */
+  private async readRemoteBranchSha(workspacePath: string, branch: string, env: NodeJS.ProcessEnv, signal: AbortSignal): Promise<string | null> {
+    const { stdout } = await execFileAsync("git", ["ls-remote", "origin", `refs/heads/${branch}`], { cwd: workspacePath, signal, env });
+    const sha = stdout.trim().split(/\s+/)[0];
+    return sha && sha.length > 0 ? sha : null;
   }
 
   /**

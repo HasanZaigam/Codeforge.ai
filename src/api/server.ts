@@ -23,6 +23,16 @@ async function main() {
   const server = app.listen(port, () => {
     console.log(`[api] listening on http://localhost:${port} (db=${dbPath})`);
   });
+  // Bounded request lifetimes (Node's defaults are effectively unbounded for a slow client).
+  server.requestTimeout = 60_000;
+  server.headersTimeout = 30_000;
+
+  // Expired sessions were only ever filtered at lookup and never deleted, so the table grew
+  // forever. Purge once at startup and hourly — cheap single DELETE.
+  const purgeExpiredSessions = () => platform.sessions.deleteExpired(new Date().toISOString());
+  purgeExpiredSessions();
+  const purgeTimer = setInterval(purgeExpiredSessions, 60 * 60 * 1000);
+  purgeTimer.unref();
 
   // `server.close()` stops accepting new connections and waits for in-flight
   // requests to finish, then this closes the DB and exits — but nothing

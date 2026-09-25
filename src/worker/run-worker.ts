@@ -31,14 +31,33 @@ async function main() {
   // /docs/TASK_LIFECYCLE.md "REVIEW polling".
   const reviewPollIntervalMs = parsePositiveIntEnv("REVIEW_POLL_INTERVAL_MS", process.env.REVIEW_POLL_INTERVAL_MS, 30_000);
 
-  const worker = new Worker(platform.tasks, platform.orchestrator, { pollIntervalMs, maxConcurrentTasks, reviewPollIntervalMs }, (taskId, err) => {
-    console.error(`[worker] task ${taskId} raised an unexpected error outside the Orchestrator's own handling:`, err);
-  });
+  const worker = new Worker(
+    platform.tasks,
+    platform.orchestrator,
+    { pollIntervalMs, maxConcurrentTasks, reviewPollIntervalMs },
+    (taskId, err) => {
+      console.error(`[worker] task ${taskId} raised an unexpected error outside the Orchestrator's own handling: ${err instanceof Error ? `${err.name}: ${err.message}` : String(err)}`);
+    },
+    // Phase 4A.1 — backlog analysis is executed HERE (never in the API process), on this same loop.
+    platform.backlogRunner,
+  );
 
   console.log(
-    `[worker] starting, poll interval ${pollIntervalMs}ms, max concurrent tasks ${maxConcurrentTasks}, review poll interval ${reviewPollIntervalMs}ms, db=${dbPath}`,
+    `[worker] starting, poll interval ${pollIntervalMs}ms, max concurrent tasks ${maxConcurrentTasks}, review poll interval ${reviewPollIntervalMs}ms, backlog analysis global cap ${platform.backlogOptions.maxAnalysisConcurrency}, db=${dbPath}`,
   );
   worker.start();
+
+  // Developer Alpha: a hung worker used to be invisible (it only logged at startup and per task).
+  // One line a minute with real counts makes "is the worker alive and seeing work" answerable from
+  // journalctl alone. Counts are read-only aggregate queries — no task content, no secrets.
+  const heartbeat = setInterval(() => {
+    const rows = platform.db.prepare("SELECT status, COUNT(*) AS n FROM tasks WHERE status IN ('TODO','WORKING','REVIEW') GROUP BY status").all() as unknown as Array<{ status: string; n: number }>;
+    const c = Object.fromEntries(rows.map((r) => [r.status, r.n]));
+    const a = platform.db.prepare("SELECT status, COUNT(*) AS n FROM backlog_analysis_jobs WHERE status IN ('QUEUED','RUNNING') GROUP BY status").all() as unknown as Array<{ status: string; n: number }>;
+    const j = Object.fromEntries(a.map((r) => [r.status, r.n]));
+    console.log(`[worker] heartbeat worker=${process.env.WORKER_ID ?? "(auto)"} todo=${c.TODO ?? 0} working=${c.WORKING ?? 0} review=${c.REVIEW ?? 0} analysis_queued=${j.QUEUED ?? 0} analysis_running=${j.RUNNING ?? 0}`);
+  }, 60_000);
+  heartbeat.unref();
 
   // `worker.stop()` deliberately does not cancel in-flight task execution —
   // it stops scheduling new ticks and waits for whatever's already running

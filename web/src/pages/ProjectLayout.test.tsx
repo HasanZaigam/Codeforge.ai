@@ -55,6 +55,14 @@ describe("ProjectLayout", () => {
     await waitFor(() => expect(screen.getByText("Project settings are currently read-only from this screen.")).toBeInTheDocument());
   });
 
+  it("shows a Backlog tab between Tasks and Workspace", async () => {
+    renderApp("/projects/p1");
+    await waitFor(() => expect(screen.getByRole("heading", { name: "OTT" })).toBeInTheDocument());
+    const tabs = screen.getAllByRole("link").map((l) => l.textContent);
+    expect(tabs.indexOf("Backlog")).toBe(tabs.indexOf("Tasks") + 1);
+    expect(tabs.indexOf("Workspace")).toBe(tabs.indexOf("Backlog") + 1);
+  });
+
   it("the breadcrumb returns to the Projects list", async () => {
     mockedProjectsApi.list.mockResolvedValue([]);
     renderApp("/projects/p1");

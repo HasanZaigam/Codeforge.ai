@@ -9,7 +9,7 @@
 
 export class NotFoundError extends Error {
   constructor(
-    public readonly kind: "Project" | "Task" | "HumanInputRequest",
+    public readonly kind: "Project" | "Task" | "HumanInputRequest" | "BacklogItem" | "TaskProposal",
     public readonly id: string,
   ) {
     super(`${kind} not found: ${id}`);
@@ -192,6 +192,29 @@ export class ProjectWorkspaceMissingError extends Error {
   constructor(projectId: string) {
     super(`Project ${projectId} has no ProjectWorkspace row — expected one to have been created eagerly alongside the project.`);
     this.name = "ProjectWorkspaceMissingError";
+  }
+}
+
+/**
+ * Phase 4A — Backlog Intelligence (see /docs/BACKLOG_INTELLIGENCE.md). Illegal-state requests reuse
+ * `InvalidOperationError` (409 INVALID_OPERATION); these two exist because a client can usefully
+ * react to each specifically (fix a duplicate reference / retry shortly). (Enqueueing an analysis while
+ * one is already queued/running is NOT an error — it is answered idempotently with the existing job.)
+ */
+
+/** Another backlog item in the same project already uses this external reference (case-insensitive). */
+export class DuplicateBacklogReferenceError extends Error {
+  constructor(ref: string) {
+    super(`Another backlog item in this project already uses the reference "${ref}".`);
+    this.name = "DuplicateBacklogReferenceError";
+  }
+}
+
+/** A conversion of this proposal is already running (another request or process holds its claim). Retry shortly — a completed conversion is returned idempotently. */
+export class ConversionInProgressError extends Error {
+  constructor() {
+    super("This proposal is already being converted to a task. Retry in a moment.");
+    this.name = "ConversionInProgressError";
   }
 }
 

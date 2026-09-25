@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import type { AgentRole, ContextBundle, HumanAnswer, HumanReviewFeedback, Project, PullRequestRef, ReviewResult, StepResult, Task, ValidationResult, Workspace } from "../domain/types.js";
+import type { AgentRole, BugFixVerificationContract, CommitResult, ContextBundle, HumanAnswer, HumanReviewFeedback, OperationClass, Project, PullRequestRef, ReviewResult, StepResult, Task, ValidationResult, VerificationEvidence, Workspace } from "../domain/types.js";
 import { transition, canTransition, InvalidTransitionError } from "../domain/task-state-machine.js";
-import { BranchNotFoundAtExecutionError, CancellationError, IncompleteDependenciesError, LeaseLostError } from "../domain/errors.js";
+import { BranchMismatchError, BranchNotFoundAtExecutionError, CancellationError, IncompleteDependenciesError, LeaseLostError, PushVerificationError } from "../domain/errors.js";
 import type { TaskRepository } from "../persistence/repositories/task-repository.js";
 import type { TaskDependencyRepository } from "../persistence/repositories/task-dependency-repository.js";
 import type { TaskEventRepository } from "../persistence/repositories/task-event-repository.js";
@@ -11,13 +11,15 @@ import type { HumanInputRepository } from "../persistence/repositories/human-inp
 import type { WorkspaceRepository } from "../persistence/repositories/workspace-repository.js";
 import type { ProjectWorkspaceRepository } from "../persistence/repositories/project-workspace-repository.js";
 import type { ProjectContextService } from "../project-workspace/project-context-service.js";
-import { EngineExecutionError, type CodingEngineRegistry } from "../coding-engine/coding-engine.js";
+import { EngineExecutionError, usageFromError, type CodingEngineRegistry } from "../coding-engine/coding-engine.js";
 import type { WorkspaceProvider } from "../workspace/workspace-provider.js";
 import type { SourceControlProvider, SourceControlProviderRegistry } from "../source-control/source-control-provider.js";
 import { runValidation } from "../validation/validation-runner.js";
 import { buildImplementerContext, buildReviewerContext } from "./context-builder.js";
 import { loadProjectContextSection } from "./project-context-loader.js";
-import { deriveReviewResult } from "../review/reviewer.js";
+import { deriveReviewResult, parseVerificationRequest } from "../review/reviewer.js";
+import { executeApprovedVerification } from "../review/reviewer-verification.js";
+import { deriveFixVerificationStatus, deriveReproductionStatus, runContractCheck } from "../review/bug-fix-verification.js";
 import { buildHumanReviewFeedback, deriveHumanReviewOutcome } from "../review/human-review-feedback.js";
 import { buildPullRequestDescription, buildPullRequestTitle } from "./pull-request-content.js";
 import {
@@ -31,6 +33,12 @@ import {
 } from "./needs-input.js";
 import { hasNoRepositoryChanges } from "../source-control/git-commit.js";
 import { DEFAULT_ORCHESTRATOR_CONFIG, type OrchestratorConfig } from "./config.js";
+import { classifyOrchestratorFailure, type OrchestratorFailurePhase } from "./failure-classifier.js";
+import { computeBackoffDelayMs, sleepUnlessAborted } from "../coding-engine/retry-backoff.js";
+import type { ModelRegistry } from "../routing/model-registry.js";
+import { selectModel } from "../routing/model-router.js";
+import { deriveHealthOnFailure, deriveHealthOnSuccess } from "../routing/provider-health-policy.js";
+import type { ProviderHealthRepository } from "../persistence/repositories/provider-health-repository.js";
 // The Orchestrator is otherwise provider-agnostic (see SourceControlProvider), but distinguishing
 // "surface this clearly" (auth/permission) from "quietly retry next poll" (transient/rate-limited)
 // for a read failure genuinely needs to know which kind of failure this was. The only real remote
@@ -73,6 +81,14 @@ export class Orchestrator {
     // any deterministic orchestration/authorization/lifecycle decision.
     private readonly projectWorkspaceRepo: ProjectWorkspaceRepository | null = null,
     private readonly projectContextService: ProjectContextService | null = null,
+    // V1.1 Slice 5 — the platform's own model/provider routing (see routing/model-router.ts and
+    // routing/provider-health-policy.ts). Both optional and only ever used together (see runAgent):
+    // `null` for either means "no routing" — the coding engine falls back to whatever model it would
+    // have used before this slice existed (see EngineInvocationRequest.modelSelection's own doc
+    // comment) and no provider-health bookkeeping happens. Backward-compatible by construction: every
+    // pre-Slice-5 caller that constructs an Orchestrator directly (not via platform.ts) needs no change.
+    private readonly modelRegistry: ModelRegistry | null = null,
+    private readonly providerHealthRepo: ProviderHealthRepository | null = null,
   ) {}
 
   /**
@@ -129,9 +145,13 @@ export class Orchestrator {
         // executeTask() call (this one, possibly in a different process) must resume that exact
         // cycle, never the original implement/validate/review pipeline. See
         // /docs/TASK_LIFECYCLE.md "Crash recovery".
-        task = await this.withCancellation(taskId, (signal) => this.runHumanFeedbackFixCycle(taskId, signal, generation));
+        task = await this.withCancellation(taskId, (signal) =>
+          this.runEpisodeWithInfrastructureRetry(taskId, generation, signal, () => this.runHumanFeedbackFixCycle(taskId, signal, generation)),
+        );
       } else {
-        task = await this.withCancellation(taskId, (signal) => this.runWorkingEpisode(task, signal, generation));
+        task = await this.withCancellation(taskId, (signal) =>
+          this.runEpisodeWithInfrastructureRetry(taskId, generation, signal, () => this.runWorkingEpisode(this.requireTask(taskId), signal, generation)),
+        );
       }
     } catch (err) {
       if (err instanceof CancellationError) {
@@ -153,8 +173,13 @@ export class Orchestrator {
         const fresh = this.requireTask(taskId);
         fresh.status = transition(fresh.status, "infra_failure");
         fresh.completedAt = now();
+        // V1.1 Slice 4 — the same classification runEpisodeWithInfrastructureRetry already used to
+        // decide whether to retry, re-derived here (a pure function — cheap to call twice) purely to
+        // enrich TASK_FAILED's payload with a truthful category/retryable label instead of just the
+        // raw error string. See PLATFORM_GAPS.md GAP-027/GAP-028 and task-report.ts's failureCategory.
+        const classification = classifyOrchestratorFailure(err, this.inferFailurePhase(taskId));
         if (this.taskRepo.saveOwned(fresh, generation, now())) {
-          this.eventRepo.append(taskId, "TASK_FAILED", { error: String(err) }, now());
+          this.eventRepo.append(taskId, "TASK_FAILED", { error: String(err), category: classification.category, retryable: classification.retryable }, now());
         } else {
           console.error(`[orchestrator] task ${taskId} — infra failure occurred but the execution lease (generation ${generation}) was already lost; not marking FAILED.`);
           this.eventRepo.append(taskId, "EXECUTION_LEASE_LOST", { owner: this.ownerId, generation }, now());
@@ -476,7 +501,9 @@ export class Orchestrator {
       if (this.taskRepo.isCancelRequested(taskId)) {
         task = await this.finalizeCancellation(this.requireTask(taskId), this.workspaceRepo.findByTaskId(taskId));
       } else {
-        task = await this.withCancellation(taskId, (signal) => this.runHumanFeedbackFixCycle(taskId, signal, generation));
+        task = await this.withCancellation(taskId, (signal) =>
+          this.runEpisodeWithInfrastructureRetry(taskId, generation, signal, () => this.runHumanFeedbackFixCycle(taskId, signal, generation)),
+        );
       }
     } catch (err) {
       if (err instanceof CancellationError) {
@@ -491,8 +518,13 @@ export class Orchestrator {
         const fresh = this.requireTask(taskId);
         fresh.status = transition(fresh.status, "infra_failure");
         fresh.completedAt = now();
+        // V1.1 Slice 4 — the same classification runEpisodeWithInfrastructureRetry already used to
+        // decide whether to retry, re-derived here (a pure function — cheap to call twice) purely to
+        // enrich TASK_FAILED's payload with a truthful category/retryable label instead of just the
+        // raw error string. See PLATFORM_GAPS.md GAP-027/GAP-028 and task-report.ts's failureCategory.
+        const classification = classifyOrchestratorFailure(err, this.inferFailurePhase(taskId));
         if (this.taskRepo.saveOwned(fresh, generation, now())) {
-          this.eventRepo.append(taskId, "TASK_FAILED", { error: String(err) }, now());
+          this.eventRepo.append(taskId, "TASK_FAILED", { error: String(err), category: classification.category, retryable: classification.retryable }, now());
         } else {
           console.error(`[orchestrator] task ${taskId} — infra failure occurred but the execution lease (generation ${generation}) was already lost; not marking FAILED.`);
           this.eventRepo.append(taskId, "EXECUTION_LEASE_LOST", { owner: this.ownerId, generation }, now());
@@ -711,6 +743,98 @@ export class Orchestrator {
   }
 
   // -------------------------------------------------------------------------
+  // Infrastructure-failure retry (V1.1 Slice 4 — see PLATFORM_GAPS.md GAP-027/GAP-028)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Wraps one episode-level unit of work (`runWorkingEpisode` or
+   * `runHumanFeedbackFixCycle`, called via `runOnce`) with bounded, classified infrastructure retry —
+   * the direct fix for GAP-027 (a provider quota limit turning every queued task into a permanent
+   * failure) and GAP-028 (transient clone/timeout failures with no retry anywhere). This is
+   * conceptually DISTINCT from crash recovery (see item 15 of this slice's brief): crash recovery is
+   * what happens when the WORKER PROCESS itself disappears (lease expiry + orphan detection + a
+   * second process resuming — see recoverOrphanedTasks); this is what happens when the CURRENT,
+   * still-alive process's own operation failed for a transient external/system reason. They share the
+   * same lease-fencing primitive (`assertStillOwned`) but are otherwise independent — this method
+   * never touches task status, never re-claims anything, and a task that exhausts its retry budget
+   * here still falls through to the exact same TASK_FAILED path every other genuine failure already
+   * used before this slice.
+   *
+   * A retried attempt is never "resume from scratch" in the wasteful sense (see item 26 of this
+   * slice's brief) — `runOnce` re-enters `runWorkingEpisode`/`runHumanFeedbackFixCycle` from the top,
+   * and it is THEIR OWN pre-existing idempotent-step design (a `ready` workspace is reused rather than
+   * re-cloned, `commitAllLocal` is a no-op when there is nothing new to commit, `ensurePullRequest`
+   * short-circuits once `taskRecord.pullRequest` is set) — the exact same properties crash recovery
+   * already depends on — that makes re-entry land back at the last safe boundary. No second resume
+   * mechanism was built for this slice; it reuses the one that already existed.
+   *
+   * Bounded by `config.maxInfrastructureRetries` extra attempts (0 disables this entirely). Backoff
+   * is `retry-backoff.ts`'s existing bounded exponential-with-jitter helper (the same one
+   * OpenCodeAdapter/GitHubClient already use), taking the larger of the computed backoff and any
+   * provider/GitHub-suggested `retryAfterMs`, capped at `config.infrastructureRetryMaxDelayMs` either
+   * way so a provider can never force an effectively unbounded wait. The wait itself is cancellable
+   * (`sleepUnlessAborted`, the SAME `signal` `withCancellation`'s own watcher/heartbeat already govern
+   * for the whole call — see this method's callers), so a cancellation requested mid-backoff is
+   * honored immediately rather than waiting out the delay — see item 13 of this slice's brief.
+   */
+  private async runEpisodeWithInfrastructureRetry(taskId: string, generation: number, signal: AbortSignal, runOnce: () => Promise<Task>): Promise<Task> {
+    const now = () => new Date().toISOString();
+    const maxAttempts = this.config.maxInfrastructureRetries + 1;
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await runOnce();
+      } catch (err) {
+        // Cancellation and lease loss are never classified or retried here — they already have
+        // their own correct, dedicated handling in the caller's own catch block (executeTask /
+        // checkHumanReviewFeedback), unchanged by this slice. Retrying either would be actively
+        // wrong: a human asked this to stop, or another process now legitimately owns the task.
+        if (err instanceof CancellationError || err instanceof LeaseLostError) throw err;
+
+        const classification = classifyOrchestratorFailure(err, this.inferFailurePhase(taskId));
+        this.eventRepo.append(
+          taskId,
+          "INFRASTRUCTURE_FAILURE_DETECTED",
+          { category: classification.category, retryable: classification.retryable, reason: classification.reason, attempt },
+          now(),
+        );
+
+        if (!classification.retryable || attempt >= maxAttempts) throw err;
+
+        const backoffMs = computeBackoffDelayMs(attempt, this.config.infrastructureRetryBaseDelayMs, this.config.infrastructureRetryMaxDelayMs);
+        const delayMs =
+          classification.retryAfterMs !== null ? Math.min(Math.max(backoffMs, classification.retryAfterMs), this.config.infrastructureRetryMaxDelayMs) : backoffMs;
+        this.eventRepo.append(
+          taskId,
+          "INFRASTRUCTURE_RETRY_SCHEDULED",
+          { attempt, maxAttempts, delayMs, retryAfterMs: classification.retryAfterMs },
+          now(),
+        );
+        console.warn(`[orchestrator] task ${taskId} — infrastructure failure (category=${classification.category}), retrying attempt ${attempt + 1}/${maxAttempts} in ${delayMs}ms: ${classification.reason}`);
+
+        await sleepUnlessAborted(delayMs, signal, () => new CancellationError());
+        // Item 14: re-verify ownership before resuming real work — narrows (does not eliminate, see
+        // assertStillOwned's own doc comment) the window between waking up and the next side effect.
+        this.assertStillOwned(taskId, generation);
+        this.eventRepo.append(taskId, "INFRASTRUCTURE_RETRY_STARTED", { attempt: attempt + 1 }, now());
+      }
+    }
+  }
+
+  /**
+   * Best-effort phase hint for classifyOrchestratorFailure — inferred from the most recent
+   * WORKSPACE_FAILED/SOURCE_CONTROL_FAILED event (both already appended, with their own catch
+   * blocks, by provisionWorkspace/prepareChanges/ensurePullRequest before rethrowing) rather than
+   * threading a phase parameter through every call site. `undefined` when neither has fired since
+   * the episode began (e.g. an engine/AgentRun failure, which classifyOrchestratorFailure identifies
+   * from the error's own type regardless of phase).
+   */
+  private inferFailurePhase(taskId: string): OrchestratorFailurePhase | undefined {
+    const last = [...this.eventRepo.listForTask(taskId)].reverse().find((e) => e.type === "WORKSPACE_FAILED" || e.type === "SOURCE_CONTROL_FAILED");
+    if (!last) return undefined;
+    return last.type === "WORKSPACE_FAILED" ? "workspace_provisioning" : "commit_or_push_or_pr";
+  }
+
+  // -------------------------------------------------------------------------
   // Internal execution
   // -------------------------------------------------------------------------
 
@@ -749,15 +873,30 @@ export class Orchestrator {
     // call below. See loadProjectContext's own doc comment.
     const projectContext = this.loadProjectContext(project);
 
+    // V1.1 Slice 3 (see PLATFORM_GAPS.md GAP-016, "reproduce, then confirm fixed"): only for a task
+    // created with a BugFixVerificationContract, and only once — against the workspace's pristine
+    // starting state, before the Implementer has touched anything. Idempotent by construction (same
+    // pattern as WORKSPACE_CREATED/COMMIT_CREATED elsewhere in this method): the check is "has this
+    // already been recorded," not a separate recovery mechanism — a crash before this persists just
+    // means the next resume finds `reproduction === null` and runs it again, fresh, off the same
+    // still-untouched workspace; a crash after it persists means resume correctly skips it.
+    if (task.taskRecord.bugFixVerification?.contract && !task.taskRecord.bugFixVerification.reproduction) {
+      await this.runBugReproduction(task, project, workspace, signal, generation);
+    }
+
     let lastValidation: ValidationResult | null = null;
     let lastImplementerResult: StepResult | null = null;
+    // V1.1 Slice 1 — the platform's own git evidence from the most recent commit, threaded into the
+    // Reviewer's context instead of the Implementer's self-reported file list. See
+    // context-builder.ts's buildReviewerContext doc comment.
+    let lastCommitResult: CommitResult | null = null;
 
     // ---- self-fix loop: implement -> validate -> (diagnose+fix) -> validate ----
     for (;;) {
       this.throwIfCancelled(signal);
       const attemptNumber = this.nextAttemptNumber(task.id, "implementer");
       const context = buildImplementerContext(task, project, workspace.path, lastValidation, null, null, projectContext);
-      const step = await this.runAgent(task, project, engine, "implementer", context, attemptNumber, signal, generation);
+      const step = await this.runAgent(task, project, engine, "implementer", context, attemptNumber, signal, generation, this.implementerOperation(task));
 
       if (step.status === "needs_input" && step.needsInput) {
         return this.raiseNeedsInput(task, fromImplementerDraft(step.needsInput), generation);
@@ -793,7 +932,10 @@ export class Orchestrator {
       return this.raiseNeedsInput(task, fromEmptyDiff(lastImplementerResult?.summary ?? ""), generation);
     }
 
-    await this.prepareChanges(task, project, scProvider, workspace.path, workspace.branch, signal, generation);
+    lastCommitResult = await this.prepareChanges(task, project, scProvider, workspace.path, workspace.branch, signal, generation);
+    if (task.taskRecord.bugFixVerification?.contract) {
+      await this.runFixVerification(task, project, workspace, signal, generation);
+    }
 
     // ---- independent review loop (review/fix cycle) ----
     // Invariants preserved across every cycle (see /docs/TASK_LIFECYCLE.md "Review/fix cycle" and
@@ -806,10 +948,54 @@ export class Orchestrator {
       this.throwIfCancelled(signal);
       const reviewAttemptNumber = this.nextAttemptNumber(task.id, "reviewer");
       this.eventRepo.append(task.id, "REVIEW_STARTED", { attemptNumber: reviewAttemptNumber }, now());
-      const reviewContext = buildReviewerContext(task, project, workspace.path, lastImplementerResult, lastValidation, projectContext);
-      const reviewStep = await this.runAgent(task, project, engine, "reviewer", reviewContext, reviewAttemptNumber, signal, generation);
-      const review = deriveReviewResult(reviewStep);
-      this.eventRepo.append(task.id, "REVIEW_COMPLETED", { verdict: review.verdict, findings: review.findings }, now());
+      const reviewContext = buildReviewerContext(task, project, workspace.path, lastImplementerResult, lastValidation, projectContext, lastCommitResult?.changedFiles ?? null);
+      let reviewStep = await this.runAgent(task, project, engine, "reviewer", reviewContext, reviewAttemptNumber, signal, generation, "reviewer");
+
+      // V1.1 Slice 2 (see PLATFORM_GAPS.md GAP-016, "AI may request verification. CodeForge owns
+      // verification evidence."): bounded to exactly one round trip per review attempt — if the
+      // Reviewer's first response requests a check, the platform executes (or rejects) it and calls
+      // the Reviewer again with the real evidence; that response's own VERDICT/VERIFICATION is the
+      // one actually used. Any premature VERDICT in the first response is discarded unread, and a
+      // second VERIFY line in the follow-up response is never parsed at all — see prompt-builder.ts.
+      const verificationRequest = parseVerificationRequest(reviewStep.summary);
+      let verificationEvidence: VerificationEvidence | null = null;
+      if (verificationRequest) {
+        this.throwIfCancelled(signal);
+        // Item 4d-equivalent: authoritative ownership check immediately before executing a real
+        // process against the (possibly shared/reused) workspace — see assertStillOwned's own doc
+        // comment.
+        this.assertStillOwned(task.id, generation);
+        this.eventRepo.append(task.id, "REVIEWER_VERIFICATION_REQUESTED", { checkId: verificationRequest.checkId, purpose: verificationRequest.purpose }, now());
+        verificationEvidence = await executeApprovedVerification({
+          workspacePath: workspace.path,
+          expectedBranch: workspace.branch,
+          project,
+          request: verificationRequest,
+          signal,
+        });
+        this.eventRepo.append(task.id, "REVIEWER_VERIFICATION_COMPLETED", { ...verificationEvidence }, now());
+
+        this.throwIfCancelled(signal);
+        const followUpContext = buildReviewerContext(
+          task,
+          project,
+          workspace.path,
+          lastImplementerResult,
+          lastValidation,
+          projectContext,
+          lastCommitResult?.changedFiles ?? null,
+          verificationEvidence,
+        );
+        reviewStep = await this.runAgent(task, project, engine, "reviewer", followUpContext, this.nextAttemptNumber(task.id, "reviewer"), signal, generation, "reviewer");
+      }
+
+      const review = deriveReviewResult(reviewStep, verificationEvidence);
+      this.eventRepo.append(
+        task.id,
+        "REVIEW_COMPLETED",
+        { verdict: review.verdict, findings: review.findings, verificationMethod: review.verificationMethod, verification: review.verification },
+        now(),
+      );
 
       if (review.verdict === "approved") {
         // Deliberately no cancellation check between "approved" and transitioning to REVIEW: a
@@ -830,6 +1016,7 @@ export class Orchestrator {
           lastImplementerResult!,
           lastValidation!,
           review,
+          lastCommitResult?.changedFiles ?? null,
           signal,
           generation,
         );
@@ -861,7 +1048,7 @@ export class Orchestrator {
       // Implementer needs the Reviewer's findings, not a stale/misleading "validation failed"
       // framing. See context-builder.ts's buildImplementerContext doc comment.
       const fixContext = buildImplementerContext(task, project, workspace.path, null, review, null, projectContext);
-      const fixStep = await this.runAgent(task, project, engine, "implementer", fixContext, attemptNumber, signal, generation);
+      const fixStep = await this.runAgent(task, project, engine, "implementer", fixContext, attemptNumber, signal, generation, this.implementerOperation(task));
       if (fixStep.status === "needs_input" && fixStep.needsInput) {
         return this.raiseNeedsInput(task, fromImplementerDraft(fixStep.needsInput), generation);
       }
@@ -873,7 +1060,10 @@ export class Orchestrator {
       if (lastValidation.status !== "passed") {
         return this.raiseNeedsInput(task, fromExhaustedSelfFix(lastValidation.checks, attemptNumber), generation);
       }
-      await this.prepareChanges(task, project, scProvider, workspace.path, workspace.branch, signal, generation);
+      lastCommitResult = await this.prepareChanges(task, project, scProvider, workspace.path, workspace.branch, signal, generation);
+      if (task.taskRecord.bugFixVerification?.contract) {
+        await this.runFixVerification(task, project, workspace, signal, generation);
+      }
     }
   }
 
@@ -893,6 +1083,15 @@ export class Orchestrator {
    * it as a parameter, so a restarted process calling this via executeTask's
    * recovery dispatch resumes with exactly the same feedback, not a fresh
    * (or missing) one. See /docs/TASK_LIFECYCLE.md "Crash recovery".
+   *
+   * V1.1 Slice 3 scope note: deliberately does NOT re-run bug-fix
+   * verification (see runFixVerification) even for a task with a
+   * BugFixVerificationContract — this loop only fires after a task has
+   * already reached REVIEW with a human-approved PR open, which is well
+   * past this slice's reproduce/implement/verify scope. A commit made here
+   * leaves `TaskRecord.bugFixVerification.fixVerification` referring to the
+   * last commit this slice DID verify, not this loop's own new commit — see
+   * PLATFORM_GAPS.md's Slice 3 note for this documented boundary.
    */
   private async runHumanFeedbackFixCycle(taskId: string, signal: AbortSignal, generation: number): Promise<Task> {
     const now = () => new Date().toISOString();
@@ -913,7 +1112,7 @@ export class Orchestrator {
     const attemptNumber = this.nextAttemptNumber(taskId, "implementer");
     const context = buildImplementerContext(task, project, workspace.path, null, null, feedback, this.loadProjectContext(project));
     const engine = this.engines.resolve(project.codingEngine);
-    const step = await this.runAgent(task, project, engine, "implementer", context, attemptNumber, signal, generation);
+    const step = await this.runAgent(task, project, engine, "implementer", context, attemptNumber, signal, generation, "human_feedback_fix");
     if (step.status === "needs_input" && step.needsInput) {
       task = this.requireTask(taskId);
       task.taskRecord.pendingHumanReviewFeedback = null;
@@ -968,7 +1167,12 @@ export class Orchestrator {
       // already claimed it (this call is a stale execution catching up after losing the lease), the
       // claim loses and this stops before ever touching a single file in the shared checkout,
       // instead of racing a legitimately newer owner on disk.
-      if (!this.workspaceRepo.claimForGeneration(existing.id, generation)) {
+      //
+      // V1.1 Slice 4: an infrastructure-retried episode (see runEpisodeWithInfrastructureRetry) can
+      // legitimately re-enter this method more than once within the SAME generation — the second
+      // call must not treat "already claimed by us" as a failure the way a genuinely stale/older
+      // generation's claim correctly would (see isClaimedForGeneration's own doc comment).
+      if (!this.workspaceRepo.isClaimedForGeneration(existing.id, generation) && !this.workspaceRepo.claimForGeneration(existing.id, generation)) {
         throw new LeaseLostError();
       }
       return existing;
@@ -1044,9 +1248,44 @@ export class Orchestrator {
     attemptNumber: number,
     signal: AbortSignal,
     generation: number,
+    operation: OperationClass,
   ): Promise<StepResult> {
     const now = () => new Date().toISOString();
     const runId = randomUUID();
+
+    // V1.1 Slice 5 — the platform's own routing decision (see routing/model-router.ts), made once
+    // per invocation. `null` when no ModelRegistry/ProviderHealthRepository was wired, or when
+    // every enabled candidate is currently unavailable (see selectModel's own doc comment) — never
+    // fabricated. `priorModelIdsInOrder` is derived from persisted AgentRun rows — the same "count
+    // real rows, never a separate counter" pattern nextAttemptNumber already uses — in FIRST-USE
+    // order, so a self-fix retry that reuses the SAME model (a real, distinct model was never
+    // actually exhausted) is correctly distinguished from a genuine fallback to a NEW model: see
+    // `fallbackIndex` below, which is this model's position in that order, not merely "how many
+    // times this role has been invoked before."
+    const priorModelIdsInOrder: string[] = [];
+    for (const run of this.agentRunRepo.listForTask(task.id)) {
+      if (run.role === role && run.modelId !== null && !priorModelIdsInOrder.includes(run.modelId)) {
+        priorModelIdsInOrder.push(run.modelId);
+      }
+    }
+    const selection =
+      this.modelRegistry && this.providerHealthRepo
+        ? selectModel(this.modelRegistry, this.providerHealthRepo, {
+            operation,
+            engineKey: engine.key,
+            fallbackIndex: priorModelIdsInOrder.length,
+            now: now(),
+          })
+        : null;
+    // The real, persisted fallbackIndex: this model's position among the DISTINCT models this
+    // task+role has ever used, in the order each was first tried — 0 for the very first model,
+    // even across multiple same-model self-fix retries; only a genuinely NEW model increments it.
+    const fallbackIndex = selection
+      ? priorModelIdsInOrder.includes(selection.modelId)
+        ? priorModelIdsInOrder.indexOf(selection.modelId)
+        : priorModelIdsInOrder.length
+      : 0;
+
     this.agentRunRepo.insert({
       id: runId,
       taskId: task.id,
@@ -1063,10 +1302,18 @@ export class Orchestrator {
       // Fencing key for AgentRunRepository.complete() — see its own doc comment and
       // migrations/009_lock_generation.sql.
       ownerGeneration: generation,
+      modelId: selection?.modelId ?? null,
+      providerId: selection?.providerId ?? null,
+      fallbackIndex,
     });
     task.currentAgentRunId = runId;
     this.saveOwned(task, generation, now());
-    this.eventRepo.append(task.id, "AGENT_STARTED", { runId, role, attemptNumber }, now());
+    this.eventRepo.append(
+      task.id,
+      "AGENT_STARTED",
+      { runId, role, attemptNumber, modelId: selection?.modelId ?? null, providerId: selection?.providerId ?? null, routingReason: selection?.reason ?? null },
+      now(),
+    );
 
     try {
       const invocation = await engine.run({
@@ -1075,6 +1322,7 @@ export class Orchestrator {
         workspacePath: context.repoPath,
         timeoutMs: this.config.agentInvocationTimeoutMs,
         signal,
+        modelSelection: selection,
       });
       // A stale execution (lease already lost to a newer generation) reaching this point still
       // gets HERE — the fixture/adapter call itself isn't lease-aware — but `complete()` is
@@ -1084,6 +1332,7 @@ export class Orchestrator {
       // raises LeaseLostError, so a stale completion here never gets treated as this execution's
       // real, actionable result.
       const completed = this.agentRunRepo.complete(runId, "completed", invocation.result, null, invocation.cost, now());
+      if (selection) this.recordProviderHealthSuccess(selection.providerId, now());
       if (!completed) {
         // Stale generation: don't append AGENT_COMPLETED (it would misleadingly mix this
         // fenced-out result into the current owner's real event timeline). EXECUTION_LEASE_LOST
@@ -1098,14 +1347,42 @@ export class Orchestrator {
       return invocation.result;
     } catch (err) {
       if (err instanceof CancellationError) {
-        this.agentRunRepo.complete(runId, "cancelled", null, "Cancelled by developer request", null, now());
+        // Usage the engine emitted before the stop is real: keep it (labelled partial), never a zero.
+        this.agentRunRepo.complete(runId, "cancelled", null, "Cancelled by developer request", usageFromError(err), now());
         throw err;
       }
-      this.agentRunRepo.complete(runId, "failed", null, String(err), null, now());
+      this.agentRunRepo.complete(runId, "failed", null, String(err), usageFromError(err), now());
+      // V1.1 Slice 5 (see PLATFORM_GAPS.md GAP-027/028's cross-task outage note) — a real,
+      // observed engine failure updates the SAME persisted provider-health record every future
+      // routing decision (this task's own retry, or any other task/worker) consults, never an
+      // in-memory-only circuit breaker. Cancellation (handled above) deliberately never reaches
+      // here: a human stopping the task is not evidence the provider is unhealthy.
+      if (selection) this.recordProviderHealthFailure(selection.providerId, err, now());
       this.eventRepo.append(task.id, "AGENT_FAILED", { runId, role, error: String(err) }, now());
       this.logAgentFailure(task, engine.key, role, attemptNumber, err);
       throw err;
     }
+  }
+
+  private recordProviderHealthSuccess(providerId: string, now: string): void {
+    if (!this.providerHealthRepo) return;
+    this.providerHealthRepo.upsert(deriveHealthOnSuccess(providerId, this.providerHealthRepo.get(providerId), now));
+  }
+
+  private recordProviderHealthFailure(providerId: string, err: unknown, now: string): void {
+    if (!this.providerHealthRepo) return;
+    const classification = classifyOrchestratorFailure(err);
+    this.providerHealthRepo.upsert(
+      deriveHealthOnFailure(providerId, this.providerHealthRepo.get(providerId), classification.category, classification.retryAfterMs, now, {
+        defaultCooldownMs: this.config.providerCooldownDefaultMs,
+        maxCooldownMs: this.config.providerCooldownMaxMs,
+      }),
+    );
+  }
+
+  /** V1.1 Slice 5 — operation-aware routing input for the Implementer role (this slice's brief, item 21): a task created with a Slice 3 BugFixVerificationContract routes as "bug_fix", everything else as "implementation". Both currently resolve to the same candidate list — see selectModel's own doc comment — but the distinction is real and threaded through so a future routing policy revision can act on it without any caller changing. */
+  private implementerOperation(task: Task): OperationClass {
+    return task.taskRecord.bugFixVerification?.contract ? "bug_fix" : "implementation";
   }
 
   /**
@@ -1143,14 +1420,159 @@ export class Orchestrator {
     // why this narrows, but cannot eliminate, the race against an external process.
     this.assertStillOwned(task.id, generation);
     this.eventRepo.append(task.id, "VALIDATION_STARTED", {}, now());
-    const result = await runValidation(workspacePath, commands, signal);
+
+    // V1.1 Slice 4 (see PLATFORM_GAPS.md GAP-028, item 11/21.F of this slice's brief): when EVERY
+    // failing check came back `outcome: "infrastructure_error"` (the command itself could not even
+    // be spawned — missing binary, broken environment — never a real assertion failure), retry the
+    // validation run itself, bounded and in place, BEFORE ever handing this result to the self-fix
+    // loop. Deliberately local to this method, never routed through the episode-level
+    // runEpisodeWithInfrastructureRetry: that wrapper re-enters the WHOLE episode from the top
+    // (including a fresh Implementer call), which would be wasteful and wrong here — the code hasn't
+    // been judged yet, only the check itself failed to run. If a real result (a genuine pass OR a
+    // genuine failure) appears on any attempt, it's returned immediately, retry budget or not.
+    let result = await runValidation(workspacePath, commands, signal);
+    for (let attempt = 1; isAllInfrastructureError(result) && attempt <= this.config.maxInfraCheckRetries; attempt++) {
+      this.eventRepo.append(
+        task.id,
+        "INFRASTRUCTURE_FAILURE_DETECTED",
+        { category: "verification_infrastructure_failure", retryable: true, reason: describeInfrastructureChecks(result), attempt },
+        now(),
+      );
+      const delayMs = computeBackoffDelayMs(attempt, this.config.infrastructureRetryBaseDelayMs, this.config.infrastructureRetryMaxDelayMs);
+      this.eventRepo.append(task.id, "INFRASTRUCTURE_RETRY_SCHEDULED", { attempt, maxAttempts: this.config.maxInfraCheckRetries + 1, delayMs, retryAfterMs: null }, now());
+      await sleepUnlessAborted(delayMs, signal, () => new CancellationError());
+      this.assertStillOwned(task.id, generation);
+      this.eventRepo.append(task.id, "INFRASTRUCTURE_RETRY_STARTED", { attempt: attempt + 1 }, now());
+      result = await runValidation(workspacePath, commands, signal);
+    }
+    // Still all-infrastructure after exhausting the local retry budget — honestly recorded as such
+    // (never silently promoted to a "real" failure the self-fix loop would misattribute to the code),
+    // but not thrown: the self-fix loop's own existing exhaustion path (NEEDS_INPUT after
+    // maxSelfFixAttempts) is what ultimately surfaces this to a human if it never clears, exactly the
+    // same safety net every other unresolved validation failure already falls back to.
+    if (isAllInfrastructureError(result)) {
+      this.eventRepo.append(
+        task.id,
+        "INFRASTRUCTURE_FAILURE_DETECTED",
+        { category: "verification_infrastructure_failure", retryable: false, reason: `${describeInfrastructureChecks(result)} (retry budget exhausted)`, attempt: this.config.maxInfraCheckRetries + 1 },
+        now(),
+      );
+    }
+
     this.eventRepo.append(
       task.id,
       "VALIDATION_COMPLETED",
-      { status: result.status, checks: result.checks.map((c) => ({ name: c.name, passed: c.passed })) },
+      {
+        status: result.status,
+        // V1.1 Slice 1 (GAP-004): the field a human/report should actually read — distinguishes
+        // "checks ran and passed" from "nothing was configured" from "checks ran and failed."
+        // `status` above is unchanged and still only gates the self-fix loop.
+        outcome: result.outcome,
+        checks: result.checks.map((c) => ({ name: c.name, passed: c.passed, outcome: c.outcome })),
+      },
       now(),
     );
     return result;
+  }
+
+  /**
+   * V1.1 Slice 3 — runs a task's BugFixVerificationContract check against the
+   * workspace's PRISTINE starting state, before the Implementer has touched
+   * anything, and persists the deterministic result. See PLATFORM_GAPS.md
+   * GAP-016. Idempotent by construction: only ever called (see
+   * runWorkingEpisode) when `task.taskRecord.bugFixVerification.reproduction`
+   * is still `null` — a crash before this persists means the next resume
+   * finds it still `null` and simply runs it again, fresh, off the same
+   * still-untouched workspace; nothing here can turn an interruption into a
+   * false success, because nothing is written until the real check has
+   * actually completed.
+   */
+  private async runBugReproduction(task: Task, project: Project, workspace: Workspace, signal: AbortSignal, generation: number): Promise<void> {
+    const contract = task.taskRecord.bugFixVerification!.contract!;
+    const now = () => new Date().toISOString();
+    this.assertStillOwned(task.id, generation);
+    this.eventRepo.append(task.id, "BUG_REPRODUCTION_STARTED", { checkId: contract.checkId }, now());
+    const evidence = await this.runContractCheckWithInfraRetry(task, project, workspace, contract, signal, generation);
+    const status = deriveReproductionStatus(evidence, contract);
+    task.taskRecord.bugFixVerification!.reproduction = { status, evidence };
+    this.saveOwned(task, generation, now());
+    this.eventRepo.append(task.id, "BUG_REPRODUCTION_COMPLETED", { status, ...evidence }, now());
+  }
+
+  /**
+   * V1.1 Slice 3 — re-runs the SAME contract check against the commit
+   * `prepareChanges` just produced, and OVERWRITES the task's own
+   * `fixVerification` with fresh evidence bound to that new commit — see
+   * BugFixVerification's own doc comment on why this is always the latest
+   * verified state, never stale evidence from an earlier commit. Called
+   * after every `prepareChanges` in runWorkingEpisode (the first commit and
+   * every review/fix-cycle recommit), so a code change after a review
+   * rejection always gets its own fresh verification before the next review
+   * pass ever sees it — the previous cycle's evidence is fully replaced, not
+   * merged or accumulated.
+   */
+  private async runFixVerification(task: Task, project: Project, workspace: Workspace, signal: AbortSignal, generation: number): Promise<void> {
+    const contract = task.taskRecord.bugFixVerification!.contract!;
+    const now = () => new Date().toISOString();
+    this.assertStillOwned(task.id, generation);
+    this.eventRepo.append(task.id, "FIX_VERIFICATION_STARTED", { checkId: contract.checkId }, now());
+    const evidence = await this.runContractCheckWithInfraRetry(task, project, workspace, contract, signal, generation);
+    const status = deriveFixVerificationStatus(evidence, contract);
+    task.taskRecord.bugFixVerification!.fixVerification = { status, evidence };
+    this.saveOwned(task, generation, now());
+    this.eventRepo.append(task.id, "FIX_VERIFICATION_COMPLETED", { status, ...evidence }, now());
+  }
+
+  /**
+   * V1.1 Slice 4 — shared by runBugReproduction/runFixVerification: retries the SAME contract check,
+   * bounded and in place, when its outcome is `"timed_out"` or `"infrastructure_error"` (the check
+   * never got a real chance to run) — see PLATFORM_GAPS.md GAP-028's own verification-infrastructure
+   * note. Mirrors runValidationStep's identical local-retry treatment of the same underlying
+   * `CheckOutcome`/`VerificationOutcome` values, deliberately NOT routed through the episode-level
+   * runEpisodeWithInfrastructureRetry: retrying the whole episode would mean re-invoking the
+   * Implementer for a problem that has nothing to do with the code. If the retry budget is exhausted,
+   * the real (still timed_out/infrastructure_error) evidence is returned as-is — deriveReproductionStatus/
+   * deriveFixVerificationStatus already pass that through as its own honest status rather than ever
+   * converting it into a bug/fix judgment (see review/bug-fix-verification.ts).
+   */
+  private async runContractCheckWithInfraRetry(
+    task: Task,
+    project: Project,
+    workspace: Workspace,
+    contract: BugFixVerificationContract,
+    signal: AbortSignal,
+    generation: number,
+  ): Promise<VerificationEvidence> {
+    const now = () => new Date().toISOString();
+    let evidence = await runContractCheck({ workspacePath: workspace.path, expectedBranch: workspace.branch, project, contract, signal });
+    for (let attempt = 1; isCheckInfrastructureOutcome(evidence.outcome) && attempt <= this.config.maxInfraCheckRetries; attempt++) {
+      this.eventRepo.append(
+        task.id,
+        "INFRASTRUCTURE_FAILURE_DETECTED",
+        { category: "verification_infrastructure_failure", retryable: true, reason: `verification check "${contract.checkId}" ${evidence.outcome}`, attempt },
+        now(),
+      );
+      const delayMs = computeBackoffDelayMs(attempt, this.config.infrastructureRetryBaseDelayMs, this.config.infrastructureRetryMaxDelayMs);
+      this.eventRepo.append(task.id, "INFRASTRUCTURE_RETRY_SCHEDULED", { attempt, maxAttempts: this.config.maxInfraCheckRetries + 1, delayMs, retryAfterMs: null }, now());
+      await sleepUnlessAborted(delayMs, signal, () => new CancellationError());
+      this.assertStillOwned(task.id, generation);
+      this.eventRepo.append(task.id, "INFRASTRUCTURE_RETRY_STARTED", { attempt: attempt + 1 }, now());
+      evidence = await runContractCheck({ workspacePath: workspace.path, expectedBranch: workspace.branch, project, contract, signal });
+    }
+    if (isCheckInfrastructureOutcome(evidence.outcome)) {
+      this.eventRepo.append(
+        task.id,
+        "INFRASTRUCTURE_FAILURE_DETECTED",
+        {
+          category: "verification_infrastructure_failure",
+          retryable: false,
+          reason: `verification check "${contract.checkId}" ${evidence.outcome} (retry budget exhausted)`,
+          attempt: this.config.maxInfraCheckRetries + 1,
+        },
+        now(),
+      );
+    }
+    return evidence;
   }
 
   /**
@@ -1161,6 +1583,18 @@ export class Orchestrator {
    * silently-skipped push with the task still sailing on to REVIEW. See
    * /docs/GITHUB_INTEGRATION.md "Failure recovery" and Step 7 instructions
    * §14-15 ("If push fails... do not mark task DONE").
+   *
+   * V1.1 Slice 1 (see PLATFORM_GAPS.md GAP-015): `scProvider.commitAll` and
+   * `scProvider.push` now assert the workspace is actually on `branch`
+   * before touching git history or the remote, and `push` verifies the
+   * remote ref afterward rather than trusting a clean exit code alone.
+   * `BranchMismatchError`/`PushVerificationError` are caught by name here so
+   * their structured fields (expected/actual branch, expected/remote sha)
+   * land in the `SOURCE_CONTROL_FAILED` event payload instead of being
+   * flattened into an opaque `String(err)` — see those errors' own doc
+   * comments for why the distinction matters to whoever reads this event
+   * later. Both still rethrow: a branch mismatch is exactly as fatal to this
+   * step as any other commit/push failure, never silently skipped.
    */
   private async prepareChanges(
     task: Task,
@@ -1170,27 +1604,56 @@ export class Orchestrator {
     branch: string,
     signal: AbortSignal,
     generation: number,
-  ): Promise<void> {
+  ): Promise<CommitResult> {
     const now = () => new Date().toISOString();
     try {
       // Item 4b: authoritative ownership check immediately before the commit — see
       // assertStillOwned's own doc comment.
       this.assertStillOwned(task.id, generation);
-      const commitSha = await scProvider.commitAll(project, workspacePath, `[task ${task.id.slice(0, 8)}] ${task.title}`, signal);
-      task.taskRecord.latestDiffRef = commitSha;
+      const commitResult = await scProvider.commitAll(project, workspacePath, `[task ${task.id.slice(0, 8)}] ${task.title}`, branch, signal);
+      task.taskRecord.latestDiffRef = commitResult.commitSha;
       this.saveOwned(task, generation, now());
-      this.eventRepo.append(task.id, "COMMIT_CREATED", { commitSha }, now());
+      this.eventRepo.append(
+        task.id,
+        "COMMIT_CREATED",
+        { commitSha: commitResult.commitSha, branch, changedFiles: commitResult.changedFiles },
+        now(),
+      );
 
       // Item 4c: authoritative ownership check immediately before the push — deliberately a
       // separate check from the one before commitAll above, not one check covering both: the two
       // external calls are far enough apart in wall-clock time (git push can be slow) that a single
       // upfront check would leave a much wider unguarded window.
       this.assertStillOwned(task.id, generation);
-      await scProvider.push(project, workspacePath, branch, signal);
-      this.eventRepo.append(task.id, "BRANCH_PUSHED", { branch }, now());
+      const pushResult = await scProvider.push(project, workspacePath, branch, signal);
+      this.eventRepo.append(
+        task.id,
+        "BRANCH_PUSHED",
+        { branch, pushedCommitSha: pushResult.pushedCommitSha, remoteBranchSha: pushResult.remoteBranchSha },
+        now(),
+      );
+      return commitResult;
     } catch (err) {
       if (err instanceof CancellationError) throw err;
       if (err instanceof LeaseLostError) throw err;
+      if (err instanceof BranchMismatchError) {
+        this.eventRepo.append(
+          task.id,
+          "SOURCE_CONTROL_FAILED",
+          { step: "commit_or_push", error: err.message, expectedBranch: err.expectedBranch, actualBranch: err.actualBranch },
+          now(),
+        );
+        throw err;
+      }
+      if (err instanceof PushVerificationError) {
+        this.eventRepo.append(
+          task.id,
+          "SOURCE_CONTROL_FAILED",
+          { step: "commit_or_push", error: err.message, branch: err.branch, expectedSha: err.expectedSha, remoteSha: err.remoteSha },
+          now(),
+        );
+        throw err;
+      }
       this.eventRepo.append(task.id, "SOURCE_CONTROL_FAILED", { step: "commit_or_push", error: String(err) }, now());
       throw err;
     }
@@ -1214,6 +1677,7 @@ export class Orchestrator {
     implementerResult: StepResult,
     validation: ValidationResult,
     review: ReviewResult,
+    changedFiles: string[] | null,
     signal: AbortSignal,
     generation: number,
   ): Promise<void> {
@@ -1231,7 +1695,7 @@ export class Orchestrator {
           branch,
           baseBranch,
           title: buildPullRequestTitle(task),
-          description: buildPullRequestDescription(task, implementerResult.summary, validation, review),
+          description: buildPullRequestDescription(task, implementerResult.summary, validation, review, changedFiles),
         },
         signal,
       );
@@ -1310,4 +1774,27 @@ export class Orchestrator {
     if (!this.projectWorkspaceRepo || !this.projectContextService) return null;
     return loadProjectContextSection(project.id, project.name, this.projectWorkspaceRepo, this.projectContextService);
   }
+}
+
+/**
+ * V1.1 Slice 4 — true only when there is at least one declared check AND every one of them failed
+ * with `outcome: "infrastructure_error"` (never spawned/completed for real) — i.e. this
+ * ValidationResult carries no real signal about the code at all, in either direction. A mix of one
+ * real failure and one infrastructure error is deliberately NOT all-infrastructure: a genuine test
+ * failure exists, and that's a real result the self-fix loop must see immediately, not something to
+ * retry past.
+ */
+function isAllInfrastructureError(result: ValidationResult): boolean {
+  return result.checks.length > 0 && result.checks.every((c) => c.outcome === "infrastructure_error");
+}
+
+/** Human-readable summary of which declared checks failed to even run — for the INFRASTRUCTURE_FAILURE_DETECTED event's `reason` field. */
+function describeInfrastructureChecks(result: ValidationResult): string {
+  const names = result.checks.filter((c) => c.outcome === "infrastructure_error").map((c) => c.name);
+  return `every declared check (${names.join(", ")}) failed to run at all`;
+}
+
+/** True for a VerificationEvidence outcome that means the check never got a real chance to run — see runContractCheckWithInfraRetry. Deliberately excludes "rejected" (a policy refusal, not an infrastructure hiccup — retrying it would spawn the exact same rejection every time). */
+function isCheckInfrastructureOutcome(outcome: VerificationEvidence["outcome"]): boolean {
+  return outcome === "timed_out" || outcome === "infrastructure_error";
 }

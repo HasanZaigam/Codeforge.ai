@@ -25,6 +25,7 @@ Don't duplicate architectural reasoning into this file — it goes stale. Read t
 - [docs/UI_ARCHITECTURE.md](./docs/UI_ARCHITECTURE.md) — screen structure, component boundaries, polling strategy, responsive strategy.
 - [docs/GITHUB_INTEGRATION.md](./docs/GITHUB_INTEGRATION.md) — GitHub integration, encrypted credential storage, repository/branch validation, PR creation.
 - [docs/CODING_ENGINE.md](./docs/CODING_ENGINE.md) — Coding engine abstraction, OpenCode adapter, Claude Code adapter, fixture engine, sanitization and process cancellation.
+- [docs/BACKLOG_INTELLIGENCE.md](./docs/BACKLOG_INTELLIGENCE.md) — Phase 4A backlog domain: backlog item → analysis → task proposal → (human-approved) Task; the AI-proposes/platform-decides trust model, lifecycles, concurrency guarantees, and what 4A deliberately doesn't do.
 - [docs/DEPLOYMENT.md](./docs/DEPLOYMENT.md) — production architecture, environment variables, startup/shutdown, migrations, health checks, CI, SQLite backup.
 
 ## Ground rules for working in this repo
@@ -47,6 +48,9 @@ Backend (repo root):
 - `npm run typecheck` — strict TypeScript, no emit
 - `npm test` — Node's built-in test runner over `tests/*.test.ts`
 - `npm run demo` — runs the full task lifecycle twice directly against the domain/orchestrator (no HTTP), against a disposable local git fixture repo: once showing the self-fix loop reaching `REVIEW`, once showing `NEEDS_INPUT` → human answer → `REVIEW`. Uses `FixtureCodingEngine`, not a live Claude Code CLI call — see the security-boundary note at the top of `src/coding-engine/claude-code-adapter.ts`.
+- `npm run validate:backlog -- --project <id> --title … --description …` — Phase 4A.1 manual **real-provider** validation of backlog analysis (real OpenCode/model, on a database copy; refuses `CODING_ENGINE=fixture`) — see [docs/BACKLOG_INTELLIGENCE.md](./docs/BACKLOG_INTELLIGENCE.md) §11.
+- `npm run validate:task-usage [-- --failure-scenario]` — Phase 4A.3/4A.4 **real-provider** usage reconciliation (raw OpenCode events vs persisted AgentRun vs task report; optionally a real timeout kill) on a throwaway fixture repo — see [docs/BACKLOG_INTELLIGENCE.md](./docs/BACKLOG_INTELLIGENCE.md) §4f.
+- `npm run benchmark:retrieval -- --ground-truth <file> --repo <local git dir>` — Phase 4A.4 deterministic file-selection benchmark against your own ground truth (data stays outside this repo) — §4e.
 - `npm run api` / `npm run worker` — the HTTP server and the background execution poller, as two separate processes (see [TECHNICAL_DECISIONS.md](./docs/TECHNICAL_DECISIONS.md) TD-16); `npm run dev` runs both together for local convenience. Set `CODING_ENGINE=fixture` to exercise them without a real Claude Code CLI/credentials. Full contract in [docs/API.md](./docs/API.md). Every request now needs a session — `curl` against a protected route without first `POST`ing to `/auth/register` or `/auth/login` (and reusing the returned cookie) gets a `401`.
 - **Local data reset**: a `.data/platform.sqlite` from before Step 6 has no real user accounts (only the old placeholder), so nothing is lost by deleting it and letting the app create a fresh one — see [docs/AUTHENTICATION.md](./docs/AUTHENTICATION.md) "Migrations."
 - **Environment variables**: copy `.env.example` to `.env` to get started — every variable is documented there and validated (clearly, never logging a secret value) at process startup. Full reference: [docs/DEPLOYMENT.md](./docs/DEPLOYMENT.md).

@@ -1,6 +1,8 @@
 import type { NextFunction, Request, Response } from "express";
 import { ZodError } from "zod";
 import {
+  ConversionInProgressError,
+  DuplicateBacklogReferenceError,
   BranchInUseError,
   CircularDependencyError,
   CrossProjectDependencyError,
@@ -19,6 +21,7 @@ import {
   TaskNotEditableError,
 } from "../application/errors.js";
 import { InvalidTransitionError } from "../domain/task-state-machine.js";
+import { InvalidBacklogTransitionError, InvalidProposalTransitionError } from "../backlog/backlog-state-machine.js";
 import { IncompleteDependenciesError } from "../domain/errors.js";
 import { NotFoundError as OrchestratorNotFoundError } from "../orchestrator/orchestrator.js";
 import { GitHubNotConnectedError } from "../integrations/github/credential-resolver.js";
@@ -37,6 +40,17 @@ export interface ApiErrorBody {
  * server-side and returned as a generic 500.
  */
 export function errorMiddleware(err: unknown, _req: Request, res: Response, _next: NextFunction): void {
+  // body-parser (express.json) errors carry a `type` — a malformed body is the client's fault (400),
+  // an oversized one is 413; previously both fell through to the generic 500.
+  const bodyErr = err as { type?: string } | null;
+  if (bodyErr && typeof bodyErr === "object" && bodyErr.type === "entity.parse.failed") {
+    respond(res, 400, "INVALID_REQUEST", "Request body is not valid JSON");
+    return;
+  }
+  if (bodyErr && typeof bodyErr === "object" && bodyErr.type === "entity.too.large") {
+    respond(res, 413, "PAYLOAD_TOO_LARGE", "Request body is too large");
+    return;
+  }
   if (err instanceof ZodError) {
     respond(res, 400, "INVALID_REQUEST", "Request body failed validation", err.flatten());
     return;
@@ -53,7 +67,15 @@ export function errorMiddleware(err: unknown, _req: Request, res: Response, _nex
     respond(res, 409, "INVALID_OPERATION", err.message);
     return;
   }
-  if (err instanceof InvalidTransitionError) {
+  if (err instanceof DuplicateBacklogReferenceError) {
+    respond(res, 409, "DUPLICATE_BACKLOG_REFERENCE", err.message);
+    return;
+  }
+  if (err instanceof ConversionInProgressError) {
+    respond(res, 409, "CONVERSION_IN_PROGRESS", err.message);
+    return;
+  }
+  if (err instanceof InvalidTransitionError || err instanceof InvalidBacklogTransitionError || err instanceof InvalidProposalTransitionError) {
     respond(res, 409, "INVALID_STATE_TRANSITION", err.message);
     return;
   }

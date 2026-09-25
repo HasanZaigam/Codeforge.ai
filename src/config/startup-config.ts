@@ -8,6 +8,8 @@
  * to first use deep inside a request/task. See /docs/DEPLOYMENT.md
  * "Configuration validation".
  */
+import { isAbsolute } from "node:path";
+
 export class ConfigError extends Error {
   constructor(message: string) {
     super(message);
@@ -18,6 +20,10 @@ export class ConfigError extends Error {
 const KNOWN_CODING_ENGINES = new Set(["opencode", "claude-code", "claude", "fixture"]);
 
 const ALLOW_LOCAL_GIT_PROJECTS_ENV = "ALLOW_LOCAL_GIT_PROJECTS";
+
+/** Default and hard upper bound of MAX_BACKLOG_ANALYSIS_CONCURRENCY (see docs/BACKLOG_INTELLIGENCE.md). */
+export const MAX_BACKLOG_ANALYSIS_CONCURRENCY_DEFAULT = 2;
+export const MAX_BACKLOG_ANALYSIS_CONCURRENCY_LIMIT = 16;
 
 /**
  * Validates the configuration shared by both entrypoints: which coding
@@ -42,10 +48,49 @@ export function validateSharedConfig(env: NodeJS.ProcessEnv = process.env): void
     );
   }
 
+  // Phase 4A.1 — the GLOBAL cap on concurrent backlog analyses (each is one real model call). Fail
+  // clearly at startup on a non-positive/non-integer value, and refuse an absurd one: the cap exists
+  // to protect provider quota, so "unbounded by typo" (e.g. 1000) is exactly what it must not allow.
+  const analysisCap = parsePositiveIntEnv("MAX_BACKLOG_ANALYSIS_CONCURRENCY", env.MAX_BACKLOG_ANALYSIS_CONCURRENCY, MAX_BACKLOG_ANALYSIS_CONCURRENCY_DEFAULT);
+  if (analysisCap > MAX_BACKLOG_ANALYSIS_CONCURRENCY_LIMIT) {
+    throw new ConfigError(`MAX_BACKLOG_ANALYSIS_CONCURRENCY must be at most ${MAX_BACKLOG_ANALYSIS_CONCURRENCY_LIMIT} (got ${analysisCap}).`);
+  }
+
   // Format-validated eagerly whenever it's set at all (any NODE_ENV) — same "fail clearly at
   // startup, not silently coerce" stance as parsePositiveIntEnv. The value only actually
   // *restricts* anything under NODE_ENV=production — see isLocalGitProjectsAllowed below.
   parseBooleanEnv(ALLOW_LOCAL_GIT_PROJECTS_ENV, env[ALLOW_LOCAL_GIT_PROJECTS_ENV], false);
+
+  // Developer Alpha — explicit, validated-at-startup format for the two HTTP-layer knobs added for
+  // shared/proxied deployments (see api/cookies.ts's isSecureCookieEnabled and api/app.ts).
+  if (env.COOKIE_SECURE !== undefined && env.COOKIE_SECURE !== "" && env.COOKIE_SECURE !== "true" && env.COOKIE_SECURE !== "false") {
+    throw new ConfigError(`COOKIE_SECURE must be "true" or "false" if set (got "${env.COOKIE_SECURE}").`);
+  }
+  if (env.TRUST_PROXY !== undefined && env.TRUST_PROXY !== "" && !/^[0-9]+$/.test(env.TRUST_PROXY)) {
+    throw new ConfigError(`TRUST_PROXY must be a non-negative integer hop count if set (got "${env.TRUST_PROXY}").`);
+  }
+
+  // Under NODE_ENV=production a partially configured process must not start (Developer Alpha,
+  // brief item 13): relative storage paths silently depend on the launching directory (systemd vs a
+  // dev shell resolve them differently, so the API and worker could end up on DIFFERENT databases),
+  // and a missing encryption key only fails at the first GitHub use, long after startup.
+  if (env.NODE_ENV === "production") {
+    for (const name of ["DB_PATH", "WORKSPACES_ROOT", "PROJECT_WORKSPACE_ROOT"] as const) {
+      const value = env[name];
+      if (!value) {
+        throw new ConfigError(`${name} must be set explicitly when NODE_ENV=production (an absolute path) — relying on the working-directory-relative default risks the API and worker using different storage.`);
+      }
+      if (!isAbsolute(value)) {
+        throw new ConfigError(`${name} must be an absolute path when NODE_ENV=production (got "${value}").`);
+      }
+    }
+    if (!env.CREDENTIAL_ENCRYPTION_KEY) {
+      throw new ConfigError(
+        "CREDENTIAL_ENCRYPTION_KEY must be set when NODE_ENV=production — GitHub credential storage would otherwise fail the first time it's used. " +
+          `Generate one with: node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"`,
+      );
+    }
+  }
 
   const key = env.CREDENTIAL_ENCRYPTION_KEY;
   if (key) {

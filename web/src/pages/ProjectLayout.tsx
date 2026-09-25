@@ -41,6 +41,9 @@ export function ProjectLayout() {
         <NavLink to="tasks" className={({ isActive }) => (isActive ? "active" : "")}>
           Tasks
         </NavLink>
+        <NavLink to="backlog" className={({ isActive }) => (isActive ? "active" : "")}>
+          Backlog
+        </NavLink>
         <NavLink to="workspace" className={({ isActive }) => (isActive ? "active" : "")}>
           Workspace
         </NavLink>

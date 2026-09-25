@@ -28,6 +28,16 @@ export interface WorkerConfig {
   reviewPollIntervalMs: number;
 }
 
+/**
+ * Background work the worker drives alongside task execution, sharing its poll loop and its graceful
+ * stop — see BacklogAnalysisRunner. `tick()` must return promptly (it starts work, it does not wait
+ * for it); `stop()` must abort in-flight work and hand it back cleanly.
+ */
+export interface BackgroundRunner {
+  tick(): Promise<void>;
+  stop(): Promise<void>;
+}
+
 export const DEFAULT_WORKER_CONFIG: WorkerConfig = { pollIntervalMs: 2000, maxConcurrentTasks: 2, reviewPollIntervalMs: 30_000 };
 
 /**
@@ -68,6 +78,13 @@ export class Worker {
     // safe default (2) rather than being forced to spell it out everywhere.
     config: Partial<WorkerConfig> = {},
     private readonly onTaskError: (taskId: string, error: unknown) => void = () => {},
+    /**
+     * Phase 4A.1 — backlog analysis. Optional so every existing call site is unchanged. It rides THIS
+     * worker's loop and shutdown (no second worker system) but is independent of task execution: a
+     * failure in it never prevents task dispatch, and it is bounded by its own global cap
+     * (MAX_BACKLOG_ANALYSIS_CONCURRENCY), not by WORKER_MAX_CONCURRENT_TASKS.
+     */
+    private readonly backlogRunner: BackgroundRunner | null = null,
   ) {
     this.config = { ...DEFAULT_WORKER_CONFIG, ...config };
   }
@@ -84,6 +101,8 @@ export class Worker {
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
     await this.currentTick;
+    // After the task tick has drained: abort in-flight analyses and return their jobs to the queue.
+    await this.backlogRunner?.stop();
   }
 
   private scheduleNext(): void {
@@ -95,6 +114,14 @@ export class Worker {
 
   /** Runs one poll cycle immediately; exposed directly for deterministic tests instead of waiting on the interval. */
   async tick(): Promise<void> {
+    // Backlog analysis: claim due jobs and START them (returns immediately). Isolated in its own
+    // try/catch — an analysis-side problem must never stop task dispatch below.
+    try {
+      await this.backlogRunner?.tick();
+    } catch (err) {
+      console.error("[worker] backlog analysis tick failed:", err instanceof Error ? err.message : String(err));
+    }
+
     this.orchestrator.recoverOrphanedTasks();
 
     const workCandidates = [...this.tasks.listByStatus("TODO"), ...this.tasks.listByStatus("WORKING")].filter(

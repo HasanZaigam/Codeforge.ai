@@ -1,4 +1,20 @@
-import type { ContextBundle, HumanReviewFeedback, Project, ReviewEvidence, ReviewResult, StepResult, Task, ValidationResult } from "../domain/types.js";
+import type { BugFixVerification, ContextBundle, HumanReviewFeedback, Project, ReviewEvidence, ReviewResult, StepResult, Task, ValidationResult, VerificationEvidence } from "../domain/types.js";
+import { resolveApprovedVerificationChecks } from "../review/reviewer-verification.js";
+
+/**
+ * V1.1 Slice 3 — derives ContextBundle.bugFixEvidence straight from the
+ * task's own persisted TaskRecord, the same "read what the platform already
+ * captured, thread it through" pattern every other evidence field in this
+ * file already follows. `null` when the task has no contract at all;
+ * otherwise always the CURRENT reproduction/fixVerification the platform has
+ * on record — never stale, because the orchestrator overwrites
+ * `fixVerification` with fresh evidence after every commit (see
+ * orchestrator.ts's runWorkingEpisode).
+ */
+function deriveBugFixEvidence(bugFixVerification: BugFixVerification | null): ContextBundle["bugFixEvidence"] {
+  if (!bugFixVerification?.contract) return null;
+  return { reproduction: bugFixVerification.reproduction, fixVerification: bugFixVerification.fixVerification };
+}
 
 /**
  * Builds the small, purpose-built context bundle handed to each agent
@@ -36,6 +52,11 @@ export function buildImplementerContext(
     reviewerFeedback,
     humanReviewFeedback,
     projectContext,
+    // V1.1 Slice 2 — verification requests are a Reviewer-only capability; see ContextBundle's own
+    // doc comment.
+    approvedVerificationChecks: [],
+    verificationEvidence: null,
+    bugFixEvidence: deriveBugFixEvidence(task.taskRecord.bugFixVerification),
   };
 }
 
@@ -47,10 +68,21 @@ export function buildReviewerContext(
   validation: ValidationResult,
   // Phase 3, Slice 6 — see buildImplementerContext's own doc comment above.
   projectContext: string | null = null,
+  // V1.1 Slice 1 (see PLATFORM_GAPS.md "AI claims are not execution evidence"): the platform's own
+  // git evidence (from CommitResult.changedFiles — a `git status --porcelain` reading taken before
+  // this task's changes were even staged), never `implementerResult.filesChanged` (derived from the
+  // coding engine's own tool-call log, a claim about what it believes it touched, not a fact about
+  // what the repository actually shows). `null` only for a caller that hasn't committed yet — no
+  // production call site should ever reach the Reviewer in that state, but this stays honest rather
+  // than silently falling back to the AI's own claim.
+  changedFiles: string[] | null = null,
+  // V1.1 Slice 2 — present only on the follow-up invocation after the Reviewer requested a
+  // verification and the platform executed (or rejected) it. See ContextBundle.verificationEvidence.
+  verificationEvidence: VerificationEvidence | null = null,
 ): ContextBundle {
   const evidence: ReviewEvidence = {
     implementerSummary: implementerResult.summary,
-    filesChanged: implementerResult.filesChanged,
+    filesChanged: changedFiles ?? implementerResult.filesChanged,
     diffRef: implementerResult.diffRef,
     validation,
   };
@@ -67,5 +99,11 @@ export function buildReviewerContext(
     reviewerFeedback: null,
     humanReviewFeedback: null,
     projectContext,
+    // V1.1 Slice 2 — never offered when the follow-up call already carries real evidence: the
+    // Reviewer's job at that point is to use the evidence it already has, not request another one
+    // (see prompt-builder.ts's own bounding of this to one round trip per review attempt).
+    approvedVerificationChecks: verificationEvidence ? [] : resolveApprovedVerificationChecks(project),
+    verificationEvidence,
+    bugFixEvidence: deriveBugFixEvidence(task.taskRecord.bugFixVerification),
   };
 }

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { CancellationError } from "../../src/domain/errors.js";
-import type { BranchComparisonStatus, GitCredential, HumanReviewFeedbackItem, Project, PullRequestRef, PullRequestStatus } from "../../src/domain/types.js";
+import { BranchMismatchError, CancellationError, PushVerificationError } from "../../src/domain/errors.js";
+import type { BranchComparisonStatus, CommitResult, GitCredential, HumanReviewFeedbackItem, Project, PullRequestRef, PullRequestStatus, PushResult } from "../../src/domain/types.js";
 import type { OpenPullRequestRequest, SourceControlProvider } from "../../src/source-control/source-control-provider.js";
 
 export type FakeFailurePoint = "resolveCloneCredential" | "commitAll" | "push" | "openPullRequest";
@@ -71,6 +71,18 @@ export class FakeSourceControlProvider implements SourceControlProvider {
     this.failAt = op;
   }
 
+  /**
+   * V1.1 Slice 4 — EVERY future call to this operation throws (never auto-clears, unlike
+   * `failNextCallTo`'s one-shot failure) — simulates a persistent/permanent failure that survives
+   * every retry attempt, for testing that the episode-level infrastructure-retry budget
+   * (`OrchestratorConfig.maxInfrastructureRetries`) genuinely terminates rather than looping forever.
+   */
+  private persistentFailAt: FakeFailurePoint | null = null;
+
+  failEveryCallTo(op: FakeFailurePoint): void {
+    this.persistentFailAt = op;
+  }
+
   /** The next call to this operation throws CancellationError instead — simulates cancellation racing a source-control step. */
   cancelNextCallTo(op: FakeFailurePoint): void {
     this.cancelAt = op;
@@ -81,13 +93,52 @@ export class FakeSourceControlProvider implements SourceControlProvider {
     return { header: "Authorization: Bearer fake-test-token" };
   }
 
-  async commitAll(_project: Project, _workspacePath: string, _message: string, _signal: AbortSignal): Promise<string> {
-    this.record("commitAll");
-    return `fake-sha-${randomUUID().slice(0, 8)}`;
+  /** Scripted `changedFiles` for the next commitAll() call — see CommitResult. Defaults to a single fake path. */
+  private nextChangedFiles: string[] = ["src/fake-changed-file.ts"];
+  /** V1.1 Slice 1 (GAP-15 regression coverage) — when set, the next commitAll()/push() call throws BranchMismatchError exactly as the real branch-assertion does, instead of recording the call as if it had proceeded. */
+  private branchMismatchOn: "commitAll" | "push" | null = null;
+  /** V1.1 Slice 1 — when set, push() "succeeds" locally but the remote ref this fake reports back afterward disagrees, exercising the same PushVerificationError path GitHubSourceControlProvider's real ls-remote check takes. */
+  private nextRemoteBranchShaOverride: string | null | undefined = undefined;
+
+  setNextChangedFiles(files: string[]): void {
+    this.nextChangedFiles = files;
   }
 
-  async push(_project: Project, _workspacePath: string, branch: string, _signal: AbortSignal): Promise<void> {
+  simulateBranchMismatchOn(op: "commitAll" | "push"): void {
+    this.branchMismatchOn = op;
+  }
+
+  simulateRemoteVerificationMismatch(remoteBranchSha: string | null): void {
+    this.nextRemoteBranchShaOverride = remoteBranchSha;
+  }
+
+  async commitAll(_project: Project, _workspacePath: string, _message: string, expectedBranch: string, _signal: AbortSignal): Promise<CommitResult> {
+    if (this.branchMismatchOn === "commitAll") {
+      this.branchMismatchOn = null;
+      throw new BranchMismatchError(expectedBranch, "some-other-branch-the-agent-checked-out", "commit");
+    }
+    this.record("commitAll");
+    const changedFiles = this.nextChangedFiles;
+    this.nextChangedFiles = ["src/fake-changed-file.ts"];
+    return { commitSha: `fake-sha-${randomUUID().slice(0, 8)}`, changedFiles };
+  }
+
+  async push(_project: Project, _workspacePath: string, branch: string, _signal: AbortSignal): Promise<PushResult> {
+    if (this.branchMismatchOn === "push") {
+      this.branchMismatchOn = null;
+      throw new BranchMismatchError(branch, "some-other-branch-the-agent-checked-out", "push");
+    }
     this.record("push", branch);
+    const pushedCommitSha = `fake-pushed-sha-${randomUUID().slice(0, 8)}`;
+    if (this.nextRemoteBranchShaOverride !== undefined) {
+      const remoteBranchSha = this.nextRemoteBranchShaOverride;
+      this.nextRemoteBranchShaOverride = undefined;
+      if (remoteBranchSha !== pushedCommitSha) {
+        throw new PushVerificationError(branch, pushedCommitSha, remoteBranchSha);
+      }
+      return { pushedCommitSha, remoteBranchSha };
+    }
+    return { pushedCommitSha, remoteBranchSha: pushedCommitSha };
   }
 
   /** Mirrors GitHubSourceControlProvider.openPullRequest: searches this fake's own "existing PRs" before creating. */
@@ -194,6 +245,9 @@ export class FakeSourceControlProvider implements SourceControlProvider {
     if (this.failAt === op) {
       this.failAt = null;
       throw new Error(`FakeSourceControlProvider: simulated failure at ${op}`);
+    }
+    if (this.persistentFailAt === op) {
+      throw new Error(`FakeSourceControlProvider: simulated PERSISTENT failure at ${op}`);
     }
   }
 }

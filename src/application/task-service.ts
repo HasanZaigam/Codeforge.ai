@@ -1,4 +1,4 @@
-import type { BranchComparisonStatus, BranchMode, Task, TaskEvent } from "../domain/types.js";
+import type { BranchComparisonStatus, BranchMode, BugFixVerificationContract, Task, TaskEvent } from "../domain/types.js";
 import type { TaskRepository } from "../persistence/repositories/task-repository.js";
 import type { TaskEventRepository } from "../persistence/repositories/task-event-repository.js";
 import type { AgentRunRepository } from "../persistence/repositories/agent-run-repository.js";
@@ -35,7 +35,7 @@ import type { Project } from "../domain/types.js";
  * reachability (BFS), not just a direct-pair check — see /docs/TASK_LIFECYCLE.md "Task
  * dependencies" — "Circular dependency" rule, requirement 8 (indirect cycles must be rejected too).
  */
-function wouldCreateCycle(taskId: string, dependsOnTaskId: string, existingEdges: DependencyEdge[]): boolean {
+export function wouldCreateCycle(taskId: string, dependsOnTaskId: string, existingEdges: DependencyEdge[]): boolean {
   const adjacency = new Map<string, string[]>();
   for (const edge of existingEdges) {
     if (!adjacency.has(edge.taskId)) adjacency.set(edge.taskId, []);
@@ -77,6 +77,22 @@ export interface CreateTaskInput {
    * no circular-dependency check is needed here, only same-project + existence (see `create()`).
    */
   dependencyIds?: string[];
+  /**
+   * V1.1 Slice 3 — opt-in bug-fix verification contract (see
+   * task-factory.ts's CreateTaskInput and domain/types.ts
+   * BugFixVerificationContract). Not yet exposed over HTTP (see
+   * /docs/PLATFORM_GAPS.md GAP-016's Slice 3 note) — reachable today via
+   * this service directly (CLI/tests), same as several other internal-only
+   * task-creation options.
+   */
+  bugFixVerification?: BugFixVerificationContract | null;
+  /**
+   * Phase 4A — internal-only (never reachable from the HTTP API, whose CreateTaskSchema has neither
+   * field): a caller-reserved task id and the backlog provenance recorded on TASK_CREATED. Used
+   * solely by BacklogService's proposal conversion — see task-factory.ts CreateTaskInput.
+   */
+  id?: string;
+  origin?: { backlogItemId: string; taskProposalId: string };
 }
 
 /**
@@ -143,6 +159,9 @@ export class TaskService {
         branchMode,
         workingBranch,
         baseBranch,
+        bugFixVerification: input.bugFixVerification,
+        id: input.id,
+        origin: input.origin,
       });
       // A brand-new task can't yet create a cycle (nothing can depend on it before it exists) — only
       // existence + same-project need checking. Dedupe the input so a repeated id is a silent no-op,

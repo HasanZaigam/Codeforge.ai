@@ -1,6 +1,6 @@
-import type { BranchComparisonStatus, GitCredential, HumanReviewFeedbackItem, Project, PullRequestRef, PullRequestStatus } from "../domain/types.js";
+import type { BranchComparisonStatus, CommitResult, GitCredential, HumanReviewFeedbackItem, Project, PullRequestRef, PullRequestStatus, PushResult } from "../domain/types.js";
 
-export type { BranchComparisonStatus, GitCredential, PullRequestRef, PullRequestStatus };
+export type { BranchComparisonStatus, CommitResult, GitCredential, PullRequestRef, PullRequestStatus, PushResult };
 
 export interface OpenPullRequestRequest {
   workspacePath: string;
@@ -38,9 +38,29 @@ export interface SourceControlProvider {
    */
   resolveCloneCredential(project: Project, signal: AbortSignal): Promise<GitCredential | null>;
 
-  commitAll(project: Project, workspacePath: string, message: string, signal: AbortSignal): Promise<string>; // returns commit sha
+  /**
+   * Platform-owned commit — see git-commit.ts's commitAllLocal, which every
+   * implementation delegates to. `expectedBranch` is asserted against the
+   * workspace's actual current branch BEFORE anything is staged or
+   * committed: if the coding engine moved the workspace off its recorded
+   * task branch (see PLATFORM_GAPS.md GAP-015), this throws
+   * `BranchMismatchError` and commits nothing, rather than silently
+   * committing onto whatever branch the engine left HEAD pointing at.
+   * `CommitResult.changedFiles` is the platform's own git evidence, never
+   * the coding engine's self-reported file list.
+   */
+  commitAll(project: Project, workspacePath: string, message: string, expectedBranch: string, signal: AbortSignal): Promise<CommitResult>;
 
-  push(project: Project, workspacePath: string, branch: string, signal: AbortSignal): Promise<void>;
+  /**
+   * Platform-owned push — asserts the same branch invariant `commitAll`
+   * does immediately before pushing, pushes by explicit refspec
+   * (`HEAD:refs/heads/<branch>`, never "whatever local branch happens to be
+   * named `branch`"), and then reads the remote ref back to confirm it now
+   * points at the commit that was just pushed — see PLATFORM_GAPS.md
+   * GAP-015. A `git push` exiting 0 is not sufficient evidence on its own
+   * that the intended branch was actually updated.
+   */
+  push(project: Project, workspacePath: string, branch: string, signal: AbortSignal): Promise<PushResult>;
 
   /**
    * Idempotent: implementations must check for an existing PR (or equivalent)

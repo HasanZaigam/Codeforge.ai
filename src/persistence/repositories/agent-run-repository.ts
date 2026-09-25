@@ -15,6 +15,9 @@ interface AgentRunRow {
   started_at: string;
   completed_at: string | null;
   owner_generation: number;
+  model_id: string | null;
+  provider_id: string | null;
+  fallback_index: number;
 }
 
 function rowToAgentRun(row: AgentRunRow): AgentRun {
@@ -32,6 +35,9 @@ function rowToAgentRun(row: AgentRunRow): AgentRun {
     startedAt: row.started_at,
     completedAt: row.completed_at,
     ownerGeneration: row.owner_generation,
+    modelId: row.model_id,
+    providerId: row.provider_id,
+    fallbackIndex: row.fallback_index,
   };
 }
 
@@ -48,8 +54,9 @@ export class AgentRunRepository {
       .prepare(
         `INSERT INTO agent_runs
           (id, task_id, role, engine, attempt_number, status, input_json,
-           result_json, error, cost_json, started_at, completed_at, owner_generation)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           result_json, error, cost_json, started_at, completed_at, owner_generation,
+           model_id, provider_id, fallback_index)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         run.id,
@@ -65,6 +72,9 @@ export class AgentRunRepository {
         run.startedAt,
         run.completedAt,
         run.ownerGeneration,
+        run.modelId,
+        run.providerId,
+        run.fallbackIndex,
       );
   }
 

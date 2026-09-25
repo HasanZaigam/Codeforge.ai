@@ -65,6 +65,95 @@ export interface TaskRecord {
    * `branchName` already do.
    */
   pendingHumanReviewFeedback: HumanReviewFeedback | null;
+  /**
+   * V1.1 Slice 1 introduced this as an inert extension point; V1.1 Slice 2
+   * built the `VerificationEvidence` primitive it now reuses; V1.1 Slice 3
+   * makes it real (see PLATFORM_GAPS.md GAP-016's "reproduce, then confirm
+   * fixed" direction). `null` for every ordinary task — only set when a
+   * task is explicitly created with a bug-fix verification contract (see
+   * task-factory.ts's CreateTaskInput). See BugFixVerification's own doc
+   * comment for the full shape.
+   */
+  bugFixVerification: BugFixVerification | null;
+}
+
+// ---------------------------------------------------------------------------
+// Bug-fix verification (V1.1 Slice 3 — see PLATFORM_GAPS.md GAP-016 and
+// /docs/SECURITY_ARCHITECTURE.md "AI may describe/interpret. CodeForge owns
+// verification policy, execution, evidence, and status.")
+// ---------------------------------------------------------------------------
+
+/**
+ * A deterministic answer to "what exact platform-owned check establishes
+ * whether this bug exists, and whether the fix works?" — set once at task
+ * creation, immutable thereafter (like `Task.branchMode`). Reuses the exact
+ * same check-id vocabulary reviewer-requested verification already uses
+ * (`review/reviewer-verification.ts`'s `resolveApprovedVerificationChecks`)
+ * — never an arbitrary command supplied by a user or an AI.
+ */
+export interface BugFixVerificationContract {
+  /** One of the project's configured check names (build/test/lint/typecheck) — see reviewer-verification.ts. */
+  checkId: string;
+  /**
+   * Which real outcome of running `checkId` means "the bug is present" —
+   * almost always `"failed"` (a failing test/build that should pass once
+   * fixed), but kept explicit rather than assumed so a check that should
+   * currently be passing-when-it-shouldn't (a regression-guard check that's
+   * silently green) can be expressed too. This is the ONLY thing that
+   * decides how a real `passed`/`failed` result maps to
+   * BUG_REPRODUCED/BUG_NOT_REPRODUCED or FIX_VERIFIED/FIX_NOT_VERIFIED (see
+   * review/bug-fix-verification.ts) — never inferred by an LLM.
+   */
+  bugPresentWhenCheckOutcome: "failed" | "passed";
+  /** Free text for the task author's own reasoning — informational only, never interpreted as anything executable. */
+  purpose: string | null;
+}
+
+/**
+ * See BugFixVerificationContract's own doc comment on the deterministic
+ * mapping this derives from. `"rejected"`/`"timed_out"`/
+ * `"infrastructure_error"` mirror `VerificationOutcome` exactly (nothing
+ * about the check actually ran to a real pass/fail, so no bug-present/
+ * bug-absent judgment can be made at all). There is deliberately no
+ * separate `"not_run"` member — see ReviewResult's Slice 2 precedent for
+ * `VerificationOutcome`'s own identical reasoning: "not run yet" is
+ * represented by `BugReproductionResult` itself being absent
+ * (`TaskRecord.bugFixVerification.reproduction === null`), never a
+ * synthetic status value nothing produces.
+ */
+export type ReproductionStatus = "bug_reproduced" | "bug_not_reproduced" | "timed_out" | "infrastructure_error" | "rejected";
+
+/** See ReproductionStatus's own doc comment — the identical reasoning, for the post-fix run of the same contract. */
+export type FixVerificationStatus = "fix_verified" | "fix_not_verified" | "timed_out" | "infrastructure_error" | "rejected";
+
+/** The platform's own captured pre-implementation check result, plus the deterministic status derived from it (see review/bug-fix-verification.ts's deriveReproductionStatus) — never an AI's claim about whether the bug exists. */
+export interface BugReproductionResult {
+  status: ReproductionStatus;
+  evidence: VerificationEvidence;
+}
+
+/** The platform's own captured post-implementation check result, plus the deterministic status derived from it (see review/bug-fix-verification.ts's deriveFixVerificationStatus) — never an AI's claim that "the fix works." */
+export interface FixVerificationResult {
+  status: FixVerificationStatus;
+  evidence: VerificationEvidence;
+}
+
+/**
+ * Every field here is either platform-owned configuration (`contract`) or
+ * platform-captured evidence (`reproduction`/`fixVerification`) — never
+ * anything an AI wrote. `reproduction` is set once, immediately before
+ * implementation begins (against the workspace's starting commit);
+ * `fixVerification` is overwritten with fresh evidence after every commit
+ * that follows (see orchestrator.ts's runWorkingEpisode) — so it always
+ * reflects the LATEST verified commit, and its own `evidence.commitSha`
+ * tells a reader exactly which commit it refers to, never presented as
+ * evidence for a commit it didn't actually run against (see item 8's
+ * commit-binding requirement — /docs/SECURITY_ARCHITECTURE.md).
+ */
+export interface BugFixVerification {
+  contract: BugFixVerificationContract | null;
+  reproduction: BugReproductionResult | null;
+  fixVerification: FixVerificationResult | null;
 }
 
 export interface Decision {
@@ -197,6 +286,56 @@ export type TaskEventType =
   | "PULL_REQUEST_CREATED"
   | "SOURCE_CONTROL_FAILED"
   | "NO_CHANGES_DETECTED"
+  /**
+   * V1.1 Slice 2 — appended when the Reviewer's response contains a `VERIFY:`
+   * line, immediately before the platform acts on it (whether it will go on
+   * to execute the check or reject it) — see ReviewerVerificationCompleted's
+   * own doc comment on VerificationEvidence for why the follow-up event
+   * carries the actual outcome. See PLATFORM_GAPS.md GAP-016.
+   */
+  | "REVIEWER_VERIFICATION_REQUESTED"
+  /**
+   * V1.1 Slice 2 — the platform's own record of what actually happened to a
+   * Reviewer's verification request: either real command execution (with
+   * captured stdout/stderr/exit code/duration) or a structured rejection —
+   * never the Reviewer's own claim about either. See VerificationEvidence's
+   * doc comment and /docs/SECURITY_ARCHITECTURE.md "AI may request
+   * verification. CodeForge owns verification evidence."
+   */
+  | "REVIEWER_VERIFICATION_COMPLETED"
+  /**
+   * V1.1 Slice 3 — appended immediately before the platform runs a task's
+   * BugFixVerificationContract check against the workspace's starting
+   * state, before any implementation happens. See
+   * TaskRecord.bugFixVerification and review/bug-fix-verification.ts.
+   */
+  | "BUG_REPRODUCTION_STARTED"
+  /** V1.1 Slice 3 — the platform's own captured pre-implementation result (BugReproductionResult), never an AI's claim about whether the bug exists. */
+  | "BUG_REPRODUCTION_COMPLETED"
+  /** V1.1 Slice 3 — appended immediately before the platform re-runs the SAME contract check against a new commit produced by implementation. */
+  | "FIX_VERIFICATION_STARTED"
+  /** V1.1 Slice 3 — the platform's own captured post-implementation result (FixVerificationResult), never an AI's claim that "the fix works." */
+  | "FIX_VERIFICATION_COMPLETED"
+  /**
+   * V1.1 Slice 4 (see PLATFORM_GAPS.md GAP-027/GAP-028) — appended the moment an episode-level
+   * (workspace/engine/source-control) or check-level (validation/verification) failure is
+   * classified, before any retry decision is acted on — see orchestrator/failure-classifier.ts.
+   * Payload: `{ category, retryable, reason, attempt }`. Appended even for a non-retryable failure,
+   * so the task's event log always shows WHY it ultimately failed, not just that it did.
+   */
+  | "INFRASTRUCTURE_FAILURE_DETECTED"
+  /**
+   * V1.1 Slice 4 — appended only when the failure above was retryable and the retry budget was not
+   * yet exhausted, immediately before the bounded backoff wait begins. Payload:
+   * `{ attempt, maxAttempts, delayMs, retryAfterMs }`.
+   */
+  | "INFRASTRUCTURE_RETRY_SCHEDULED"
+  /**
+   * V1.1 Slice 4 — appended right after the backoff wait completes, immediately before the failed
+   * step is attempted again — the visible "attempt N+1 begins here" marker in the task's timeline
+   * (see this slice's brief, item 17's example timeline). Payload: `{ attempt }`.
+   */
+  | "INFRASTRUCTURE_RETRY_STARTED"
   | "HUMAN_REVIEW_DETECTED"
   | "HUMAN_REVIEW_CHANGES_REQUESTED"
   | "HUMAN_REVIEW_APPROVED"
@@ -310,13 +449,206 @@ export interface AgentRun {
    * run after a newer owner has taken over. See migrations/009_lock_generation.sql.
    */
   ownerGeneration: number;
+  /**
+   * V1.1 Slice 5 — the platform's own routing decision for this invocation
+   * (`ModelRouter.selectModel`, never the AI's own choice) — see
+   * ModelSelection's own doc comment. `null` only when no ModelRouter/
+   * ModelRegistry was wired (older callers, or no model actually configured
+   * — see routing/model-registry.ts's own doc comment on
+   * `OPENCODE_MODEL` being unset) — the coding engine then falls back to
+   * whatever model it would have used before this slice existed.
+   */
+  modelId: string | null;
+  providerId: string | null;
+  /**
+   * How many DISTINCT models have already been attempted for this exact
+   * (taskId, role) before this one — 0 for the first attempt. Derived from
+   * persisted AgentRun rows the same way `Orchestrator.nextAttemptNumber`
+   * derives attempt numbers — never a separately tracked in-memory counter.
+   * See domain/types.ts ModelSelection's own doc comment on explainability.
+   */
+  fallbackIndex: number;
 }
 
+/**
+ * A monetary ESTIMATE attached to a run — kept separate from the raw usage counts below because it is a
+ * different kind of fact: usage is what the provider/engine reported; an estimate is somebody's
+ * arithmetic over a price list. Present ONLY when the engine (or a platform pricing table, none exists
+ * yet) actually supplied a figure. `pricingSource` says whose arithmetic it is; `pricingVersion` says
+ * which price list, or `null` when the source does not say. Never fabricated, never `0` for "unknown".
+ */
+export interface EstimatedCost {
+  amount: number;
+  /** ISO 4217 currency code, e.g. "USD". */
+  currency: string;
+  /** Who computed it, e.g. "opencode-reported" (the engine's own estimate — NOT provider-billed). */
+  pricingSource: string;
+  pricingVersion: string | null;
+}
+
+/**
+ * Normalized, provider-agnostic usage for one engine invocation (see coding-engine/engine-usage.ts).
+ * Every field is OPTIONAL and means exactly "the engine reported this": an absent field is
+ * "unavailable", never `0`. Provider-specific parsing lives in the engine adapter; nothing here names
+ * a vendor. `reasoningTokens`/cache fields are reported separately (providers bill them differently) —
+ * whether `inputTokens` includes cached tokens is the provider's convention, so cache counts are never
+ * silently added to or subtracted from it.
+ */
 export interface CostMetadata {
+  /**
+   * How trustworthy the counts are as a TOTAL for the invocation (GAP-034):
+   *  - `complete`: the invocation finished normally and every usage event the engine emitted was captured;
+   *  - `partial`: the invocation failed, timed out or was cancelled after (possibly) emitting usage — the counts
+   *    are what WAS emitted before it stopped, a lower bound, never a full total.
+   * Absent on `cost: null` (usage `unavailable`) and on rows written before this field existed (readers then
+   * treat a completed run as complete and anything else as partial — see reporting/usage-rollup.ts).
+   */
+  usageStatus?: "complete" | "partial";
   inputTokens?: number;
   outputTokens?: number;
+  reasoningTokens?: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+  /** Separate from the counts above — see EstimatedCost. Absent when no cost was supplied. */
+  estimatedCost?: EstimatedCost;
+  /** Legacy engine-reported USD figure (Claude Code adapter); superseded by `estimatedCost`, kept for existing readers. */
   costUsd?: number;
   durationMs?: number;
+}
+
+// ---------------------------------------------------------------------------
+// Model / provider routing (V1.1 Slice 5 — see PLATFORM_GAPS.md GAP-027/028's
+// "Still open" notes and /docs/SECURITY_ARCHITECTURE.md "CodeForge owns
+// routing"). CodeForge stays model-agnostic: the orchestrator selects a
+// model from a configurable registry and records what actually ran; no
+// abstraction here assumes Gemini, OpenAI, Anthropic, or any other specific
+// provider.
+// ---------------------------------------------------------------------------
+
+/**
+ * Deliberately qualitative, never a fabricated numeric "intelligence score"
+ * (see this slice's own brief, item 3: no `modelScore = 97`). `"unknown"` is
+ * the honest default for a model this registry has no real, sourced
+ * assessment of — never guessed just to fill the field in.
+ */
+export type CapabilityLevel = "basic" | "strong" | "unknown";
+export type SpeedClass = "low" | "medium" | "high" | "unknown";
+export type CostClass = "low" | "medium" | "high" | "unknown";
+
+export interface ModelCapabilityProfile {
+  coding: CapabilityLevel;
+  reasoning: CapabilityLevel;
+  /** Typical response latency class — "low" means fast. */
+  latency: SpeedClass;
+  cost: CostClass;
+}
+
+/**
+ * Whether the credential used to call this model's provider is one CodeForge
+ * itself manages (today's only real mode) or one the customer supplies
+ * (BYOK — see this slice's brief, item 16). This is a DOMAIN distinction
+ * only in this slice: no BYOK credential storage/resolution is implemented
+ * here (see routing/model-registry.ts's own doc comment on what remains
+ * open), and the existing GitHub-credential security model
+ * (/docs/SECURITY_ARCHITECTURE.md "Secrets management") is exactly what any
+ * future BYOK provider-credential store would need to follow — server-side
+ * only, never in a prompt/report/log/event.
+ */
+export type ProviderCredentialMode = "managed" | "byok";
+
+/**
+ * One entry in the model registry — see routing/model-registry.ts's
+ * `ModelRegistry`. Deliberately data, not code: a new model/provider is
+ * registered, not hand-wired into orchestrator logic (this slice's brief,
+ * item 4).
+ */
+export interface ModelProfile {
+  /** The exact string passed to the coding engine (e.g. OpenCode's `--model` flag) — never guessed or normalized. */
+  modelId: string;
+  /** Inferred from `modelId`'s own naming convention where recognizable (see routing/model-registry.ts's inferProviderId), else `"unknown"` — never fabricated. */
+  providerId: string;
+  displayName: string;
+  /** Which registered CodingEngine key actually executes this model — e.g. `"opencode"`. A model profile for an engine that isn't registered is simply never selectable. */
+  engineKey: string;
+  capability: ModelCapabilityProfile;
+  /** `null` when not reliably known — never an invented figure. */
+  contextWindow: number | null;
+  credentialMode: ProviderCredentialMode;
+  /**
+   * Whether this profile is actually selectable right now. Distinct from
+   * provider HEALTH (`ProviderHealth`, which changes automatically from
+   * observed failures): `enabled` is configuration — set false for a
+   * profile that exists in the registry (documenting a future/planned
+   * model) but isn't wired to real, executable credentials/environment
+   * today. See this slice's brief, item 25: a disabled profile must never
+   * be presented as available.
+   */
+  enabled: boolean;
+}
+
+/**
+ * The execution intent behind one Implementer/Reviewer invocation — lets
+ * routing be operation-aware (this slice's brief, item 21: "implementation
+ * model ≠ reviewer model", without forcing them to differ). Reuses the
+ * existing role/context distinctions orchestrator.ts already makes; does
+ * not invent a new task-classification system.
+ * `"verification_interpretation"` is reserved for a possible future step
+ * that asks a model to interpret verification evidence in natural language
+ * — nothing in the current architecture invokes one (Slice 3's own
+ * bug-fix-verification status derivation is deliberately deterministic,
+ * never an LLM call — see review/bug-fix-verification.ts), so this value is
+ * never actually selected by anything today. Kept for the same reason
+ * Slice 4's `OrchestratorFailureCategory` kept `recoverable_crash`: a
+ * documented, intentionally-unreachable placeholder, not a mistake.
+ */
+export type OperationClass =
+  | "implementation"
+  | "bug_fix"
+  | "reviewer"
+  | "verification_interpretation"
+  | "human_feedback_fix"
+  /** Phase 4A — a read-only, schema-validated analysis of a backlog item (see backlog/backlog-analyzer.ts). Routed through the same registry/health machinery as execution; never creates an AgentRun (there is no task yet). */
+  | "backlog_analysis";
+
+/**
+ * The platform's own, explainable routing decision for one invocation —
+ * never the AI's choice (this slice's brief, item 17: "Every execution
+ * should be able to explain..."). Persisted onto the AgentRun row that used
+ * it (`AgentRun.modelId`/`providerId`/`fallbackIndex`); `reason` is
+ * generated entirely by `ModelRouter.selectModel`, never an LLM-authored
+ * explanation.
+ */
+export interface ModelSelection {
+  modelId: string;
+  providerId: string;
+  engineKey: string;
+  operation: OperationClass;
+  /** Human-readable, platform-generated — e.g. "configured default for this project" or "fallback: gemini-3-flash-preview (google) is in cooldown". Never secret-bearing. */
+  reason: string;
+  /** 0 for the first model attempted for this (task, role); see AgentRun.fallbackIndex's own doc comment. */
+  fallbackIndex: number;
+}
+
+/**
+ * See routing/provider-health-repository.ts. `"degraded"`/`"disabled"` are
+ * valid, persistable states this slice's schema supports but its own
+ * automatic health-recording logic never produces — reserved for a future,
+ * finer policy or an explicit admin action (see
+ * routing/provider-health-policy.ts's own doc comment for exactly what this
+ * slice's automatic logic does produce: `healthy` <-> `cooldown`).
+ */
+export type ProviderHealthState = "healthy" | "degraded" | "cooldown" | "disabled";
+
+/** Persisted, cross-task/cross-worker provider health — see this slice's brief, items 13/14. */
+export interface ProviderHealth {
+  providerId: string;
+  state: ProviderHealthState;
+  consecutiveFailures: number;
+  lastFailureAt: string | null;
+  lastFailureCategory: string | null;
+  /** `null` unless `state === "cooldown"` — when the cooldown clears on its own, without needing a success to be observed first. */
+  cooldownUntil: string | null;
+  updatedAt: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -341,6 +673,32 @@ export interface Workspace {
 // ---------------------------------------------------------------------------
 // Source control contract (platform <-> SourceControlProvider boundary)
 // ---------------------------------------------------------------------------
+
+/**
+ * The result of a platform-owned commit — see SourceControlProvider.commitAll
+ * and git-commit.ts's commitAllLocal. `changedFiles` is the platform's own
+ * `git status --porcelain` reading, captured BEFORE staging — never the
+ * coding engine's self-reported file list (StepResult.filesChanged, which is
+ * derived from the AI's own tool-call log and is a claim, not evidence — see
+ * /docs/SECURITY_ARCHITECTURE.md "AI claims are not execution evidence").
+ */
+export interface CommitResult {
+  commitSha: string;
+  changedFiles: string[];
+}
+
+/**
+ * The result of a platform-owned push, verified against the remote — see
+ * SourceControlProvider.push. `remoteBranchSha` is `null` only when the
+ * provider genuinely has no remote to verify against (the local-git test
+ * fixture with no configured remote); for every real push it is read back
+ * from the remote itself and must equal `pushedCommitSha`, or the push has
+ * not actually landed what the platform believes it landed.
+ */
+export interface PushResult {
+  pushedCommitSha: string;
+  remoteBranchSha: string | null;
+}
 
 export interface PullRequestRef {
   provider: string; // e.g. "github" | "local-git"
@@ -555,6 +913,36 @@ export interface ContextBundle {
    * see orchestrator/project-context-section.ts's `MAX_PROJECT_CONTEXT_SECTION_CHARS`.
    */
   projectContext: string | null;
+  /**
+   * V1.1 Slice 2 — the check ids the Reviewer is allowed to request via a
+   * `VERIFY:` line for this project right now (see
+   * reviewer-verification.ts's resolveApprovedVerificationChecks) — always
+   * a subset of the project's own already-configured build/test/lint/
+   * typecheck commands, never invented. Empty for the Implementer role and
+   * for any project with nothing configured to offer.
+   */
+  approvedVerificationChecks: string[];
+  /**
+   * V1.1 Slice 2 — present only on the Reviewer's follow-up invocation,
+   * immediately after it requested a verification and the platform actually
+   * executed (or rejected) it — see orchestrator.ts's review/fix cycle. This
+   * is the platform's own real, captured result; the Reviewer's own prose in
+   * this or any prior response is never a substitute for it. `null` for
+   * every Implementer invocation and for a Reviewer's first-pass invocation
+   * that hasn't requested anything yet.
+   */
+  verificationEvidence: VerificationEvidence | null;
+  /**
+   * V1.1 Slice 3 — the platform's own captured bug-fix verification state
+   * for this task, or `null` when the task has no BugFixVerificationContract
+   * at all. Populated for BOTH roles: the Implementer sees `reproduction`
+   * (captured before it started) with `fixVerification` still `null`; the
+   * Reviewer sees both once a post-fix check has run. Every field here is
+   * platform evidence, never an AI's claim — see
+   * TaskRecord.bugFixVerification and item 5/9 of the Slice 3 brief
+   * ("PLATFORM-CAPTURED EVIDENCE" vs. "AI INTERPRETATION").
+   */
+  bugFixEvidence: { reproduction: BugReproductionResult | null; fixVerification: FixVerificationResult | null } | null;
 }
 
 export interface ReviewEvidence {
@@ -562,6 +950,82 @@ export interface ReviewEvidence {
   filesChanged: string[];
   diffRef: string | null;
   validation: ValidationResult;
+}
+
+// ---------------------------------------------------------------------------
+// Reviewer-requested, platform-executed verification (V1.1 Slice 2 — see
+// PLATFORM_GAPS.md GAP-016 and /docs/SECURITY_ARCHITECTURE.md "AI may
+// request verification. CodeForge owns verification evidence.")
+// ---------------------------------------------------------------------------
+
+/**
+ * A bounded request the Reviewer may make for the platform to run one of the
+ * project's own already-configured checks (build/test/lint/typecheck) —
+ * never an arbitrary shell command. Parsed from an explicit `VERIFY:` line
+ * (see review/reviewer.ts's parseVerificationRequest), the same
+ * deterministic-parser convention `VERDICT:`/`FINDING:`/`VERIFICATION:`
+ * already use. `purpose` is free text for the Reviewer's own reasoning
+ * (e.g. "confirm the regex rejects '---'") — informational only, never
+ * interpreted as anything executable.
+ */
+export interface VerificationRequest {
+  /** One of the project's configured check names — see reviewer-verification.ts's resolveApprovedVerificationChecks. */
+  checkId: string;
+  purpose: string | null;
+}
+
+/**
+ * Distinguishes what actually happened to a VerificationRequest — see
+ * PLATFORM_GAPS.md GAP-016. `"passed"`/`"failed"`/`"timed_out"`/
+ * `"infrastructure_error"` mirror CheckOutcome exactly (the platform reused
+ * validation-runner.ts's own `runCheck`, not a second execution engine) and
+ * mean a real process actually ran to one of those ends. `"rejected"` means
+ * nothing was ever spawned — the requested check id was unknown or not
+ * configured for this project, and the Reviewer's request was refused
+ * before touching a single process. There is deliberately no separate
+ * "not_run" outcome distinct from "rejected": the only way for this slice to
+ * reach "requested but nothing happened" is a rejected request, so folding
+ * the two would only add an unreachable state — see PLATFORM_GAPS.md
+ * GAP-016's "Narrowed" note for what a future slice might add here (e.g. a
+ * per-project verification kill-switch).
+ */
+export type VerificationOutcome = "passed" | "failed" | "timed_out" | "infrastructure_error" | "rejected";
+
+/**
+ * The platform's own captured record of one Reviewer-requested verification
+ * — the only thing that can ever make `ReviewResult.verificationMethod`
+ * become `"executed"` (see reviewer.ts's deriveReviewResult). Every field is
+ * either what the platform actually spawned/observed or, for a rejection,
+ * why it refused — never the Reviewer's own claim about what it ran. See
+ * PLATFORM_GAPS.md GAP-016 and /docs/SECURITY_ARCHITECTURE.md "AI may
+ * request verification. CodeForge owns verification evidence."
+ *
+ * `expectedBranch`/`actualBranch`/`commitSha` tie this evidence to the exact
+ * repository state it verified (item 4's "critical" requirement) — a later
+ * Implementer fix produces a new commit and a fresh review cycle with its
+ * own (or no) VerificationEvidence; nothing here is ever carried forward and
+ * presented as evidence for a different commit.
+ */
+export interface VerificationEvidence {
+  requested: VerificationRequest;
+  outcome: VerificationOutcome;
+  /** Set only when `outcome === "rejected"` — a plain, human-readable reason (e.g. which check ids are actually approved for this project). */
+  rejectionReason: string | null;
+  checkId: string | null;
+  /** The actual command that ran — always the project's own configured command for `checkId`, never anything the Reviewer supplied. `null` only when rejected. */
+  command: string | null;
+  /** The task's recorded branch at the moment of this request — captured even for a rejection, since it costs nothing extra and documents intent. */
+  expectedBranch: string;
+  /** The workspace's real current branch, read via git — `null` only when rejected (nothing was executed, so nothing was read). */
+  actualBranch: string | null;
+  /** HEAD commit sha at verification start — see this type's own doc comment on commit binding. `null` only when rejected. */
+  commitSha: string | null;
+  startedAt: string;
+  completedAt: string | null;
+  durationMs: number | null;
+  exitCode: number | null;
+  /** Tail of real captured stdout/stderr, bounded exactly like CheckResult.logExcerpt. `null` when rejected. */
+  logExcerpt: string | null;
 }
 
 export interface StepResult {
@@ -596,17 +1060,44 @@ export interface Finding {
 // Validation contract
 // ---------------------------------------------------------------------------
 
+/**
+ * A truthful outcome for one check — see PLATFORM_GAPS.md GAP-002. `"failed"`
+ * means the command actually ran to completion with a non-zero exit;
+ * `"timed_out"` and `"infrastructure_error"` are deliberately distinct from
+ * it, because a self-fix loop (or a human) handed a plain "failed" for either
+ * of those would go hunting for a bug in the diff that does not exist.
+ */
+export type CheckOutcome = "passed" | "failed" | "timed_out" | "infrastructure_error";
+
 export interface CheckResult {
   name: string; // e.g. "build" | "test" | "lint" | "typecheck"
   command: string;
+  /** Kept for backward compatibility with every existing reader — always exactly `outcome === "passed"`. Prefer `outcome` for anything that needs to tell a real failure apart from a timeout or an infrastructure error. */
   passed: boolean;
+  outcome: CheckOutcome;
   exitCode: number | null;
   durationMs: number;
   logExcerpt: string; // tail of output, bounded in size
 }
 
+/**
+ * Distinguishes "the declared checks ran and passed" from "nothing was
+ * declared, so nothing ran" — see PLATFORM_GAPS.md GAP-004. A project with no
+ * commands configured must never be reported as having passed validation.
+ */
+export type ValidationOutcome = "checks_passed" | "checks_failed" | "no_checks_configured";
+
 export interface ValidationResult {
+  /**
+   * Unchanged semantics from before this slice — this is what gates the
+   * self-fix loop (`status === "passed"` exits it), and a project with no
+   * declared checks must keep exiting that loop exactly as it always has,
+   * since there is nothing to retry against. `outcome` below is the
+   * truthful field for anything that reports this to a human; `status`
+   * alone must never be read as "validation genuinely ran and passed."
+   */
   status: "passed" | "failed";
+  outcome: ValidationOutcome;
   checks: CheckResult[];
   durationMs: number;
 }
@@ -615,9 +1106,34 @@ export interface ValidationResult {
 // Reviewer contract
 // ---------------------------------------------------------------------------
 
+/**
+ * Whether the Reviewer's verdict rests on reading the diff (`"static"`) or on
+ * an executable check it actually ran and reported the output of
+ * (`"executed"`) — see PLATFORM_GAPS.md GAP-016, "'Independently verified'
+ * means read, not run." `"unknown"` is the safe default: a Reviewer response
+ * that never states which one it did must never be presented as verified.
+ */
+export type VerificationMethod = "static" | "executed" | "unknown";
+
 export interface ReviewResult {
   verdict: "approved" | "rejected";
   findings: Finding[];
   confidence: "high" | "medium" | "low";
   summary: string;
+  /**
+   * V1.1 Slice 2 — no longer derived purely from what the Reviewer's own text
+   * claims (see reviewer.ts's deriveReviewResult). Can only become
+   * `"executed"` when `verification` below is real platform evidence of an
+   * actually-run check; a Reviewer that writes `VERIFICATION: EXECUTED`
+   * without platform evidence to back it is downgraded to `"static"` — see
+   * PLATFORM_GAPS.md GAP-016's "AI may request verification. CodeForge owns
+   * verification evidence."
+   */
+  verificationMethod: VerificationMethod;
+  /**
+   * V1.1 Slice 2 — the platform's own record of a Reviewer-requested
+   * verification, or `null` when the Reviewer never requested one this
+   * cycle. See VerificationEvidence's own doc comment.
+   */
+  verification: VerificationEvidence | null;
 }

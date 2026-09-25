@@ -88,4 +88,22 @@ export class WorkspaceRepository {
       .run(generation, id, generation);
     return result.changes > 0;
   }
+
+  /**
+   * V1.1 Slice 4 — true iff `generation` is ALREADY the recorded owner (not merely eligible to
+   * become it). Added so Orchestrator.provisionWorkspace's reuse path can treat "this generation
+   * already claimed this workspace" as a no-op success rather than calling `claimForGeneration`
+   * again — which, by design (see that method's own doc comment: "strictly-increasing only"), fails
+   * a SECOND call with the SAME generation, since `active_generation < generation` is false once
+   * `active_generation` already equals it. That distinction never mattered before this slice (a
+   * generation was previously claimed here at most once, ever); it does now that an
+   * infrastructure-retried episode can legitimately re-enter provisioning multiple times within the
+   * SAME generation (see orchestrator.ts's runEpisodeWithInfrastructureRetry). Read-only — never
+   * itself a claim, and deliberately doesn't change `claimForGeneration`'s own strictly-increasing
+   * semantics, which tests/concurrency.test.ts pins down for a genuinely different generation.
+   */
+  isClaimedForGeneration(id: string, generation: number): boolean {
+    const row = this.db.prepare("SELECT active_generation FROM workspaces WHERE id = ?").get(id) as { active_generation: number } | undefined;
+    return row !== undefined && row.active_generation === generation;
+  }
 }

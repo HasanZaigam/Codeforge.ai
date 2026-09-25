@@ -4,6 +4,7 @@ import { Markdown } from "../common/Markdown.js";
 import { formatAbsolute } from "../../lib/time.js";
 import { DurationStats } from "./DurationStats.js";
 import { AgentRunHistory } from "./AgentRunHistory.js";
+import { UsageSummary } from "./UsageSummary.js";
 
 /**
  * Shows only evidence the backend actually reports — never fabricated
@@ -64,6 +65,12 @@ export function ReportPanel({ task, report }: { task: TaskDTO; report: TaskRepor
               )}
             </p>
           )}
+          {report.failureCategory && (
+            <p className="text-muted" style={{ marginBottom: 8 }}>
+              Category: <strong>{report.failureCategory.replace(/_/g, " ")}</strong>
+              {report.failureCategory !== "task_failure" && report.failureCategory !== "unknown_failure" && " — an infrastructure problem, not a problem with the requested change."}
+            </p>
+          )}
           {report.failureReason ? (
             <Markdown text={report.failureReason} />
           ) : (
@@ -79,6 +86,29 @@ export function ReportPanel({ task, report }: { task: TaskDTO; report: TaskRepor
             Execution was interrupted at least once (e.g. a worker process restart) and automatically resumed — see "Agent runs"
             below for exactly which attempt was interrupted and which one resumed it. No work was lost or duplicated.
           </p>
+        </div>
+      )}
+
+      {report.infrastructureFailures && report.infrastructureFailures.length > 0 && (
+        <div className="card card-padded" style={{ borderColor: "var(--tone-attention-text)" }}>
+          <h2 style={{ color: "var(--tone-attention-text)", marginBottom: 8, fontSize: "0.95rem" }}>Infrastructure retries</h2>
+          <ul style={{ margin: 0, paddingLeft: 18 }}>
+            {report.infrastructureFailures.map((f, i) => (
+              <li key={i} className="text-muted">
+                Attempt {f.attempt}: <strong>{f.category.replace(/_/g, " ")}</strong>
+                {f.retryable ? " (retryable)" : " (not retryable)"} — {f.reason}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {report.bugFixVerification && (
+        <div className="section">
+          <h2>Bug-fix verification</h2>
+          <p className="text-muted">Platform-captured evidence (check <code>{report.bugFixVerification.contract.checkId}</code>), not an AI claim.</p>
+          <p>Reproduction: <strong>{report.bugFixVerification.reproduction?.status.replace(/_/g, " ") ?? "not run yet"}</strong></p>
+          <p>Fix verification: <strong>{report.bugFixVerification.fixVerification?.status.replace(/_/g, " ") ?? "not run yet"}</strong></p>
         </div>
       )}
 
@@ -159,6 +189,8 @@ export function ReportPanel({ task, report }: { task: TaskDTO; report: TaskRepor
           </div>
         )}
       </div>
+
+      <UsageSummary usage={report.usage} />
 
       <div className="section">
         <details className="execution-details" open={report.agentRuns.length > 0 && report.agentRuns.length <= 3}>

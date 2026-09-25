@@ -17,7 +17,7 @@ import type { Project } from "../src/domain/types.js";
  * key — no live GitHub credential or network access required, per Step 7
  * brief §29. See /docs/GITHUB_INTEGRATION.md "Testing strategy".
  */
-async function setup(label: string) {
+async function setup(label: string, orchestratorConfig?: Partial<import("../src/orchestrator/config.js").OrchestratorConfig>) {
   const engine = createSelfFixDemoEngine();
   const root = await mkdtemp(join(tmpdir(), `gh-sc-test-${label}-`));
   const scProvider = new FakeSourceControlProvider("github");
@@ -27,6 +27,7 @@ async function setup(label: string) {
     engine,
     ownerId: `test-worker-${label}`,
     additionalSourceControlProviders: [scProvider],
+    orchestratorConfig,
   });
   const repoPath = await createFixtureRepo(root);
   const now = new Date().toISOString();
@@ -116,10 +117,36 @@ test("PR idempotency at the provider layer: two openPullRequest calls for the sa
   assert.equal(scProvider.pullRequestsCreated, 1);
 });
 
-test("a commit failure fails the task (FAILED, not REVIEW or DONE) and never fabricates a PR", async () => {
-  const { platform, project, scProvider } = await setup("commit-fail");
+// V1.1 Slice 4 (see PLATFORM_GAPS.md GAP-027/GAP-028): a plain, untyped Error thrown from a
+// SourceControlProvider call — exactly the shape a real transient git/GitHub network blip takes —
+// is now classified "retryable_transient" (see orchestrator/failure-classifier.ts) and retried at
+// the episode level, instead of immediately, permanently failing the task on the very first hiccup.
+// These three tests now cover the (much more common) recovery case; the paired "...persistently..."
+// test right after each one covers the case where the failure never clears and the retry budget is
+// genuinely exhausted — that is still a real, terminal FAILED, exactly as all three originally
+// asserted.
+
+test("a ONE-SHOT commit failure recovers via infrastructure retry and still reaches REVIEW — no duplicate branch/commit/PR from the retry", async () => {
+  const { platform, project, scProvider } = await setup("commit-fail", { maxInfrastructureRetries: 1, infrastructureRetryBaseDelayMs: 20, infrastructureRetryMaxDelayMs: 200 });
   const task = makeTask(platform, project);
   scProvider.failNextCallTo("commitAll");
+
+  const result = await platform.orchestrator.executeTask(task.id);
+  assert.equal(result.status, "REVIEW");
+  assert.equal(scProvider.pullRequestsCreated, 1, "exactly one PR, never duplicated by the retry");
+
+  const events = platform.taskEvents.listForTask(task.id).map((e) => e.type);
+  assert.ok(events.includes("SOURCE_CONTROL_FAILED"));
+  assert.ok(events.includes("INFRASTRUCTURE_FAILURE_DETECTED"));
+  assert.ok(events.includes("INFRASTRUCTURE_RETRY_SCHEDULED"));
+  assert.equal(events.filter((t) => t === "COMMIT_CREATED").length, 1, "the failed first attempt never actually committed, so the successful retry is the only commit");
+  assert.equal(events.filter((t) => t === "BRANCH_CREATED").length, 1, "no duplicate workspace/branch provisioning from the retry");
+});
+
+test("a PERSISTENT commit failure exhausts the infrastructure retry budget and fails the task (FAILED), never fabricating a PR", async () => {
+  const { platform, project, scProvider } = await setup("commit-fail-persistent", { maxInfrastructureRetries: 1, infrastructureRetryBaseDelayMs: 20, infrastructureRetryMaxDelayMs: 200 });
+  const task = makeTask(platform, project);
+  scProvider.failEveryCallTo("commitAll");
 
   const result = await platform.orchestrator.executeTask(task.id);
   assert.equal(result.status, "FAILED");
@@ -127,15 +154,34 @@ test("a commit failure fails the task (FAILED, not REVIEW or DONE) and never fab
   assert.equal(scProvider.pullRequestsCreated, 0);
 
   const events = platform.taskEvents.listForTask(task.id).map((e) => e.type);
-  assert.ok(events.includes("SOURCE_CONTROL_FAILED"));
+  assert.equal(events.filter((t) => t === "SOURCE_CONTROL_FAILED").length, 2, "one failure per attempt (1 initial + 1 retry)");
   assert.ok(events.includes("TASK_FAILED"));
   assert.ok(!events.includes("TASK_MOVED_TO_REVIEW"));
 });
 
-test("a push failure fails the task (FAILED) even though the commit itself succeeded", async () => {
-  const { platform, project, scProvider } = await setup("push-fail");
+test("a ONE-SHOT push failure recovers via infrastructure retry — still exactly one PR, never a duplicate branch", async () => {
+  const { platform, project, scProvider } = await setup("push-fail", { maxInfrastructureRetries: 1, infrastructureRetryBaseDelayMs: 20, infrastructureRetryMaxDelayMs: 200 });
   const task = makeTask(platform, project);
   scProvider.failNextCallTo("push");
+
+  const result = await platform.orchestrator.executeTask(task.id);
+  assert.equal(result.status, "REVIEW");
+  assert.ok(result.taskRecord.latestDiffRef);
+  // Retry re-enters the whole episode from the top, same documented, pre-existing tradeoff crash
+  // recovery already has (see tests/recovery.test.ts: "Recovery restarts the whole episode from the
+  // top... the self-fix loop runs the Implementer again too") — a second COMMIT_CREATED/BRANCH_PUSHED
+  // is therefore expected and harmless (idempotent no-op or a real but non-duplicating push); what
+  // must never happen is a second workspace/branch or a second PR.
+  const events = platform.taskEvents.listForTask(task.id).map((e) => e.type);
+  assert.equal(events.filter((t) => t === "WORKSPACE_CREATED").length, 1, "no duplicate workspace provisioning from the retry");
+  assert.equal(events.filter((t) => t === "BRANCH_CREATED").length, 1, "no duplicate branch from the retry");
+  assert.equal(scProvider.pullRequestsCreated, 1, "still exactly one PR despite the redundant re-run");
+});
+
+test("a PERSISTENT push failure exhausts the infrastructure retry budget and fails the task (FAILED) even though the commit itself succeeded", async () => {
+  const { platform, project, scProvider } = await setup("push-fail-persistent", { maxInfrastructureRetries: 1, infrastructureRetryBaseDelayMs: 20, infrastructureRetryMaxDelayMs: 200 });
+  const task = makeTask(platform, project);
+  scProvider.failEveryCallTo("push");
 
   const result = await platform.orchestrator.executeTask(task.id);
   assert.equal(result.status, "FAILED");
@@ -144,14 +190,23 @@ test("a push failure fails the task (FAILED) even though the commit itself succe
 
   const events = platform.taskEvents.listForTask(task.id).map((e) => e.type);
   assert.ok(events.includes("COMMIT_CREATED"));
-  assert.ok(events.includes("SOURCE_CONTROL_FAILED"));
   assert.ok(!events.includes("BRANCH_PUSHED"));
 });
 
-test("a PR-creation failure fails the task (FAILED) even though commit and push both succeeded", async () => {
-  const { platform, project, scProvider } = await setup("pr-fail");
+test("a ONE-SHOT PR-creation failure recovers via infrastructure retry, never creating a duplicate PR", async () => {
+  const { platform, project, scProvider } = await setup("pr-fail", { maxInfrastructureRetries: 1, infrastructureRetryBaseDelayMs: 20, infrastructureRetryMaxDelayMs: 200 });
   const task = makeTask(platform, project);
   scProvider.failNextCallTo("openPullRequest");
+
+  const result = await platform.orchestrator.executeTask(task.id);
+  assert.equal(result.status, "REVIEW");
+  assert.equal(scProvider.pullRequestsCreated, 1, "search-before-create idempotency means the retry never opens a second PR");
+});
+
+test("a PERSISTENT PR-creation failure exhausts the infrastructure retry budget and fails the task (FAILED) even though commit and push both succeeded", async () => {
+  const { platform, project, scProvider } = await setup("pr-fail-persistent", { maxInfrastructureRetries: 1, infrastructureRetryBaseDelayMs: 20, infrastructureRetryMaxDelayMs: 200 });
+  const task = makeTask(platform, project);
+  scProvider.failEveryCallTo("openPullRequest");
 
   const result = await platform.orchestrator.executeTask(task.id);
   assert.equal(result.status, "FAILED");

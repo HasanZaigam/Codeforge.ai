@@ -33,8 +33,21 @@ export function sessionCookieOptions(): CookieOptions {
   return {
     httpOnly: true,
     sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
+    secure: isSecureCookieEnabled(),
     maxAge: SESSION_TTL_MS,
     path: "/",
   };
+}
+
+/**
+ * Developer Alpha: `Secure` used to be tied to NODE_ENV=production alone, which made a
+ * production-mode instance served over plain HTTP (a shared alpha box without TLS yet) silently
+ * unable to keep a session — the browser rejects a Secure cookie from an http:// origin. An explicit
+ * COOKIE_SECURE=true|false now overrides; unset keeps the previous behavior exactly (Secure iff
+ * NODE_ENV=production). Format is validated at startup (see config/startup-config.ts).
+ */
+export function isSecureCookieEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  if (env.COOKIE_SECURE === "true") return true;
+  if (env.COOKIE_SECURE === "false") return false;
+  return env.NODE_ENV === "production";
 }

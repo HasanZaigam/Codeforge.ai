@@ -30,9 +30,8 @@ export class ClaudeCodeAdapter implements CodingEngine {
 
   async run(request: EngineInvocationRequest): Promise<EngineInvocationResult> {
     const prompt =
-      request.role === "implementer"
-        ? buildImplementerPrompt(request.context)
-        : buildReviewerPrompt(request.context);
+      request.promptOverride ??
+      (request.role === "implementer" ? buildImplementerPrompt(request.context) : buildReviewerPrompt(request.context));
 
     const raw = await this.spawnClaude(prompt, request);
     return this.parseResult(raw, request);

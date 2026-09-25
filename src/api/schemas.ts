@@ -233,3 +233,38 @@ export const LoginSchema = z.object({
   email: z.string().trim().toLowerCase().email().max(320),
   password: z.string().min(1).max(200),
 });
+
+// ---------------------------------------------------------------------------
+// Phase 4A — Backlog Intelligence (see /docs/BACKLOG_INTELLIGENCE.md, /docs/API.md "Backlog").
+// Every body is `.strict()`: an unexpected key — `status`, `projectId`, `taskId`, `approved`, … — is
+// a 400, never silently ignored, so a client cannot even ATTEMPT to set platform-owned state.
+// ---------------------------------------------------------------------------
+
+const BacklogExternalRefSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(64)
+  .regex(/^[A-Za-z0-9][A-Za-z0-9._:/#-]*$/, "may contain letters, digits and . _ : / # - only");
+
+export const CreateBacklogItemSchema = z
+  .object({
+    title: z.string().trim().min(1).max(300),
+    description: z.string().trim().min(1).max(10_000),
+    externalRef: BacklogExternalRefSchema.nullish(),
+  })
+  .strict();
+
+export const UpdateBacklogItemSchema = z
+  .object({
+    title: z.string().trim().min(1).max(300).optional(),
+    description: z.string().trim().min(1).max(10_000).optional(),
+    externalRef: BacklogExternalRefSchema.nullable().optional(),
+  })
+  .strict()
+  .refine((v) => v.title !== undefined || v.description !== undefined || v.externalRef !== undefined, {
+    message: "Provide at least one of title, description, externalRef",
+  });
+
+/** For action endpoints (analyze / reject / approve / convert): no body content is meaningful, and none is accepted. */
+export const EmptyActionBodySchema = z.object({}).strict();
