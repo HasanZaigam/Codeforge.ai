@@ -133,7 +133,13 @@ export type TaskEventType =
    * platform failure) and TASK_CANCELLED (a human-requested stop). Task
    * status and workspace are deliberately left untouched.
    */
-  | "EXECUTION_LEASE_LOST";
+  | "EXECUTION_LEASE_LOST"
+  /**
+   * Phase 4D.2 — appended by ActionLayerService after a Chat-driven mutation (create/edit/start/cancel)
+   * has already succeeded and been read back and verified. Shows up in the SAME task history the Tasks
+   * UI reads, never a parallel Chat-only history.
+   */
+  | "CHAT_ACTION_PERFORMED";
 
 export interface TaskEventDTO {
   id: string;
@@ -431,6 +437,7 @@ export interface BacklogItemDTO {
 }
 
 export interface BacklogItemSummaryDTO extends BacklogItemDTO {
+  review?: ReviewSummary;
   latestAnalysis: { id: string; status: AnalysisStatus; completedAt: string } | null;
   proposal: { id: string; status: TaskProposalStatus; taskId: string | null } | null;
 }
@@ -494,13 +501,15 @@ export type VerificationState = "not_run" | "passed" | "failed" | "timed_out" | 
 /** A check the PLATFORM judged relevant to a behaviour claim. Analysis never runs it today (`not_run`). */
 export interface VerificationRequirement {
   claimIndex: number;
-  checkId: "build" | "test" | "lint" | "typecheck";
+  claimId?: string;
+  /** The project's approved claim check bound to this claim. */
+  checkId: string;
   state: VerificationState;
   reason: string;
   evidenceId: string | null;
 }
 
-export type ReconciliationOutcome = "IMPLEMENTATION_PRESENT" | "IMPLEMENTATION_POSSIBLE" | "UNRESOLVED" | "NO_CONFLICT" | "CHECK_VERIFIED";
+export type ReconciliationOutcome = "IMPLEMENTATION_PRESENT" | "IMPLEMENTATION_POSSIBLE" | "UNRESOLVED" | "NO_CONFLICT" | "CHECK_VERIFIED" | "CHECK_CONTRADICTED";
 
 /** The platform's own conclusion about how ONE AI claim relates to ONE body of platform evidence. Never "fixed"; never behaviour unless a bound check passed. */
 export interface ReconciliationFinding {
@@ -513,6 +522,85 @@ export interface ReconciliationFinding {
   evidenceIds: string[];
   explanation: string;
   behaviorVerified: boolean;
+  /** Approved checks that could verify this claim (bound by the platform); empty ⇒ behaviour stays unverified. */
+  availableChecks?: string[];
+  claimId?: string;
+  verificationId?: string | null;
+}
+
+export type BehaviorStatus = "BEHAVIOR_UNVERIFIED" | "CHECK_VERIFIED";
+
+export type InvestigationSignal = "IMPLEMENTATION_PRESENT" | "POSSIBLY_ALREADY_IMPLEMENTED" | "NO_CONFLICTING_IMPLEMENTATION_EVIDENCE" | "UNRESOLVED";
+
+/** The platform's own investigation of the item's premise — independent of the AI's claims; behaviour is always unverified here. */
+export type FlowStatus = "FLOW_REFERENCE_PRESENT" | "FLOW_NOT_ESTABLISHED" | "ENTRY_POINT_NOT_LOCATED";
+
+/** Static flow evidence for the item's entry point — a name-reference path, never a proven call path. */
+export interface InvestigationFlow {
+  status: FlowStatus;
+  entries: Array<{ route: string; file: string; handlers: string[]; located: "named_in_item" | "inferred_from_subject" }>;
+  path: Array<{ kind: "ROUTE_TO_HANDLER" | "DIRECT_REFERENCE" | "IMPORT_REFERENCE"; symbol: string; file: string }>;
+  evidenceIds: string[];
+}
+
+export interface Investigation {
+  flow?: InvestigationFlow;
+  revision: string | null;
+  premise: { kind: "absence" | "permissive"; mechanism: string; subjectTerms: string[] } | null;
+  signal: InvestigationSignal;
+  behavior: BehaviorStatus;
+  candidates: Array<{ path: string; symbol: string | null; subjectHits: string[]; wiredIn: string | null; evidenceIds: string[] }>;
+  filesRead: number;
+  explanation: string;
+}
+
+export type ReviewState = "NEEDS_ANALYSIS" | "NEEDS_CLARIFICATION" | "POSSIBLY_ALREADY_IMPLEMENTED" | "VERIFIED_CONFLICT" | "READY_FOR_PROPOSAL";
+
+/** Implementation and behaviour are two facts, never one: "present" does not mean "fixed". */
+export interface ReviewSummary {
+  state: ReviewState | null;
+  implementation: "present" | "possible" | "none_found" | "unknown";
+  behavior: BehaviorStatus;
+}
+
+export interface ClaimVerificationDTO {
+  id: string;
+  claimId: string;
+  claimIndex: number;
+  checkId: string;
+  revision: string;
+  state: VerificationState;
+  exitCode: number | null;
+  durationMs: number;
+  command: string;
+  logExcerpt: string | null;
+  createdAt: string;
+  jobId?: string | null;
+  executor?: string | null;
+  workspaceId?: string | null;
+  startedAt?: string | null;
+  completedAt?: string | null;
+  timedOut?: boolean;
+}
+
+export type VerificationJobStatus = "QUEUED" | "RUNNING" | "SUCCEEDED" | "FAILED" | "TIMED_OUT" | "CANCELLED";
+
+/** The EXECUTION of one verification. It never says a claim is verified — only a bound, passed record does. */
+export interface ClaimVerificationJobDTO {
+  id: string;
+  analysisId: string;
+  claimId: string;
+  claimIndex: number;
+  checkId: string;
+  revision: string;
+  status: VerificationJobStatus;
+  attemptCount: number;
+  maxAttempts: number;
+  cancelRequested: boolean;
+  failureReason: string | null;
+  createdAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
 }
 
 export interface Reconciliation {
@@ -521,13 +609,21 @@ export interface Reconciliation {
   alreadyImplemented: "strong" | "possible" | "none";
   behaviorVerified: boolean;
   ignoredEvidence: Array<{ id: string; reason: string }>;
+  implementation?: "present" | "possible" | "none";
+  implementationSources?: Array<"claim" | "investigation">;
+  behavior?: BehaviorStatus;
+  ignoredVerifications?: Array<{ id: string; reason: string }>;
 }
 
 export interface EvidenceAssessment {
   /** Absent on analyses recorded before reconciliation existed. */
   reconciliation?: Reconciliation;
+  /** Absent on analyses recorded before the platform investigated premises. */
+  investigation?: Investigation;
   /** Absent on analyses recorded before verification planning existed. */
   verification?: VerificationRequirement[];
+  /** Relevant approved checks with the platform's SUFFICIENCY verdict; an insufficient check can never verify the claim. */
+  verificationCandidates?: Array<{ claimIndex: number; claimId: string; checkId: string; claimClass: string; relevance: "not_relevant" | "relevant"; sufficiency: "sufficient" | "insufficient"; reason: string }>;
   evidence: PlatformEvidence[];
   claims: ClaimAssessment[];
   summary: { supported: number; contradicted: number; unresolved: number; notChecked: number };
@@ -711,6 +807,9 @@ export interface BacklogAnalysisJobDTO {
 
 export interface BacklogItemDetailDTO {
   item: BacklogItemDTO;
+  review?: ReviewSummary;
+  claimVerifications?: ClaimVerificationDTO[];
+  verificationJobs?: ClaimVerificationJobDTO[];
   latestAnalysis: BacklogAnalysisDTO | null;
   analysisJob: BacklogAnalysisJobDTO | null;
   analysisCount: number;
@@ -736,4 +835,342 @@ export interface ConvertProposalResult {
   proposal: TaskProposalDTO;
   task: TaskDTO;
   alreadyConverted: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 4B — bulk backlog
+// ---------------------------------------------------------------------------
+
+export interface ImportPreviewRow {
+  rowNumber: number;
+  status: "ACCEPTED" | "REJECTED";
+  reason: string | null;
+  detail: string | null;
+  sourceKey: string | null;
+  title: string | null;
+  warnings: string[];
+}
+
+export interface ImportPreviewDTO {
+  headers: string[];
+  mapping: { fields: Record<string, string>; metadataColumns: string[]; unnamedColumns: number };
+  rows: ImportPreviewRow[];
+  totalRows: number;
+  accepted: number;
+  rejected: number;
+  alreadyImported: number;
+  warnings: string[];
+  errors: string[];
+}
+
+export interface BacklogImportDTO {
+  id: string;
+  sourceName: string;
+  totalRows: number;
+  acceptedRows: number;
+  rejectedRows: number;
+  alreadyImportedRows: number;
+  createdAt: string;
+}
+
+export type BulkStatus = "QUEUED" | "RUNNING" | "COMPLETED" | "PARTIAL" | "FAILED" | "CANCELLED";
+
+export interface BulkViewDTO {
+  job: { id: string; importId: string | null; totalItems: number; cancelRequestedAt: string | null; createdAt: string };
+  status: BulkStatus;
+  counts: { total: number; queued: number; running: number; completed: number; failed: number; cancelled: number; skipped: number };
+  members: Array<{ backlogItemId: string; disposition: "QUEUED" | "REUSED" | "SKIPPED"; reason: string | null; ref: string | null; title: string | null; jobStatus: string | null }>;
+}
+
+export type ReviewFilterKey = "all" | "needs_analysis" | "analysis_ready" | "possibly_implemented" | "needs_clarification" | "duplicate" | "dependency" | "ready_for_proposal" | "verified" | "unverified" | "failed";
+
+export interface ReviewRowDTO {
+  itemId: string;
+  ref: string | null;
+  title: string;
+  status: BacklogItemStatus;
+  module: string | null;
+  priority: string | null;
+  analysis: { state: "NONE" | "QUEUED" | "RUNNING" | "SUCCEEDED" | "FAILED" | "CANCELLED"; failureCategory: string | null; failureReason: string | null; completedAt: string | null };
+  review: ReviewSummary;
+  flow: "FLOW_REFERENCE_PRESENT" | "FLOW_NOT_ESTABLISHED" | "ENTRY_POINT_NOT_LOCATED" | null;
+  evidenceCount: number;
+  verification: { checksAvailable: number; sufficientChecks: number; verified: boolean };
+  duplicates: { proposed: number; confirmed: number };
+  dependencies: { proposed: number; confirmed: number };
+  proposal: { id: string; status: string; taskId: string | null } | null;
+  usage: { inputTokens: number | null; outputTokens: number | null; estimatedCost: { amount: number; currency: string; pricingSource: string } | null; status: "reported" | "partial" | "unavailable" };
+}
+
+export interface BulkUsageDTO {
+  analyses: number;
+  withReportedUsage: number;
+  unavailable: number;
+  partial: number;
+  inputTokens: number;
+  outputTokens: number;
+  estimatedCost: Array<{ currency: string; amount: number; analysesWithEstimate: number; pricingSources: string[] }>;
+}
+
+export interface BulkReviewDTO {
+  rows: ReviewRowDTO[];
+  counts: Record<ReviewFilterKey, number>;
+  total: number;
+  usage: BulkUsageDTO;
+}
+
+export interface BacklogGroupsDTO {
+  duplicateGroups: Array<{ items: Array<{ id: string; ref: string | null; title: string }>; edges: Array<{ id: string; fromItemId: string; toItemId: string; confidence: string; status: string; rationale: string }> }>;
+  dependencies: Array<{ id: string; from: { id: string; ref: string | null; title: string }; to: { id: string; ref: string | null; title: string }; confidence: string; status: string; rationale: string }>;
+}
+
+export type BulkActionKey = "generate_proposals" | "approve_proposals" | "reject_proposals" | "convert_proposals" | "dismiss_duplicates";
+
+export interface BulkActionResultDTO {
+  results: Array<{ itemId: string; ok: boolean; detail: string | null; taskId?: string | null }>;
+  ok: number;
+  failed: number;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 4B.1 — human ground-truth adjudication
+// ---------------------------------------------------------------------------
+
+export type RelationshipJudgmentLabel = "CONFIRMED_DUPLICATE" | "RELATED_NOT_DUPLICATE" | "REJECTED";
+export type ClarificationLabel = "CORRECT_CLARIFICATION" | "SHOULD_BE_PROPOSAL_READY" | "INSUFFICIENT_ANALYSIS" | "OTHER";
+export type ProposalReadinessLabel = "CORRECT_PROPOSAL_READY" | "NEEDS_CLARIFICATION" | "INSUFFICIENT_ANALYSIS" | "OTHER";
+export type ReviewJudgmentCategory = "CLARIFICATION" | "PROPOSAL_READINESS";
+
+export interface RelationshipJudgmentDTO {
+  id: string;
+  relationshipId: string;
+  fromItemId: string;
+  toItemId: string;
+  analysisId: string;
+  revision: string | null;
+  aiConfidence: string;
+  label: RelationshipJudgmentLabel;
+  reviewerId: string;
+  note: string | null;
+  createdAt: string;
+}
+
+export interface ItemJudgmentDTO {
+  id: string;
+  backlogItemId: string;
+  analysisId: string;
+  revision: string | null;
+  category: ReviewJudgmentCategory;
+  aiReviewState: string | null;
+  label: ClarificationLabel | ProposalReadinessLabel;
+  reviewerId: string;
+  note: string | null;
+  createdAt: string;
+}
+
+export interface SampledEdgeDTO {
+  relationshipId: string;
+  fromItemId: string;
+  toItemId: string;
+  confidence: string;
+  status: string;
+  rationale: string;
+  analysisId: string;
+  revision: string | null;
+  current: RelationshipJudgmentDTO | null;
+  history: RelationshipJudgmentDTO[];
+}
+
+export interface SampledGroupDTO {
+  groupKey: string;
+  items: Array<{ id: string; ref: string | null; title: string }>;
+  edges: SampledEdgeDTO[];
+}
+
+export interface InfrastructureFailureDTO {
+  itemId: string;
+  ref: string | null;
+  title: string | null;
+  failureCategory: string | null;
+  failureReason: string | null;
+}
+
+export interface DuplicateSampleDTO {
+  seed: string;
+  size: number;
+  totalGroups: number;
+  groups: SampledGroupDTO[];
+  infrastructureFailures: InfrastructureFailureDTO[];
+}
+
+export interface SampledItemDTO {
+  row: ReviewRowDTO;
+  current: ItemJudgmentDTO | null;
+  history: ItemJudgmentDTO[];
+  stale: boolean;
+}
+
+export interface ItemSampleDTO {
+  seed: string;
+  size: number;
+  totalCandidates: number;
+  sampled: SampledItemDTO[];
+  infrastructureFailures: InfrastructureFailureDTO[];
+}
+
+export interface AdjudicationMetricsDTO {
+  duplicates: { groupsReviewed: number; totalGroups: number; relationshipsReviewed: number; staleRelationships: number; confirmedDuplicate: number; relatedNotDuplicate: number; rejected: number; confirmationRate: number | null };
+  clarification: { reviewed: number; stale: number; correctClarification: number; shouldBeProposalReady: number; insufficientAnalysis: number; other: number };
+  proposalReadiness: { reviewed: number; stale: number; correctProposalReady: number; needsClarification: number; insufficientAnalysis: number; other: number };
+}
+
+export interface LabelCountsDTO {
+  duplicateLabelCount: number;
+  clarificationLabelCount: number;
+  proposalReadinessLabelCount: number;
+  validLabelCount: number;
+  staleLabelCount: number;
+  humanLabelCount: number;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 4B.2 — human-filled CSV import and baseline snapshots
+// ---------------------------------------------------------------------------
+
+export type ImportRowOutcome = "IMPORTED" | "BLANK" | "INVALID_LABEL" | "MALFORMED_ROW" | "UNKNOWN_KIND" | "WRONG_PROJECT" | "NOT_FOUND";
+
+export interface AdjudicationImportSummaryDTO {
+  totalRows: number;
+  imported: number;
+  blank: number;
+  invalidLabel: number;
+  malformedRow: number;
+  wrongProject: number;
+  notFound: number;
+  results: Array<{ rowNumber: number; outcome: ImportRowOutcome; detail: string | null }>;
+}
+
+export type ReviewCategoryStatus = "NOT_REVIEWED" | "IN_PROGRESS" | "REVIEWED";
+
+export interface BaselineMetricsDTO {
+  duplicates: { candidateGroups: number; sampledGroups: number; sampledEdges: number; reviewedEdges: number; unreviewedEdges: number; staleEdges: number; labelDistribution: Record<string, number>; confirmationRate: number | null; status: ReviewCategoryStatus };
+  clarification: { candidateCount: number; sampledCount: number; reviewedCount: number; unreviewedCount: number; staleCount: number; labelDistribution: Record<string, number>; status: ReviewCategoryStatus };
+  proposalReadiness: { candidateCount: number; sampledCount: number; reviewedCount: number; unreviewedCount: number; staleCount: number; labelDistribution: Record<string, number>; status: ReviewCategoryStatus };
+  coverage: { labelsCollected: number; staleLabels: number; sampledTotal: number; notYetReviewed: number };
+  limitations: string[];
+}
+
+export interface BaselineSampleDTO {
+  runId: string | null;
+  duplicateGroups: Array<{ groupKey: string; edgeIds: string[] }>;
+  clarificationItemIds: string[];
+  proposalReadyItemIds: string[];
+  analysisIds: string[];
+  infrastructureFailures: InfrastructureFailureDTO[];
+  requestedSampleSizes: { duplicateSize: number; clarificationSize: number; proposalReadySize: number };
+  actualSampleSizes: { duplicateGroups: number; duplicateEdges: number; clarificationItems: number; proposalReadyItems: number };
+}
+
+export interface BaselineDTO {
+  id: string;
+  projectId: string;
+  version: number;
+  seed: string;
+  sourceName: string | null;
+  repositoryRevisions: string[];
+  models: string[];
+  sample: BaselineSampleDTO;
+  metrics: BaselineMetricsDTO;
+  established: boolean;
+  createdBy: string;
+  createdAt: string;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 4C — Chat
+// ---------------------------------------------------------------------------
+
+export interface ChatMessageDTO {
+  id: string;
+  conversationId: string;
+  role: "user" | "assistant";
+  content: string;
+  attachment: { filename: string; mimeType: string; byteSize: number } | null;
+  bulkJobId: string | null;
+  createdAt: string;
+}
+
+export interface ChatAttachmentDTO {
+  filename: string;
+  mimeType: string;
+  contentBase64: string;
+}
+
+/**
+ * A mutation Chat has proposed and is waiting on an explicit yes/no reply for. Confirm/Decline just send
+ * the same "yes"/"no" text through sendMessage — never a second mutation endpoint. Phase 4D.3 introduced
+ * the bulk variants; Phase 4D.4 added the single-task human-confirmed completion variant.
+ */
+export type ChatPendingActionDTO =
+  | { kind: "BULK_CANCEL" | "BULK_START"; status: TaskStatus; taskIds: string[]; titles: string[]; createdAt: string }
+  | { kind: "HUMAN_MARK_DONE"; taskId: string; taskTitle: string; observedStatus: TaskStatus; createdAt: string }
+  | { kind: "UPLOAD_TASK_CREATION"; importId: string; itemIds: string[]; filterDescription: string; titles: string[]; createdAt: string };
+
+export interface SendChatMessageResponseDTO {
+  userMessage: ChatMessageDTO;
+  assistantMessage: ChatMessageDTO;
+  pendingAction: ChatPendingActionDTO | null;
+}
+
+/** A subset of the existing bulk-review row (see ReviewRow on the backend) — only what Chat's suggestion card needs. */
+export interface ChatSuggestionDTO {
+  itemId: string;
+  ref: string | null;
+  title: string;
+  status: BacklogItemStatus;
+  proposal: { id: string; status: TaskProposalStatus; taskId: string | null } | null;
+}
+
+export interface CreateTasksFromChatResponseDTO {
+  createdTaskIds: string[];
+  results: Array<{ itemId: string; ok: boolean; detail: string | null; taskId?: string }>;
+}
+
+/** GET /settings/ai-model — read-only. See src/api/routes/ai-model.ts's own doc comment for why this is deliberately narrow. */
+export interface AiModelInfoDTO {
+  configured: boolean;
+  models: Array<{ modelId: string; providerId: string; engineKey: string }>;
+  autoDescription: string;
+}
+
+// ---------------------------------------------------------------------------
+// Model Gateway — Settings -> AI / Models (see docs/MODEL_GATEWAY.md)
+// ---------------------------------------------------------------------------
+
+export type AiProviderId = "google" | "anthropic" | "openai";
+
+/** The provider's API key is write-only — never included here. */
+export interface ProviderConnectionDTO {
+  provider: AiProviderId;
+  connected: boolean;
+  model: string | null;
+  status: "connected" | "disconnected" | "error";
+  lastVerifiedAt: string | null;
+  lastError: string | null;
+}
+
+export interface GlobalAiConfigDTO {
+  mode: "auto" | "fixed";
+  fixedProvider: AiProviderId | null;
+  fixedModel: string | null;
+  autoAllowed: Array<{ provider: AiProviderId; allowed: boolean; connected: boolean }>;
+}
+
+export interface ProviderUsageTotalsDTO {
+  providerId: string;
+  runsWithUsage: number;
+  runsTotal: number;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  totalTokens: number | null;
 }

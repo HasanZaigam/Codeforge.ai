@@ -51,6 +51,18 @@ export const MIGRATION_FILES = [
   "013_backlog_intelligence.sql",
   "014_backlog_analysis_jobs.sql",
   "015_repository_indexes.sql",
+  "016_claim_verifications.sql",
+  "017_claim_verification_jobs.sql",
+  "018_bulk_backlog.sql",
+  "019_backlog_adjudication.sql",
+  "020_backlog_adjudication_baselines.sql",
+  "021_relationship_judgment_fk_fix.sql",
+  "022_chat.sql",
+  "023_chat_context.sql",
+  "024_chat_pending_action.sql",
+  "025_chat_last_task_ids.sql",
+  "026_chat_active_import_id.sql",
+  "027_model_gateway.sql",
 ];
 
 function runMigrations(db: DatabaseSync): void {

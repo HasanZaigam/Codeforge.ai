@@ -3,7 +3,7 @@ import { Link, useParams } from "react-router-dom";
 import { useBacklogItem } from "../hooks/useBacklogItem.js";
 import { backlogApi, ApiError, type BacklogItemDetailDTO, type TaskDTO } from "../api/index.js";
 import { EDITABLE_STATUSES } from "../lib/backlogLabels.js";
-import { BacklogStatusBadge } from "../components/backlog/BacklogStatusBadge.js";
+import { BacklogStatusBadge, ReviewBadges } from "../components/backlog/BacklogStatusBadge.js";
 import { AnalysisJobPanel } from "../components/backlog/AnalysisJobPanel.js";
 import { AnalysisPanel } from "../components/backlog/AnalysisPanel.js";
 import { RelationshipList } from "../components/backlog/RelationshipList.js";
@@ -84,6 +84,19 @@ export function BacklogItemPage() {
       adopt((d) => ({ ...withItem(d, updated), analysisJob: job }));
       refetch();
     });
+  const handleRunVerification = () =>
+    run(async () => {
+      // Only enqueues worker jobs for the approved checks bound to this analysis; the result arrives by polling.
+      const out = await backlogApi.requestVerification(item.id);
+      adopt((d) => ({ ...d, verificationJobs: [...out.jobs, ...(d.verificationJobs ?? []).filter((j) => !out.jobs.some((n) => n.id === j.id))] }));
+      refetch();
+    });
+  const handleCancelVerification = (jobId: string) =>
+    run(async () => {
+      const job = await backlogApi.cancelVerification(item.id, jobId);
+      adopt((d) => ({ ...d, verificationJobs: (d.verificationJobs ?? []).map((j) => (j.id === job.id ? job : j)) }));
+      refetch();
+    });
   const handleReject = () =>
     run(async () => {
       const updated = await backlogApi.reject(item.id);
@@ -120,7 +133,7 @@ export function BacklogItemPage() {
   return (
     <div>
       <Link to={`/projects/${item.projectId}/backlog`} className="breadcrumb">
-        ← Back to backlog
+        ← Issues &amp; Requests
       </Link>
 
       {/* a. Header */}
@@ -130,6 +143,7 @@ export function BacklogItemPage() {
           <h1>{item.title}</h1>
           <BacklogStatusBadge status={status} />
         </div>
+        <ReviewBadges review={detail.review} />
         <span className="backlog-not-task">Backlog item — not an executable task</span>
       </div>
 
@@ -158,6 +172,56 @@ export function BacklogItemPage() {
           )}
         </div>
       )}
+
+      {/* What CodeForge understood / conclusion / next step — the plain-language summary of the technical Analysis section below */}
+      {latestAnalysis?.status === "succeeded" && latestAnalysis.result && (
+        <div className="section">
+          <h2>What CodeForge understood</h2>
+          <p className="backlog-description">{latestAnalysis.result.summary}</p>
+        </div>
+      )}
+      <div className="section">
+        <h2>AI conclusion</h2>
+        {status === "NEEDS_CLARIFICATION" && (
+          <>
+            <p>
+              <strong>Needs clarification.</strong> CodeForge needs more information before it can prepare this issue for
+              implementation.
+            </p>
+            <p className="field-hint">What happens next: edit the issue with the missing details, then re-analyze.</p>
+            <button type="button" className="btn btn-primary" onClick={() => setEditing(true)}>
+              Add clarification
+            </button>
+          </>
+        )}
+        {(status === "READY_FOR_TASK" || hasLiveProposal) && (
+          <>
+            <p>
+              <strong>Ready to build.</strong> CodeForge found enough evidence to propose a task.
+            </p>
+            <p className="field-hint">What happens next: review the proposal below and approve it to create a task.</p>
+            <a className="btn btn-primary" href="#task-proposal">
+              Review proposal
+            </a>
+          </>
+        )}
+        {status === "ANALYZED" && !hasLiveProposal && (
+          <>
+            <p>
+              <strong>Analyzed.</strong> CodeForge has reviewed this issue but hasn't proposed a task yet.
+            </p>
+            <p className="field-hint">What happens next: generate a task proposal below, or edit the issue if something needs correcting.</p>
+          </>
+        )}
+        {(status === "NEW" || status === "ANALYZING") && (
+          <p className="field-hint">
+            {status === "ANALYZING" ? "CodeForge is analyzing this issue now." : "This issue hasn't been analyzed yet."}
+          </p>
+        )}
+        {(status === "CONVERTED" || status === "REJECTED") && (
+          <p className="field-hint">{READ_ONLY_REASONS[status]}</p>
+        )}
+      </div>
 
       {/* b. Actions */}
       <div className="section">
@@ -220,10 +284,12 @@ export function BacklogItemPage() {
         )}
       </div>
 
-      {/* c. Analysis */}
+      {/* c. Analysis — the full technical breakdown (claims, evidence, verification) stays available, just not front-and-center */}
       <div className="section">
-        <h2>Analysis</h2>
-        <AnalysisPanel analysis={latestAnalysis} itemStatus={status} jobStatus={analysisJob?.status ?? null} />
+        <details>
+          <summary>View technical details</summary>
+          <AnalysisPanel analysis={latestAnalysis} itemStatus={status} jobStatus={analysisJob?.status ?? null} verifications={detail.claimVerifications ?? []} controls={{ jobs: detail.verificationJobs ?? [], busy, onRun: handleRunVerification, onCancel: handleCancelVerification }} />
+        </details>
       </div>
 
       {/* d. Relationships */}
@@ -239,7 +305,7 @@ export function BacklogItemPage() {
       </div>
 
       {/* e. Proposal */}
-      <div className="section">
+      <div className="section" id="task-proposal">
         <h2>Task proposal</h2>
         <ProposalPanel
           proposal={proposal}

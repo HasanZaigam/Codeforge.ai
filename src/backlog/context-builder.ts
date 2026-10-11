@@ -3,7 +3,7 @@ import type { ProjectWorkspaceRepository } from "../persistence/repositories/pro
 import type { ProjectContextService } from "../project-workspace/project-context-service.js";
 import { loadProjectContextSection } from "../orchestrator/project-context-loader.js";
 import type { AnalysisContextSummary, BacklogItem, IndexSummary, SelectionSummary } from "./backlog-types.js";
-import { rankFiles, type RankedFile } from "./index-selection.js";
+import { DEFAULT_RANK_CONFIG, rankFiles, type RankConfig, type RankedFile } from "./index-selection.js";
 import { countSymbols } from "./repository-index.js";
 import type { IndexAccess } from "./repository-index-service.js";
 import { buildAnalysisPrompt, PROMPT_LIMITS, type PromptExcerpt } from "./analysis-prompt.js";
@@ -45,7 +45,18 @@ export interface BuiltAnalysisContext {
 }
 
 /** How many files' content the platform pre-selects into the prompt, and how much of each. Small on purpose: excerpts orient the model, they are not the repository. */
-export const EXCERPT_LIMITS = { maxFiles: 6, maxCharsPerFile: 3000, maxTotalChars: 16_000 } as const;
+export interface ExcerptLimits {
+  maxFiles: number;
+  maxCharsPerFile: number;
+  maxTotalChars: number;
+}
+export const EXCERPT_LIMITS: ExcerptLimits = { maxFiles: 8, maxCharsPerFile: 2200, maxTotalChars: 16_000 };
+
+/** Selection knobs — production passes none; the retrieval benchmark passes presets to MEASURE a change before it is adopted. */
+export interface SelectionTuning {
+  rank?: Partial<RankConfig>;
+  excerpts?: Partial<ExcerptLimits>;
+}
 
 /**
  * The bounded context-building abstraction for backlog analysis (see /docs/BACKLOG_INTELLIGENCE.md
@@ -61,6 +72,7 @@ export class BacklogContextBuilder {
   constructor(
     private readonly projectWorkspaces: ProjectWorkspaceRepository,
     private readonly projectContext: ProjectContextService,
+    private readonly tuning: SelectionTuning = {},
   ) {}
 
   async build(project: Project, item: BacklogItem, siblings: BacklogItem[], signal: AbortSignal, repo: RepositoryAccess = NO_REPOSITORY_ACCESS): Promise<BuiltAnalysisContext> {
@@ -75,22 +87,23 @@ export class BacklogContextBuilder {
     const usableIndex = repo.index?.state === "used" && repo.index.index && listing ? repo.index.index : null;
     let ranked: RankedFile[] = [];
     if (usableIndex && selected) {
-      ranked = rankFiles(usableIndex, queryText, { maxResults: DEFAULT_STRUCTURE_LIMITS.maxRelevantPaths, contextText: projectContextSection });
+      ranked = rankFiles(usableIndex, queryText, { maxResults: DEFAULT_STRUCTURE_LIMITS.maxRelevantPaths, contextText: projectContextSection, config: { ...DEFAULT_RANK_CONFIG, ...this.tuning.rank } });
       if (ranked.length > 0) selected = { ...selected, relevantPaths: ranked.map((r) => r.path) };
     }
     const method: SelectionSummary["method"] = ranked.length > 0 ? "index" : "name";
 
     // Excerpts: the platform picks the best-ranked readable files and reads them under the shared budget.
+    const limits: ExcerptLimits = { ...EXCERPT_LIMITS, ...this.tuning.excerpts };
     let excerpts: PromptExcerpt[] = [];
     if (repo.session && repo.inspector && selected) {
       const tokens = tokenize(queryText);
       const candidates = selected.relevantPaths.filter((p) => normalizeRepoPath(p) === p && !isNoisePath(p) && repo.inspector!.isReadableCandidate(p));
       let used = 0;
       for (const path of candidates) {
-        if (excerpts.length >= EXCERPT_LIMITS.maxFiles || used >= EXCERPT_LIMITS.maxTotalChars) break;
+        if (excerpts.length >= limits.maxFiles || used >= limits.maxTotalChars) break;
         const outcome = await repo.inspector.read(path, signal);
         if (!outcome.ok) continue;
-        const ex = excerptFor(outcome.file.text, tokens, Math.min(EXCERPT_LIMITS.maxCharsPerFile, EXCERPT_LIMITS.maxTotalChars - used));
+        const ex = excerptFor(outcome.file.text, tokens, Math.min(limits.maxCharsPerFile, limits.maxTotalChars - used));
         if (ex.text.length === 0) continue;
         excerpts.push({ path, text: ex.text, truncated: ex.truncated });
         used += ex.text.length;

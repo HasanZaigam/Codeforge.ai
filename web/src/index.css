@@ -1302,25 +1302,119 @@ a {
   color: var(--color-text);
 }
 
-/* Project Overview (ProjectOverviewPage.tsx) */
+/* Project Overview (ProjectOverviewPage.tsx) — a two-column engineering workspace: Chat (right, ~65%,
+   visually dominant) and compact Tasks/Workspace status (left, ~35%). Mobile stacks Chat first, then
+   Tasks, then Workspace — the DOM is already in that order, so desktop uses flex-direction: row-reverse
+   to visually swap sides without reordering markup or touching accessibility/tab order. */
 
-.overview-status-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
-  gap: var(--space-3);
-}
+.overview-page { display: flex; flex-direction: column; gap: var(--space-4); }
 
-.overview-status-cell {
+.overview-meta { display: flex; gap: var(--space-2); flex-wrap: wrap; }
+
+.overview-main { display: flex; flex-direction: column; gap: var(--space-4); }
+
+.overview-chat-col { display: flex; min-width: 0; }
+
+.overview-chat-card {
   display: flex;
   flex-direction: column;
-  align-items: flex-start;
-  gap: var(--space-1);
-  padding: var(--space-2) 0;
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  padding: var(--space-4);
+  box-shadow: var(--shadow-card);
 }
 
-.overview-status-count {
-  font-size: 1.1rem;
-  font-weight: 700;
+.overview-left-col {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+.overview-block {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-3) var(--space-4);
+}
+
+/* Tasks is the more useful of the two left-column blocks — give it more room to breathe and let
+   Workspace stay small underneath it, rather than the two competing for equal space. */
+.overview-block-tasks { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.overview-block-workspace { flex: 0 0 auto; padding: var(--space-2) var(--space-4); }
+.overview-block-workspace .overview-block-header { margin-bottom: 2px; }
+
+.overview-block-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-2);
+}
+
+.overview-block-header h3 { margin: 0; font-size: 1rem; }
+
+.overview-workspace-label { margin: 0; font-weight: 600; font-size: 0.88rem; }
+
+.overview-attention-label {
+  margin: 0 0 var(--space-1);
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--color-text-muted);
+}
+
+/* The attention list scrolls internally past a handful of rows, so a project with many FAILED/REVIEW
+   tasks never pushes the Workspace block far down the page — same "card owns its own scroll" pattern
+   the Chat panel already uses. */
+.overview-attention-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 360px;
+  overflow-y: auto;
+}
+.overview-attention-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+  border-radius: var(--radius-md);
+}
+.overview-attention-list li:hover { background: var(--color-bg); }
+.overview-attention-list li a { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Status pills sit above "Needs attention" and are colored by the same tone system as status-badge, so
+   Failed/Review counts actually stand out instead of reading as flat, equally-weighted gray text. */
+.overview-status-pills { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: var(--space-3); }
+.overview-status-pill {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  white-space: nowrap;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: var(--tone-neutral-bg);
+  color: var(--tone-neutral-text);
+}
+.overview-status-pill strong { font-weight: 700; }
+.overview-status-pill.tone-active { background: var(--tone-active-bg); color: var(--tone-active-text); }
+.overview-status-pill.tone-attention { background: var(--tone-attention-bg); color: var(--tone-attention-text); }
+.overview-status-pill.tone-info { background: var(--tone-info-bg); color: var(--tone-info-text); }
+.overview-status-pill.tone-success { background: var(--tone-success-bg); color: var(--tone-success-text); }
+.overview-status-pill.tone-danger { background: var(--tone-danger-bg); color: var(--tone-danger-text); }
+
+@media (min-width: 900px) {
+  .overview-main { flex-direction: row-reverse; align-items: stretch; }
+  .overview-chat-col { flex: 0 0 65%; }
+  .overview-left-col { flex: 0 0 calc(35% - var(--space-4)); }
 }
 
 /* Project Workspace screen (ProjectWorkspacePage.tsx) — left section nav + main content, following
@@ -1746,4 +1840,126 @@ a {
   .claim-row {
     grid-template-columns: 1fr 1fr 1fr;
   }
+}
+
+/* Phase 4B — bulk review */
+.bulk-toolbar, .bulk-filters, .bulk-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; align-items: center; }
+.table-scroll { overflow-x: auto; }
+.bulk-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+.bulk-table th, .bulk-table td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border, #e5e7eb); vertical-align: top; }
+.import-preview { margin: 12px 0; }
+
+/* Phase 4B.6 — Issues & Requests compact table (mobile: rows collapse into stacked cards) */
+@media (max-width: 720px) {
+  .issues-table thead { display: none; }
+  .issues-table, .issues-table tbody, .issues-table tr, .issues-table td { display: block; width: 100%; }
+  .issues-table-row { border: 1px solid var(--border, #e5e7eb); border-radius: 8px; margin-bottom: 10px; padding: 4px 0; }
+  .issues-table-row td { border-bottom: none; padding: 4px 12px; }
+  .issues-table-row td:before { content: attr(data-label); display: block; font-size: 0.75rem; color: var(--text-muted, #6b7280); }
+}
+
+/* Phase 4C — Chat (inside Overview). The panel fills its card and the composer stays pinned at the
+   bottom: .chat-messages is the only scrolling region, so a long conversation never grows the page. */
+.chat-panel { display: flex; flex-direction: column; gap: var(--space-3); flex: 1; min-height: 0; }
+
+.chat-panel-header { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-3); }
+.chat-panel-header h3 { margin: 0 0 2px; }
+.chat-panel-header p { margin: 0; max-width: 52ch; }
+.chat-context-indicator { flex-shrink: 0; font-size: 0.78rem; color: var(--tone-success-text); white-space: nowrap; }
+
+.chat-messages { display: flex; flex-direction: column; gap: var(--space-3); flex: 1; min-height: 220px; max-height: 55vh; overflow-y: auto; padding-right: 4px; }
+.chat-message { border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 10px 12px; max-width: 90%; }
+.chat-message-user { align-self: flex-end; background: var(--tone-active-bg); border-color: transparent; }
+.chat-message-assistant { align-self: flex-start; background: var(--color-surface); }
+.chat-message-meta { display: flex; gap: 8px; align-items: baseline; margin-bottom: 4px; }
+.chat-message-content { white-space: pre-wrap; word-break: break-word; }
+
+.chat-empty-state { text-align: center; padding: var(--space-5) var(--space-3); margin: auto; }
+.chat-empty-state h4 { margin: 0 0 4px; }
+.chat-empty-state p { max-width: 44ch; margin: 0 auto var(--space-3); }
+.chat-suggestion-chips { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
+.chat-suggestion-chip {
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  border-radius: 999px;
+  padding: 6px 14px;
+  font-size: 0.82rem;
+  color: var(--color-text);
+  cursor: pointer;
+}
+.chat-suggestion-chip:hover { border-color: var(--color-primary); color: var(--color-primary); }
+
+.chat-suggestions { margin-top: 10px; border-top: 1px dashed var(--color-border); padding-top: 10px; }
+.chat-suggestion-list { list-style: none; margin: 8px 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.chat-suggestion-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--color-border); }
+.chat-suggestion-row:last-child { border-bottom: none; }
+.chat-suggestion-row label { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.chat-suggestion-row label span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-suggestion-view-link { flex-shrink: 0; font-size: 0.82rem; }
+.chat-suggestion-actions { margin-top: 8px; display: flex; gap: 8px; flex-wrap: wrap; }
+
+/* A modern, pill-shaped composer — one visual unit rather than raw stacked form controls. */
+.chat-composer { border-top: 1px solid var(--color-border); padding-top: var(--space-3); }
+.chat-composer-row {
+  display: flex;
+  gap: 6px;
+  align-items: flex-end;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  padding: 6px 6px 6px 10px;
+  background: var(--color-surface);
+}
+.chat-composer-row:focus-within { border-color: var(--color-primary); }
+.chat-composer-row textarea {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  resize: none;
+  padding: 8px 4px;
+  background: transparent;
+}
+.chat-composer-row textarea:focus { outline: none; }
+.chat-file-input-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+.chat-attach-btn {
+  flex-shrink: 0;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 1px solid var(--color-border);
+  background: var(--color-bg);
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+  color: var(--color-text-muted);
+}
+.chat-attach-btn:hover { color: var(--color-primary); border-color: var(--color-primary); }
+.chat-send-btn { border-radius: 999px; flex-shrink: 0; }
+.chat-attachment-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.82rem;
+  margin-bottom: 6px;
+  background: var(--tone-neutral-bg);
+  border-radius: 999px;
+  padding: 3px 6px 3px 10px;
+}
+.chat-attachment-remove { border: none; background: none; cursor: pointer; font-size: 1rem; line-height: 1; color: var(--color-text-muted); padding: 0 4px; }
+.chat-attachment-remove:hover { color: var(--tone-danger-text); }
+.chat-attachment-thumb { width: 20px; height: 20px; object-fit: cover; border-radius: 4px; }
+.btn-sm { padding: 5px 10px; font-size: 0.82rem; }
+.chat-pending-action {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+  padding: 8px 12px;
+  background: var(--tone-neutral-bg);
+  border-radius: var(--radius-md);
+  font-size: 0.88rem;
+}
+
+@media (max-width: 720px) {
+  .chat-messages { max-height: 55vh; }
+  .chat-message { max-width: 100%; }
 }

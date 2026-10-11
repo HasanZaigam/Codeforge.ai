@@ -76,7 +76,8 @@ export function buildTaskProposalContent(input: ProposalBuildInput): TaskProposa
   // Phase 4A.4 — the reconciliation signal. It never says "fixed": it says implementation evidence conflicts with a
   // reported absence and behaviour is unverified, and it turns the task into an investigation.
   const reconciliation = assessment?.reconciliation;
-  const implementationConflict = reconciliation?.alreadyImplemented ?? "none";
+  // Combined: what the claims reconcile to AND what the platform's own investigation found (Phase 4A.5). "strong" = declared-and-wired-in.
+  const implementationConflict: "strong" | "possible" | "none" = reconciliation?.implementation === "present" ? "strong" : reconciliation?.implementation === "possible" ? "possible" : (reconciliation?.alreadyImplemented ?? "none");
 
   const content: TaskProposalContent = {
     title: truncate(item.title, 300),
@@ -98,6 +99,11 @@ export function buildTaskProposalContent(input: ProposalBuildInput): TaskProposa
   const conflicts = (reconciliation?.findings ?? [])
     .filter((f) => f.outcome === "IMPLEMENTATION_PRESENT" || f.outcome === "IMPLEMENTATION_POSSIBLE")
     .map((f) => `"${truncate(f.statement, 300)}" — ${f.explanation}${f.evidenceIds.length ? ` Evidence: ${evidenceLinesFor(f.evidenceIds, assessment?.evidence ?? []).join("; ")}` : ""}`);
+  const inv = assessment?.investigation;
+  if (inv && (inv.signal === "IMPLEMENTATION_PRESENT" || inv.signal === "POSSIBLY_ALREADY_IMPLEMENTED")) {
+    const ids = inv.candidates.flatMap((c) => c.evidenceIds);
+    conflicts.push(`Platform investigation of this item's premise — ${inv.explanation}${ids.length ? ` Evidence: ${evidenceLinesFor(ids, assessment?.evidence ?? []).join("; ")}` : ""}`);
+  }
   content.goal = renderGoal(item, content, conflicts);
   return TaskProposalContentSchema.parse(content);
 }

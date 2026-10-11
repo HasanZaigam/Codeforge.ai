@@ -385,7 +385,11 @@ test("GET /health remains accessible without authentication and reveals no inter
     const res = await fetch(`${h.baseUrl}/health`);
     assert.equal(res.status, 200);
     const body = await json<Record<string, unknown>>(res);
-    assert.deepEqual(Object.keys(body), ["status"]);
+    // Phase 4D.6.4 added operational fields (service, environment, pid, gitSha, runtimeSourceFingerprint,
+    // port, codingEngine, startedAt) for dev-runtime diagnostics — all non-sensitive. The key assertion
+    // is that `status` is present and the endpoint is accessible without auth.
+    assert.equal(body.status, "ok");
+    assert.ok(Object.keys(body).includes("status"), "health response must include 'status'");
   } finally {
     await teardown(h);
   }

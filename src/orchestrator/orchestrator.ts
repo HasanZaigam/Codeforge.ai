@@ -36,7 +36,7 @@ import { DEFAULT_ORCHESTRATOR_CONFIG, type OrchestratorConfig } from "./config.j
 import { classifyOrchestratorFailure, type OrchestratorFailurePhase } from "./failure-classifier.js";
 import { computeBackoffDelayMs, sleepUnlessAborted } from "../coding-engine/retry-backoff.js";
 import type { ModelRegistry } from "../routing/model-registry.js";
-import { selectModel } from "../routing/model-router.js";
+import { selectModel, type ModelGatewayLookup } from "../routing/model-router.js";
 import { deriveHealthOnFailure, deriveHealthOnSuccess } from "../routing/provider-health-policy.js";
 import type { ProviderHealthRepository } from "../persistence/repositories/provider-health-repository.js";
 // The Orchestrator is otherwise provider-agnostic (see SourceControlProvider), but distinguishing
@@ -89,6 +89,15 @@ export class Orchestrator {
     // pre-Slice-5 caller that constructs an Orchestrator directly (not via platform.ts) needs no change.
     private readonly modelRegistry: ModelRegistry | null = null,
     private readonly providerHealthRepo: ProviderHealthRepository | null = null,
+    /**
+     * Model Gateway — when wired, SUPERSEDES the raw `modelRegistry`/`providerHealthRepo` pair
+     * above for the actual selection decision (see runAgent): it resolves per-ACCOUNT (the
+     * project's `ownerId`) connected providers/Global AI Brain config instead of one static,
+     * process-wide registry. `null` (every pre-Model-Gateway caller that constructs an Orchestrator
+     * directly) preserves the exact prior behavior — see ModelGatewayService.resolveModelSelection's
+     * own backward-compatibility doc comment.
+     */
+    private readonly modelGateway: ModelGatewayLookup | null = null,
   ) {}
 
   /**
@@ -212,15 +221,29 @@ export class Orchestrator {
     return this.requireTask(taskId);
   }
 
-  /** Developer accepts a REVIEW result. */
-  acceptReview(taskId: string): Task {
+  /**
+   * A human explicitly accepts a REVIEW result — the SAME "accepted" transition
+   * `finalizeMergedPullRequest` drives automatically on an observed GitHub merge (see that method's
+   * own doc comment for why it needs a dedicated atomic repository guard instead), just reached via
+   * an explicit in-app/Chat action instead of polling. `transition()` itself is the only guard that
+   * matters here: a task not currently in REVIEW throws `InvalidTransitionError`, exactly like every
+   * other illegal transition in this file — there is no separate pre-check to keep in sync.
+   *
+   * Phase 4D.4 — `provenance` records WHO asked for this and THROUGH WHAT surface (e.g. Chat), so a
+   * task's history can distinguish a human's explicit completion from the SAME transition fired by
+   * `finalizeMergedPullRequest` (which never appends `TASK_COMPLETED` at all — see its own doc
+   * comment). Optional and omittable so any future caller that doesn't have this context yet still
+   * works exactly as before.
+   */
+  acceptReview(taskId: string, provenance?: { completedBy: string; completedVia: string }): Task {
     const now = new Date().toISOString();
     const task = this.requireTask(taskId);
     task.status = transition(task.status, "accepted");
     task.completedAt = now;
     this.taskRepo.save(task, now);
-    this.eventRepo.append(taskId, "TASK_ACCEPTED", {}, now);
-    this.eventRepo.append(taskId, "TASK_COMPLETED", {}, now);
+    const payload = provenance ? { completionSource: "HUMAN_CONFIRMED", completedBy: provenance.completedBy, completedVia: provenance.completedVia } : {};
+    this.eventRepo.append(taskId, "TASK_ACCEPTED", payload, now);
+    this.eventRepo.append(taskId, "TASK_COMPLETED", payload, now);
     return this.requireTask(taskId);
   }
 
@@ -1268,15 +1291,25 @@ export class Orchestrator {
         priorModelIdsInOrder.push(run.modelId);
       }
     }
+    // Model Gateway — when wired, resolves against THIS project's owner's connected providers/
+    // Global AI Brain config; `credentialEnv` carries the decrypted key the resolved provider
+    // needs. Falls back to the pre-Model-Gateway `modelRegistry`/`providerHealthRepo` pair when no
+    // gateway is wired, or (within the gateway itself) when the account has no connections at all —
+    // see ModelGatewayService.resolveModelSelection's own backward-compatibility doc comment.
+    const gatewayResult = this.modelGateway
+      ? this.modelGateway.resolveModelSelection(project.ownerId, engine.key, operation, priorModelIdsInOrder.length, now(), this.modelRegistry)
+      : null;
     const selection =
-      this.modelRegistry && this.providerHealthRepo
+      gatewayResult?.selection ??
+      (!this.modelGateway && this.modelRegistry && this.providerHealthRepo
         ? selectModel(this.modelRegistry, this.providerHealthRepo, {
             operation,
             engineKey: engine.key,
             fallbackIndex: priorModelIdsInOrder.length,
             now: now(),
           })
-        : null;
+        : null);
+    const credentialEnv = gatewayResult?.credentialEnv ?? null;
     // The real, persisted fallbackIndex: this model's position among the DISTINCT models this
     // task+role has ever used, in the order each was first tried — 0 for the very first model,
     // even across multiple same-model self-fix retries; only a genuinely NEW model increments it.
@@ -1323,6 +1356,7 @@ export class Orchestrator {
         timeoutMs: this.config.agentInvocationTimeoutMs,
         signal,
         modelSelection: selection,
+        credentialEnv,
       });
       // A stale execution (lease already lost to a newer generation) reaching this point still
       // gets HERE — the fixture/adapter call itself isn't lease-aware — but `complete()` is

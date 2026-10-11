@@ -1,12 +1,14 @@
 import type {
   BacklogAnalysisDTO,
   BacklogItemStatus,
+  ClaimVerificationDTO,
+  ClaimVerificationJobDTO,
   ClaimEstablishes,
   ClaimStatus,
   EvidenceAssessment,
   PlatformEvidence,
 } from "../../api/index.js";
-import { RECONCILIATION_LABELS, CLAIM_KIND_LABELS, ESTABLISHES_LABELS, CLAIM_STATUS_LABELS, CONFIDENCE_LABELS, INDEX_STATE_LABELS, LISTING_LABELS, SKIP_REASON_LABELS, VERIFICATION_STATE_LABELS } from "../../lib/backlogLabels.js";
+import { BEHAVIOR_LABELS, INVESTIGATION_LABELS, RECONCILIATION_LABELS, CLAIM_KIND_LABELS, ESTABLISHES_LABELS, CLAIM_STATUS_LABELS, CONFIDENCE_LABELS, INDEX_STATE_LABELS, LISTING_LABELS, SKIP_REASON_LABELS, VERIFICATION_STATE_LABELS, VERIFICATION_JOB_LABELS, FLOW_LABELS } from "../../lib/backlogLabels.js";
 
 /** The status always carries its word — colour is only reinforcement. */
 export function ClaimStatusBadge({ status }: { status: ClaimStatus }) {
@@ -73,6 +75,68 @@ export function SelectionLine({ analysis }: { analysis: BacklogAnalysisDTO }) {
 }
 
 /**
+ * The platform's OWN investigation of the item's premise — from the item text and the repository, independent of anything the
+ * AI claimed. It can say an implementation "appears present"; it never says the behaviour works.
+ */
+export function InvestigationSection({ assessment }: { assessment: EvidenceAssessment | undefined }) {
+  const inv = assessment?.investigation;
+  if (!inv) return null;
+  const rev = inv.revision ? ` @ ${inv.revision.slice(0, 7)}` : "";
+  const flow = inv.flow;
+  return (
+    <div className="investigation">
+      <h4>Platform investigation of the item’s premise</h4>
+      <p className="field-hint">Three separate facts, in order: the mechanism exists → it is reached from the reported entry point → its behavior is verified. Each is weaker than the next.</p>
+      <h5>1. Implementation</h5>
+      <p>
+        <strong>{INVESTIGATION_LABELS[inv.signal]}</strong>
+        <span className="field-hint">{rev}</span>
+      </p>
+      <p className="field-hint">{inv.explanation}</p>
+      {inv.candidates.length > 0 && (
+        <ul className="backlog-file-list">
+          {inv.candidates.map((c) => (
+            <li key={`${c.path}:${c.symbol ?? ""}`}>
+              <code>{c.path}</code> {c.symbol && <span className="field-hint">declares {c.symbol}</span>}{" "}
+              <span className="field-hint">{c.wiredIn ? `— used in ${c.wiredIn}` : "— no use seen"}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      <h5>2. Flow</h5>
+      {flow ? (
+        <>
+          <p>
+            <strong>{FLOW_LABELS[flow.status]}</strong>
+          </p>
+          {flow.entries.length > 0 && (
+            <p className="field-hint">
+              Entry point{flow.entries.length === 1 ? "" : "s"}:{" "}
+              {flow.entries.map((e) => (
+                <span key={`${e.route}:${e.file}`}>
+                  <code>{e.route}</code> ({e.located === "named_in_item" ? "named in the item" : "inferred from the item’s subject"}){" "}
+                </span>
+              ))}
+            </p>
+          )}
+          {flow.path.length > 0 && (
+            <p className="field-hint">
+              Reference path: {flow.path.map((p, i) => (
+                <span key={`${p.symbol}:${i}`}>{i > 0 ? " → " : ""}<code>{p.symbol}</code></span>
+              ))}
+            </p>
+          )}
+        </>
+      ) : (
+        <p className="field-hint">No flow analysis was recorded for this analysis.</p>
+      )}
+      <h5>3. Behavior</h5>
+      <p className="field-hint">{BEHAVIOR_LABELS[inv.behavior]}. Existing code — even one reached from the entry point — is not evidence that it works; see Behavioral verification below.</p>
+    </div>
+  );
+}
+
+/**
  * The platform's reconciliation of each AI claim with its own evidence, plus what is still NOT verified. Kept separate
  * from both the claim and the evidence lines. Never says "fixed": the strongest wording is a conflict with a reported
  * absence, and behaviour is stated as unverified unless a bound platform check passed.
@@ -80,10 +144,18 @@ export function SelectionLine({ analysis }: { analysis: BacklogAnalysisDTO }) {
 export function ReconciliationSection({ assessment }: { assessment: EvidenceAssessment | undefined }) {
   const r = assessment?.reconciliation;
   if (!r || r.findings.length === 0) return null;
-  const relevant = r.findings.filter((f) => f.outcome === "IMPLEMENTATION_PRESENT" || f.outcome === "IMPLEMENTATION_POSSIBLE" || f.outcome === "CHECK_VERIFIED");
+  const relevant = r.findings.filter((f) => f.outcome === "IMPLEMENTATION_PRESENT" || f.outcome === "IMPLEMENTATION_POSSIBLE" || f.outcome === "CHECK_VERIFIED" || f.outcome === "CHECK_CONTRADICTED");
   return (
     <>
       <h4>Reconciliation</h4>
+      {(r.implementation === "present" || r.implementation === "possible") && r.alreadyImplemented === "none" && (
+        <div className="field-hint" role="status">
+          <p>
+            <strong>Possibly already implemented ({r.implementation}).</strong> The platform’s own investigation found implementation evidence that conflicts with the reported absence
+            (see above). This does not mean the item is fixed — behavior has not been verified.
+          </p>
+        </div>
+      )}
       {r.alreadyImplemented !== "none" && (
         <div className={r.alreadyImplemented === "strong" ? "error-banner" : "field-hint"} role="status">
           <p>
@@ -106,29 +178,97 @@ export function ReconciliationSection({ assessment }: { assessment: EvidenceAsse
         <p className="field-hint">No claim was found to conflict with repository evidence.</p>
       )}
       <p className="field-hint">
-        Behavior verification: {r.behaviorVerified ? "a platform check bound to a claim passed at this revision." : "not verified — no platform check bound to a claim was run."}
+        Behavior verification: {r.behaviorVerified ? "a platform check bound to a claim passed at this revision." : "not verified — no approved platform check bound to a claim has passed."}
         {r.revision ? ` Evidence reconciled at revision ${r.revision.slice(0, 7)}.` : ""}
         {r.ignoredEvidence.length > 0 ? ` ${r.ignoredEvidence.length} evidence item(s) for another revision were ignored.` : ""}
+        {(r.ignoredVerifications ?? []).length > 0 ? ` ${(r.ignoredVerifications ?? []).length} recorded verification(s) no longer apply and were ignored.` : ""}
       </p>
     </>
   );
 }
 
-/** Checks the platform judged relevant to behaviour claims, and whether any ran. */
-export function VerificationList({ assessment }: { assessment: EvidenceAssessment | undefined }) {
+/**
+ * BEHAVIORAL VERIFICATION — kept separate from the claim, the evidence and the reconciliation. For each behaviour claim it says
+ * whether an APPROVED project check is bound to it, whether that check has run, and what came of it. Without a passing bound
+ * check the behaviour is simply unverified; nothing here can read as "fixed".
+ */
+export interface VerificationControls {
+  jobs: ClaimVerificationJobDTO[];
+  busy: boolean;
+  onRun: () => void;
+  onCancel: (jobId: string) => void;
+}
+
+export function VerificationList({ assessment, verifications = [], controls }: { assessment: EvidenceAssessment | undefined; verifications?: ClaimVerificationDTO[]; controls?: VerificationControls }) {
   const reqs = assessment?.verification ?? [];
-  if (reqs.length === 0) return null;
+  const unbound = (assessment?.reconciliation?.findings ?? []).filter((f) => f.claimClass !== "presence" && (f.availableChecks ?? []).length === 0 && f.outcome !== "CHECK_VERIFIED" && f.outcome !== "CHECK_CONTRADICTED");
+  const insufficient = (assessment?.verificationCandidates ?? []).filter((c) => c.sufficiency === "insufficient" && c.relevance === "relevant");
+  if (reqs.length === 0 && unbound.length === 0 && insufficient.length === 0) return null;
+  const jobs = controls?.jobs ?? [];
+  const anyLive = jobs.some((j) => j.status === "QUEUED" || j.status === "RUNNING");
   return (
     <>
-      <h4>Verification</h4>
+      <h4>Behavioral verification</h4>
       <ul className="backlog-bullets">
-        {reqs.map((r) => (
-          <li key={`${r.claimIndex}-${r.checkId}`}>
-            Claim {r.claimIndex + 1} — <code>{r.checkId}</code> check: <strong>{VERIFICATION_STATE_LABELS[r.state]}</strong>
-            <div className="field-hint">{r.reason}</div>
+        {reqs.map((r) => {
+          const runs = verifications.filter((v) => v.claimIndex === r.claimIndex && v.checkId === r.checkId);
+          const job = jobs.find((j) => j.claimIndex === r.claimIndex && j.checkId === r.checkId);
+          // "Verified" comes ONLY from the assessment's requirement state, which the server sets solely from a record still bound to the claim, check and revision.
+          const verified = r.state === "passed";
+          return (
+            <li key={`${r.claimIndex}-${r.checkId}`}>
+              Claim {r.claimIndex + 1} — approved check <code>{r.checkId}</code>: <strong>{verified ? "Verified by this check" : job ? `${VERIFICATION_JOB_LABELS[job.status]}${job.status === "QUEUED" || job.status === "RUNNING" ? " — not verified yet" : ""}` : VERIFICATION_STATE_LABELS[r.state]}</strong>
+              <div className="field-hint">{verified ? r.reason : job?.failureReason && job.status !== "SUCCEEDED" ? job.failureReason : r.reason}</div>
+              <div className="field-hint">
+                Semantic sufficiency: <strong>Sufficient</strong> for this claim. Check result:{" "}
+                <strong>{verified ? "Pass" : job ? VERIFICATION_JOB_LABELS[job.status] : "Not run"}</strong>. Verification:{" "}
+                <strong>{verified ? "Verified by this check" : "Behavior unverified"}</strong>.
+              </div>
+              {job && (
+                <div className="field-hint">
+                  Job {job.id.slice(0, 8)} at {job.revision.slice(0, 7)}: {VERIFICATION_JOB_LABELS[job.status]}
+                  {job.status === "SUCCEEDED" && !verified ? " (check passed, but it no longer binds to this analysis)" : ""}
+                  {controls && (job.status === "QUEUED" || job.status === "RUNNING") && !job.cancelRequested && (
+                    <>
+                      {" "}
+                      <button type="button" className="btn btn-secondary" disabled={controls.busy} onClick={() => controls.onCancel(job.id)}>
+                        Cancel verification
+                      </button>
+                    </>
+                  )}
+                  {job.cancelRequested && (job.status === "RUNNING") ? " — cancelling…" : ""}
+                </div>
+              )}
+              {runs.map((v) => (
+                <div key={v.id} className="field-hint">
+                  Ran at {v.revision.slice(0, 7)}: {VERIFICATION_STATE_LABELS[v.state]}
+                  {v.exitCode !== null ? ` (exit ${v.exitCode})` : ""} in {v.durationMs} ms — <code>{v.command}</code>
+                </div>
+              ))}
+            </li>
+          );
+        })}
+        {insufficient.map((c) => (
+          <li key={`i-${c.claimIndex}-${c.checkId}`}>
+            Claim {c.claimIndex + 1} — check <code>{c.checkId}</code> is relevant but <strong>NOT sufficient</strong> for this claim
+            <div className="field-hint">{c.reason}</div>
+            <div className="field-hint">
+              Semantic sufficiency: <strong>Insufficient</strong>. Verification: <strong>Behavior unverified</strong>. The check is not run for this claim.
+            </div>
+          </li>
+        ))}
+        {unbound.map((f) => (
+          <li key={`u-${f.claimIndex}`}>
+            Claim {f.claimIndex + 1}: <strong>{BEHAVIOR_LABELS.BEHAVIOR_UNVERIFIED}</strong>
+            <div className="field-hint">No approved verification is available for this claim.</div>
           </li>
         ))}
       </ul>
+      {controls && reqs.length > 0 && (
+        <button type="button" className="btn btn-secondary" disabled={controls.busy || anyLive} onClick={controls.onRun}>
+          {anyLive ? "Verification in progress…" : "Run approved check(s)"}
+        </button>
+      )}
     </>
   );
 }
@@ -198,7 +338,7 @@ export function PlatformEvidenceSection({ assessment }: { assessment: EvidenceAs
 }
 
 /** Claim vs evidence, side by side (stacked on mobile), with the platform's deterministic verdict. */
-export function AssessmentSection({ assessment, itemStatus }: { assessment: EvidenceAssessment | undefined; itemStatus: BacklogItemStatus }) {
+export function AssessmentSection({ assessment, itemStatus, verifications = [], controls }: { assessment: EvidenceAssessment | undefined; itemStatus: BacklogItemStatus; verifications?: ClaimVerificationDTO[]; controls?: VerificationControls }) {
   if (!assessment || assessment.claims.length === 0) {
     return <p className="field-hint">No claim assessment is available for this analysis.</p>;
   }
@@ -209,7 +349,7 @@ export function AssessmentSection({ assessment, itemStatus }: { assessment: Evid
         Existence is not correctness: SUPPORTED/CONTRADICTED speak about what exists in the repository, never about whether it works.
       </p>
       <ReconciliationSection assessment={assessment} />
-      <VerificationList assessment={assessment} />
+      <VerificationList assessment={assessment} verifications={verifications} controls={controls} />
       {assessment.confidenceOverridden && (
         <div className="error-banner" role="alert">
           <p>The AI stated high confidence, but CodeForge's own evidence contradicts a claim. Confidence does not override evidence.</p>

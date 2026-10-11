@@ -25,7 +25,7 @@ import { isNoisePath, type RepositorySession } from "./repository-structure.js";
  */
 
 /** Bump when the extracted shape or extraction rules change: old rows are then never matched (a rebuild happens lazily). */
-export const INDEX_SCHEMA_VERSION = 1;
+export const INDEX_SCHEMA_VERSION = 2;
 
 export type IndexLanguage = "typescript" | "javascript" | "dart" | "other";
 
@@ -63,6 +63,14 @@ export interface IndexedFile {
   imports: string[];
   /** External package names imported (bounded). */
   packages: string[];
+  /**
+   * STRUCTURE for flow evidence (Phase 4A.6): for each declared FUNCTION/METHOD, the names its body mentions that are declared in
+   * this file or in a file it imports (pruned at build time to those). A static NAME reference — not a call graph: it does not know
+   * types, dispatch, conditions or whether the code runs.
+   */
+  refs?: Record<string, string[]>;
+  /** Route registrations with the handler/middleware names on the same call (Express-style, single call), pruned like `refs`. */
+  routeBindings?: Array<{ route: string; handlers: string[] }>;
 }
 
 export interface IndexCoverage {
@@ -107,7 +115,10 @@ export const DEFAULT_INDEX_BUILD_LIMITS: IndexBuildLimits = {
   concurrency: 8,
 };
 
-const MAX_SYMBOLS_PER_FILE = 40;
+const MAX_SYMBOLS_PER_FILE = 80;
+const MAX_REFS_PER_SYMBOL = 25;
+const MAX_BODY_LINES = 220;
+const MAX_ROUTE_BINDINGS = 40;
 const MAX_ROUTES_PER_FILE = 30;
 const MAX_IMPORTS_PER_FILE = 30;
 const MAX_PACKAGES_PER_FILE = 15;
@@ -198,6 +209,8 @@ export function rolesFromPath(path: string): FileRole[] {
 interface Extraction {
   symbols: string[];
   routes: string[];
+  refs: Record<string, string[]>;
+  routeBindings: Array<{ route: string; handlers: string[] }>;
   /** Raw import specifiers, resolved to repository paths later (needs the whole listing). */
   imports: string[];
   roles: FileRole[];
@@ -218,24 +231,64 @@ const NOT_A_NAME = new Set([
   "build", "initState", "dispose", "didChangeDependencies", "toString", "hashCode", "createState",
 ]);
 
+const KEYWORDS = new Set([
+  "const", "let", "var", "function", "return", "await", "async", "this", "new", "null", "undefined", "true", "false", "else", "for", "while", "switch", "case", "break", "continue", "throw", "try", "catch", "finally",
+  "typeof", "instanceof", "import", "export", "from", "class", "extends", "super", "void", "default", "static", "final", "String", "Future", "Promise", "Array", "Object", "Error", "Date", "Map", "Set", "JSON", "Math",
+  "console", "then", "length", "push", "map", "filter", "forEach", "catch", "toString", "print", "debugPrint", "required", "override", "dynamic", "bool", "double", "List", "int", "num", "when",
+]);
+
 class Collector {
   readonly symbols = new Set<string>();
   readonly routes = new Set<string>();
   readonly imports = new Set<string>();
   readonly roles = new Set<FileRole>();
-  symbol(name: string | undefined): void {
+  /** Function-like declarations with their first line, for body extraction. Classes/interfaces are NOT bodies (they'd link everything to everything). */
+  private readonly decls: Array<{ name: string; line: number }> = [];
+  readonly routeBindings: Array<{ route: string; handlers: string[] }> = [];
+  symbol(name: string | undefined, line?: number, functionLike = false): void {
     if (!name || name.length < 2 || name.length > 80 || NOT_A_NAME.has(name)) return;
     if (this.symbols.size < MAX_SYMBOLS_PER_FILE) this.symbols.add(name);
+    if (functionLike && line !== undefined && !this.decls.some((d) => d.name === name)) this.decls.push({ name, line });
   }
   route(text: string): void {
     const t = text.replace(/\s+/g, " ").slice(0, 120);
     if (this.routes.size < MAX_ROUTES_PER_FILE) this.routes.add(t);
   }
+  bindRoute(route: string, handlerText: string): void {
+    const handlers = [...new Set((handlerText.match(/[A-Za-z_$][\w$]*/g) ?? []).filter((h) => !KEYWORDS.has(h) && h.length >= 3))].slice(0, 12);
+    if (handlers.length > 0 && this.routeBindings.length < MAX_ROUTE_BINDINGS) this.routeBindings.push({ route: route.replace(/\s+/g, " ").slice(0, 120), handlers });
+  }
   imp(spec: string): void {
     if (spec.length <= 200 && this.imports.size < 200) this.imports.add(spec);
   }
-  done(): Extraction {
-    return { symbols: [...this.symbols], routes: [...this.routes], imports: [...this.imports], roles: [...this.roles] };
+  /** Identifier names in each function-like body: from its declaration line to the closing brace (or the end of a one-expression arrow), bounded. */
+  private bodyRefs(lines: string[]): Record<string, string[]> {
+    const out: Record<string, string[]> = {};
+    for (const d of this.decls) {
+      const ids = new Set<string>();
+      let depth = 0;
+      let opened = false;
+      for (let i = d.line; i < Math.min(lines.length, d.line + MAX_BODY_LINES); i++) {
+        const raw = lines[i]!;
+        if (raw.length > 400) continue;
+        const line = raw.replace(/\/\/.*$/, "");
+        for (const id of line.match(/[A-Za-z_$][\w$]{2,}/g) ?? []) if (id !== d.name && !KEYWORDS.has(id)) ids.add(id);
+        for (const ch of line) {
+          if (ch === "{") {
+            depth++;
+            opened = true;
+          } else if (ch === "}") depth--;
+        }
+        if (opened && depth <= 0) break;
+        if (!opened && i > d.line + 12) break; // an arrow/expression body that never opens a block
+        if (!opened && /;\s*$/.test(line)) break;
+      }
+      out[d.name] = [...ids].slice(0, 200); // pruned to resolvable names once the whole repository is known
+    }
+    return out;
+  }
+  done(lines: string[]): Extraction {
+    return { symbols: [...this.symbols], routes: [...this.routes], imports: [...this.imports], roles: [...this.roles], refs: this.bodyRefs(lines), routeBindings: this.routeBindings };
   }
 }
 
@@ -246,8 +299,25 @@ const TS_TOP_CONST = /^(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*[:=]/;
 const TS_EXPORT_LIST = /^\s*export\s*\{([^}]*)\}/;
 const TS_CJS_EXPORT = /^\s*(?:module\.)?exports\.([A-Za-z_$][\w$]*)\s*=/;
 const TS_METHOD = /^\s{2,}(?:(?:public|private|protected|static|async|readonly|override|abstract)\s+)*([A-Za-z_$][\w$]*)\s*(?:<[^>()]*>)?\s*\([^)]*\)?\s*(?::\s*[^={;]+)?\{\s*$/;
+/** A method whose parameter list spans several lines: `  async name(` … `): Promise<X> {`. Confirmed by scanning to the closing paren (a call ends `);`, a declaration opens a block). */
+const TS_METHOD_START = /^\s{2,}(?:(?:public|private|protected|static|async|readonly|override|abstract)\s+)*([A-Za-z_$][\w$]*)\s*(?:<[^>()]*>)?\s*\(/;
+const NOT_METHODS = new Set(["if", "for", "while", "switch", "catch", "function", "with", "return", "await", "throw", "new", "super", "import", "require"]);
+function multiLineMethodName(lines: string[], at: number): string | null {
+  const m = TS_METHOD_START.exec(lines[at]!);
+  if (!m || NOT_METHODS.has(m[1]!)) return null;
+  let depth = 0;
+  for (let k = at; k < Math.min(lines.length, at + 25); k++) {
+    const line = lines[k]!;
+    for (let i = k === at ? line.indexOf("(") : 0; i < line.length; i++) {
+      if (line[i] === "(") depth++;
+      else if (line[i] === ")" && --depth === 0) return /^\s*(?::\s*[^={;]+)?\{\s*$/.test(line.slice(i + 1)) ? m[1]! : null;
+    }
+  }
+  return null;
+}
 const TS_ARROW_PROP = /^\s{2,}(?:(?:public|private|protected|static|readonly)\s+)*([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?\(/;
-const TS_ROUTE = /\b(?:router|app|route|routes|api|server)\s*\.\s*(get|post|put|patch|delete|all|use)\s*\(\s*['"`]([^'"`]+)['"`]/i;
+const TS_ROUTE_CHAIN = /\.route\(\s*['"`]([^'"`]+)['"`]\s*\)/;
+const TS_ROUTE = /\b(?:[A-Za-z_$][\w$]*)\s*\.\s*(get|post|put|patch|delete|all|use)\s*\(\s*['"`](\/[^'"`]*)['"`]/i;
 const TS_DECORATOR_ROUTE = /@(Get|Post|Put|Patch|Delete)\s*\(\s*['"`]?([^'"`)]*)['"`]?\s*\)/;
 const TS_JSX_ROUTE = /(?:<Route\b[^>]*\bpath|\bpath)\s*[=:]\s*\{?\s*['"`]([^'"`]+)['"`]/;
 const TS_IMPORT_FROM = /^\s*(?:import|export)\b[^'"`]*?\bfrom\s*['"]([^'"]+)['"]/;
@@ -259,21 +329,56 @@ const TS_DYNAMIC_IMPORT = /\bimport\(\s*['"]([^'"]+)['"]\s*\)/g;
 const tsExtractor = (): LanguageExtractor["extract"] => (text) => {
   const c = new Collector();
   const isJsx = /<\/?[A-Za-z][\w.]*[\s/>]/.test(text) && /\breturn\s*\(?\s*</.test(text);
-  for (const line of text.split("\n")) {
+  const allLines = text.split("\n");
+  for (let li = 0; li < allLines.length; li++) {
+    const line = allLines[li]!;
     if (line.length > 400) continue; // minified / generated line — not worth pattern-matching
     let m: RegExpExecArray | null;
-    if ((m = TS_DECL.exec(line))) c.symbol(m[1]);
+    if ((m = TS_DECL.exec(line))) c.symbol(m[1], li, /\b(?:function)\b/.test(line));
     else if ((m = TS_TYPE.exec(line))) c.symbol(m[1]);
-    else if ((m = TS_EXPORT_CONST.exec(line))) c.symbol(m[1]);
-    else if ((m = TS_TOP_CONST.exec(line))) c.symbol(m[1]);
-    else if ((m = TS_CJS_EXPORT.exec(line))) c.symbol(m[1]);
-    else if ((m = TS_METHOD.exec(line))) c.symbol(m[1]);
-    else if ((m = TS_ARROW_PROP.exec(line))) c.symbol(m[1]);
+    else if ((m = TS_EXPORT_CONST.exec(line))) c.symbol(m[1], li, true);
+    else if ((m = TS_TOP_CONST.exec(line))) c.symbol(m[1], li, true);
+    else if ((m = TS_CJS_EXPORT.exec(line))) c.symbol(m[1], li, true);
+    else if ((m = TS_METHOD.exec(line))) c.symbol(m[1], li, true);
+    else if ((m = TS_ARROW_PROP.exec(line))) c.symbol(m[1], li, true);
+    else if (/^\s{2,}\S/.test(line) && !/;\s*$/.test(line)) {
+      const name = multiLineMethodName(allLines, li);
+      if (name) c.symbol(name, li, true);
+    }
     if ((m = TS_EXPORT_LIST.exec(line))) for (const part of m[1]!.split(",")) c.symbol(part.trim().split(/\s+as\s+/).pop()?.trim());
 
-    if ((m = TS_ROUTE.exec(line))) c.route(`${m[1]!.toUpperCase()} ${m[2]}`);
+    if ((m = TS_ROUTE.exec(line))) {
+      c.route(`${m[1]!.toUpperCase()} ${m[2]}`);
+      // Handler names on the same call: this line after the path, plus following lines until the call's parentheses balance (bounded).
+      let tail = line.slice((m.index ?? 0) + m[0].length);
+      let open = 1 + (tail.match(/\(/g) ?? []).length - (tail.match(/\)/g) ?? []).length;
+      for (let k = li + 1; open > 0 && k < Math.min(allLines.length, li + 7); k++) {
+        tail += " " + allLines[k]!;
+        open += (allLines[k]!.match(/\(/g) ?? []).length - (allLines[k]!.match(/\)/g) ?? []).length;
+      }
+      c.bindRoute(`${m[1]!.toUpperCase()} ${m[2]}`, tail.split(/\)\s*;/)[0]!);
+    }
     else if ((m = TS_DECORATOR_ROUTE.exec(line))) c.route(`${m[1]!.toUpperCase()} ${m[2] ?? ""}`.trim());
     else if (isJsx && (m = TS_JSX_ROUTE.exec(line))) c.route(`ROUTE ${m[1]}`);
+    // Express chains: Router.route("/path").get(a).patch(b, c).delete(d);  — one registration per method.
+    if ((m = TS_ROUTE_CHAIN.exec(line))) {
+      const path = m[1]!;
+      let chain = line.slice((m.index ?? 0) + m[0].length);
+      for (let k = li + 1; k < Math.min(allLines.length, li + 14) && !/;\s*$/.test(chain); k++) chain += " " + allLines[k]!;
+      for (const call of chain.matchAll(/\.(get|post|put|patch|delete)\s*\(/gi)) {
+        let depth = 1;
+        let j = (call.index ?? 0) + call[0].length;
+        const from = j;
+        while (j < chain.length && depth > 0) {
+          if (chain[j] === "(") depth++;
+          else if (chain[j] === ")") depth--;
+          j++;
+        }
+        const route = `${call[1]!.toUpperCase()} ${path}`;
+        c.route(route);
+        c.bindRoute(route, chain.slice(from, Math.max(from, j - 1)));
+      }
+    }
 
     if ((m = TS_IMPORT_FROM.exec(line) ?? TS_IMPORT_BARE.exec(line) ?? TS_IMPORT_CLOSE.exec(line))) c.imp(m[1]!);
     for (const re of [TS_REQUIRE, TS_DYNAMIC_IMPORT]) {
@@ -284,7 +389,7 @@ const tsExtractor = (): LanguageExtractor["extract"] => (text) => {
   if (/\bexpress\.Router\s*\(|\bRouter\s*\(\s*\)/.test(text) || c.routes.size > 0) c.roles.add("route");
   if (/\bnew\s+(?:mongoose\.)?Schema\s*\(|\bmongoose\.model\s*\(|\bsequelize\.define\s*\(|@Entity\s*\(/.test(text)) c.roles.add("model");
   if (isJsx) c.roles.add("component");
-  return c.done();
+  return c.done(allLines);
 };
 
 const DART_DECL = /^\s*(?:(?:abstract|sealed|base|final|interface|mixin)\s+)*(?:class|mixin|enum|typedef|extension(?:\s+type)?)\s+([A-Za-z_]\w*)/;
@@ -296,17 +401,19 @@ const DART_STATE = /\bclass\s+([A-Za-z_]\w*)\s+(?:extends|with)\s+(?:ChangeNotif
 
 const dartExtract: LanguageExtractor["extract"] = (text) => {
   const c = new Collector();
-  for (const line of text.split("\n")) {
+  const allLines = text.split("\n");
+  for (let li = 0; li < allLines.length; li++) {
+    const line = allLines[li]!;
     if (line.length > 400) continue;
     let m: RegExpExecArray | null;
     if ((m = DART_DECL.exec(line))) c.symbol(m[1]);
-    else if ((m = DART_FUNC.exec(line))) c.symbol(m[1]);
+    else if ((m = DART_FUNC.exec(line))) c.symbol(m[1], li, true);
     if ((m = DART_IMPORT.exec(line))) c.imp(m[1]!);
     if ((m = DART_ROUTE.exec(line))) c.route(`ROUTE ${m[1]}`);
     if ((m = DART_WIDGET.exec(line))) c.roles.add(/(?:Screen|Page|View)$/.test(m[1]!) ? "screen" : "component");
     if (DART_STATE.test(line)) c.roles.add("provider");
   }
-  return c.done();
+  return c.done(allLines);
 };
 
 const GENERATED = /(?:\.d\.ts|\.min\.js|\.g\.dart|\.freezed\.dart|\.config\.dart|\.gen\.dart|\.generated\.[a-z]+)$/i;
@@ -467,6 +574,7 @@ export async function buildRepositoryIndex(
     skipped[reason] = (skipped[reason] ?? 0) + 1;
   };
   const rawImports = new Map<string, string[]>();
+  const rawFlow = new Map<string, { refs: Record<string, string[]>; bindings: Array<{ route: string; handlers: string[] }> }>();
   let stoppedEarly = false;
 
   for (let i = 0; i < eligible.length; i += limits.concurrency) {
@@ -492,6 +600,7 @@ export async function buildRepositoryIndex(
       file.routes = ex.routes;
       file.roles = [...new Set([...file.roles, ...ex.roles])];
       rawImports.set(file.path, ex.imports);
+      rawFlow.set(file.path, { refs: ex.refs, bindings: ex.routeBindings });
     });
   }
 
@@ -512,6 +621,22 @@ export async function buildRepositoryIndex(
     }
     file.imports = [...resolved].sort();
     file.packages = [...packages].sort();
+  }
+
+  // 3b. Flow structure: keep only the names a body (or a route call) mentions that RESOLVE — to a declaration in the same file or in
+  //     a file it imports — so the stored graph is the small, meaningful part of "every identifier used".
+  for (const [path, flow] of rawFlow) {
+    const file = structural.get(path)!;
+    const allowed = new Set<string>(file.symbols);
+    for (const imp of file.imports) for (const sy of structural.get(imp)?.symbols ?? []) allowed.add(sy);
+    const refs: Record<string, string[]> = {};
+    for (const [sym, ids] of Object.entries(flow.refs)) {
+      const kept = ids.filter((id) => allowed.has(id) && id !== sym).slice(0, MAX_REFS_PER_SYMBOL);
+      if (kept.length > 0) refs[sym] = kept;
+    }
+    if (Object.keys(refs).length > 0) file.refs = refs;
+    const bindings = flow.bindings.map((b) => ({ route: b.route, handlers: b.handlers.filter((h) => allowed.has(h)) })).filter((b) => b.handlers.length > 0);
+    if (bindings.length > 0) file.routeBindings = bindings;
   }
 
   const files = [...structural.values()].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));

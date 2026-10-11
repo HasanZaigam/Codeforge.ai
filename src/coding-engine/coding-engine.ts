@@ -29,6 +29,17 @@ export interface EngineInvocationRequest {
    */
   modelSelection?: ModelSelection | null;
   /**
+   * Model Gateway — the decrypted provider API key(s) (keyed by the environment variable name the
+   * engine's underlying CLI/SDK expects, e.g. `ANTHROPIC_API_KEY`) this invocation's resolved
+   * `modelSelection` actually needs, or `null` when no gateway resolution applied (the backward-
+   * compatible case — see ModelGatewayService.resolveModelSelection's own doc comment). Additive,
+   * same posture as `modelSelection` itself: an adapter that doesn't understand per-invocation
+   * credentials (ClaudeCodeAdapter, FixtureCodingEngine) is free to ignore this field entirely and
+   * keep using whatever credential its own constructor-time environment already provides. NEVER
+   * logged by any adapter — see OpenCodeAdapter's own sanitized-environment handling.
+   */
+  credentialEnv?: Record<string, string> | null;
+  /**
    * Phase 4A (Backlog Intelligence) — when set, an adapter that renders role prompts (OpenCode,
    * Claude Code) sends THIS text verbatim instead of building an Implementer/Reviewer prompt from
    * `context`. This is how a purpose-specific, read-only invocation (backlog analysis) reuses the

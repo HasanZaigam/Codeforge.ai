@@ -425,7 +425,8 @@ test("JINVANI SCENARIO: otpThrottle.ts exists; the AI claims 'OTP throttling doe
     assert.equal(assessment.claims[0]!.aiConfidence, "high", "the AI's stated confidence is recorded as-is, never rewritten");
     assert.equal(assessment.confidenceOverridden, true);
     assert.equal(assessment.summary.contradicted, 1);
-    assert.ok(!JSON.stringify(assessment).includes("VERIFIED"), "the platform never produces a VERIFIED status");
+    assert.ok(!/"(?:status|outcome)":"(?:CHECK_)?VERIFIED"/.test(JSON.stringify(assessment)), "the platform never produces a VERIFIED status without a bound check");
+    assert.equal(assessment.reconciliation!.behavior, "BEHAVIOR_UNVERIFIED");
     // The evidence is the platform's own, and names the real file.
     const cited = assessment.claims[0]!.evidenceIds.map((id) => assessment.evidence.find((e) => e.id === id)!);
     assert.ok(cited.some((e) => e.type === "PATH_MATCH" && e.path === OTP_THROTTLE));
@@ -531,7 +532,7 @@ test("the model sees REAL excerpts of the files the platform selected — never 
     for (const forbidden of ["topsecretvalue1234567890", "OPENSSH PRIVATE KEY", "BEGIN PRIVATE KEY", "AAAA"]) assert.ok(!prompt.includes(forbidden), `${forbidden} must never reach the model`);
     assert.ok(!repo.reads.includes(".env") && !repo.reads.includes("config/id_rsa"), "secret files are never even read");
     const ctx = h.platform.backlogAnalyses.findLatestForItem(item.id)!.platformChecks!.context;
-    assert.ok(ctx.contentFilesIncluded! >= 1 && ctx.contentFilesIncluded! <= 6);
+    assert.ok(ctx.contentFilesIncluded! >= 1 && ctx.contentFilesIncluded! <= 8);
     assert.ok(ctx.contentBytesRead! > 0);
     // Every session is disposed.
     assert.equal(repo.disposed, repo.calls);

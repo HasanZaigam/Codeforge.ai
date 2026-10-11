@@ -3,7 +3,11 @@ import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderApp } from "../test/render.js";
 import { makeProject, makeProjectContext, makeTask, makeWorkspace } from "../test/fixtures.js";
-import { projectsApi } from "../api/index.js";
+import { chatApi, projectsApi } from "../api/index.js";
+
+vi.mock("../api/chat.js", () => ({
+  chatApi: { listMessages: vi.fn(), sendMessage: vi.fn(), listSuggestions: vi.fn(), createTasks: vi.fn() },
+}));
 
 vi.mock("../api/projects.js", () => ({
   projectsApi: {
@@ -21,10 +25,12 @@ vi.mock("../api/projects.js", () => ({
 }));
 
 const mockedProjectsApi = vi.mocked(projectsApi);
+const mockedChatApi = vi.mocked(chatApi);
 
 describe("ProjectLayout", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockedChatApi.listMessages.mockResolvedValue({ messages: [], pendingAction: null });
     mockedProjectsApi.get.mockResolvedValue(makeProject({ id: "p1", name: "OTT", repoUrl: "https://github.com/example/ott.git" }));
     mockedProjectsApi.listTasks.mockResolvedValue([]);
     mockedProjectsApi.getWorkspace.mockResolvedValue(makeWorkspace({ id: "w1", projectId: "p1" }));
@@ -55,12 +61,24 @@ describe("ProjectLayout", () => {
     await waitFor(() => expect(screen.getByText("Project settings are currently read-only from this screen.")).toBeInTheDocument());
   });
 
-  it("shows a Backlog tab between Tasks and Workspace", async () => {
+  it("shows exactly the primary navigation Overview, Workspace, Tasks, Settings — no Issues & Requests, Chat, or Advanced tab", async () => {
     renderApp("/projects/p1");
     await waitFor(() => expect(screen.getByRole("heading", { name: "OTT" })).toBeInTheDocument());
     const tabs = screen.getAllByRole("link").map((l) => l.textContent);
-    expect(tabs.indexOf("Backlog")).toBe(tabs.indexOf("Tasks") + 1);
-    expect(tabs.indexOf("Workspace")).toBe(tabs.indexOf("Backlog") + 1);
+    const navTabs = tabs.filter((t) => ["Overview", "Workspace", "Tasks", "Settings"].includes(t ?? ""));
+    expect(navTabs).toEqual(["Overview", "Workspace", "Tasks", "Settings"]);
+    expect(tabs).not.toContain("Issues & Requests");
+    expect(tabs).not.toContain("Backlog");
+    expect(tabs).not.toContain("Chat");
+    expect(tabs).not.toContain("Evaluation");
+    expect(tabs).not.toContain("Advanced Features");
+  });
+
+  it("legacy: the old /backlog list URL redirects to Overview rather than 404ing or showing a dead page", async () => {
+    renderApp("/projects/p1/backlog");
+    await waitFor(() => expect(screen.getByRole("heading", { name: "OTT" })).toBeInTheDocument());
+    expect(screen.getByText("https://github.com/example/ott.git")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Overview" })).toHaveClass("active");
   });
 
   it("the breadcrumb returns to the Projects list", async () => {

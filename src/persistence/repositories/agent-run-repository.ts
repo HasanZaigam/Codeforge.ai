@@ -117,4 +117,24 @@ export class AgentRunRepository {
     const rows = this.db.prepare("SELECT * FROM agent_runs WHERE status = 'running'").all() as unknown as AgentRunRow[];
     return rows.map(rowToAgentRun);
   }
+
+  /**
+   * Model Gateway — Settings "AI Usage" (see docs/MODEL_GATEWAY.md). Every AgentRun across every
+   * project this user OWNS (`projects.owner_id`), with only the fields a per-provider usage rollup
+   * needs. Scoped by owner, never by provider connection — a run's recorded `provider_id`/`model_id`
+   * (migration 012) is the platform's own routing fact, independent of which connection is currently
+   * configured.
+   */
+  listUsageForOwner(ownerId: string): Array<{ providerId: string | null; modelId: string | null; cost: CostMetadata | null }> {
+    const rows = this.db
+      .prepare(
+        `SELECT ar.provider_id, ar.model_id, ar.cost_json
+         FROM agent_runs ar
+         JOIN tasks t ON t.id = ar.task_id
+         JOIN projects p ON p.id = t.project_id
+         WHERE p.owner_id = ?`,
+      )
+      .all(ownerId) as unknown as Array<{ provider_id: string | null; model_id: string | null; cost_json: string | null }>;
+    return rows.map((r) => ({ providerId: r.provider_id, modelId: r.model_id, cost: r.cost_json ? (JSON.parse(r.cost_json) as CostMetadata) : null }));
+  }
 }

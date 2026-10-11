@@ -70,6 +70,21 @@ export class BacklogRelationshipRepository {
     }
   }
 
+  findById(id: string): BacklogRelationship | null {
+    const row = this.db.prepare("SELECT * FROM backlog_relationships WHERE id = ?").get(id) as RelationshipRow | undefined;
+    return row ? rowToRelationship(row) : null;
+  }
+
+  /** A HUMAN's decision on a proposal. Never merges, deletes or reorders anything. */
+  setStatus(id: string, status: "CONFIRMED" | "DISMISSED", now: string): boolean {
+    return this.db.prepare("UPDATE backlog_relationships SET status = ?, updated_at = ? WHERE id = ?").run(status, now, id).changes > 0;
+  }
+
+  /** Every relationship of a project (both kinds, any status) — for group views. */
+  listForProject(projectId: string): BacklogRelationship[] {
+    return (this.db.prepare("SELECT * FROM backlog_relationships WHERE project_id = ? ORDER BY kind ASC, created_at ASC, id ASC").all(projectId) as unknown as RelationshipRow[]).map(rowToRelationship);
+  }
+
   /** Relationships proposed BY this item's analysis. */
   listOutgoing(itemId: string): BacklogRelationship[] {
     const rows = this.db

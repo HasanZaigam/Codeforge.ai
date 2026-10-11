@@ -13,8 +13,13 @@ import type {
   BacklogSource,
   BacklogAnalysis,
   BacklogAnalysisJob,
+  ClaimVerificationJob,
+  ClaimVerificationRecord,
+  VerificationJobStatus,
   ConfidenceLevel,
   PlatformChecks,
+  ReviewSummary,
+  VerificationState,
   TaskProposal,
   TaskProposalContent,
   TaskProposalStatus,
@@ -55,12 +60,14 @@ export function toBacklogItemDTO(item: BacklogItem): BacklogItemDTO {
 }
 
 export interface BacklogItemSummaryDTO extends BacklogItemDTO {
+  /** Review state plus the two facts it is built from — implementation and behaviour are never merged. */
+  review: ReviewSummary;
   latestAnalysis: { id: string; status: AnalysisStatus; completedAt: string } | null;
   proposal: { id: string; status: TaskProposalStatus; taskId: string | null } | null;
 }
 
 export function toBacklogItemSummaryDTO(summary: BacklogItemSummary): BacklogItemSummaryDTO {
-  return { ...toBacklogItemDTO(summary.item), latestAnalysis: summary.latestAnalysis, proposal: summary.proposal };
+  return { ...toBacklogItemDTO(summary.item), review: summary.review, latestAnalysis: summary.latestAnalysis, proposal: summary.proposal };
 }
 
 /**
@@ -237,8 +244,59 @@ export function toBacklogEventDTO(e: BacklogEvent): BacklogEventDTO {
   return { id: e.id, type: e.type, payload: e.payload, createdAt: e.createdAt };
 }
 
+/** One execution of one approved check for one claim at one revision. The exact command comes from the project's own check, never from a model. */
+export interface ClaimVerificationDTO {
+  id: string;
+  claimId: string;
+  claimIndex: number;
+  checkId: string;
+  revision: string;
+  state: VerificationState;
+  exitCode: number | null;
+  durationMs: number;
+  command: string;
+  logExcerpt: string | null;
+  createdAt: string;
+  jobId: string | null;
+  executor: string | null;
+  workspaceId: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
+  timedOut: boolean;
+  headBefore: string | null;
+  headAfter: string | null;
+}
+
+/** The execution of one verification (status describes the RUN, never the claim — a claim is verified only by a bound, passed record). */
+export interface ClaimVerificationJobDTO {
+  id: string;
+  analysisId: string;
+  claimId: string;
+  claimIndex: number;
+  checkId: string;
+  revision: string;
+  status: VerificationJobStatus;
+  attemptCount: number;
+  maxAttempts: number;
+  cancelRequested: boolean;
+  failureReason: string | null;
+  createdAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+}
+
+export function toClaimVerificationJobDTO(j: ClaimVerificationJob): ClaimVerificationJobDTO {
+  return { id: j.id, analysisId: j.analysisId, claimId: j.claimId, claimIndex: j.claimIndex, checkId: j.checkId, revision: j.revision, status: j.status, attemptCount: j.attemptCount, maxAttempts: j.maxAttempts, cancelRequested: j.cancelRequestedAt !== null, failureReason: j.failureReason, createdAt: j.createdAt, startedAt: j.startedAt, completedAt: j.completedAt };
+}
+
+export function toClaimVerificationDTO(r: ClaimVerificationRecord): ClaimVerificationDTO {
+  return { id: r.id, claimId: r.claimId, claimIndex: r.claimIndex, checkId: r.checkId, revision: r.revision, state: r.state, exitCode: r.exitCode, durationMs: r.durationMs, command: r.command, logExcerpt: r.logExcerpt, createdAt: r.createdAt, jobId: r.jobId ?? null, executor: r.executor ?? null, workspaceId: r.workspaceId ?? null, startedAt: r.startedAt ?? null, completedAt: r.completedAt ?? null, timedOut: r.timedOut ?? false, headBefore: r.headBefore, headAfter: r.headAfter };
+}
+
 export interface BacklogItemDetailDTO {
   item: BacklogItemDTO;
+  review: ReviewSummary;
+  claimVerifications: ClaimVerificationDTO[];
   latestAnalysis: BacklogAnalysisDTO | null;
   /** The most recent analysis job (queued / running / finished); `null` if never analyzed. */
   analysisJob: BacklogAnalysisJobDTO | null;
@@ -251,6 +309,8 @@ export interface BacklogItemDetailDTO {
 export function toBacklogItemDetailDTO(d: BacklogItemDetail): BacklogItemDetailDTO {
   return {
     item: toBacklogItemDTO(d.item),
+    review: d.review,
+    claimVerifications: d.claimVerifications.map(toClaimVerificationDTO),
     latestAnalysis: d.latestAnalysis ? toBacklogAnalysisDTO(d.latestAnalysis) : null,
     analysisJob: d.analysisJob ? toBacklogAnalysisJobDTO(d.analysisJob) : null,
     analysisCount: d.analysisCount,

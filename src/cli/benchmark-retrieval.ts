@@ -1,5 +1,5 @@
 /**
- * `npm run benchmark:retrieval -- --ground-truth <file.json> --repo <local git dir> [--out-json f] [--out-md f]`
+ * `npm run benchmark:retrieval -- --ground-truth <file.json> --repo <local git dir> [--out-json f] [--out-md f] [--index-cache dir] [--variants a,b,c]`
  *
  * Measures repository file selection (Phase 4A.4, GAP-032) against HUMAN-MAINTAINED ground truth: for each item, the
  * ranked candidates and the excerpted files the production pipeline would show a model — with the repository index and
@@ -9,6 +9,8 @@
  */
 import { readFileSync, writeFileSync } from "node:fs";
 import { createPipelineSubject } from "../benchmark/pipeline-subject.js";
+import { LEGACY_EXCERPTS, RETRIEVAL_VARIANTS } from "../benchmark/variants.js";
+import { runInvestigationBenchmark } from "../benchmark/investigation-benchmark.js";
 import { renderMarkdown, runRetrievalBenchmark, type GroundTruthSet } from "../benchmark/retrieval-benchmark.js";
 
 function arg(name: string): string | null {
@@ -24,8 +26,24 @@ async function main(): Promise<void> {
     process.exit(2);
   }
   const set = JSON.parse(readFileSync(gtPath, "utf8")) as GroundTruthSet;
+  if (process.argv.includes("--investigation")) {
+    const inv = await runInvestigationBenchmark(set, repo);
+    console.log(JSON.stringify(inv, null, 2));
+    const out = arg("--out-investigation");
+    if (out) writeFileSync(out, JSON.stringify(inv, null, 2));
+    return;
+  }
   const reports = [];
-  for (const subject of [createPipelineSubject(repo, { useIndex: false }), createPipelineSubject(repo, { useIndex: true })]) {
+  const shared = new Map();
+  const cacheDir = arg("--index-cache") ?? undefined;
+  const chosen = (arg("--variants") ?? "name-only,baseline,current").split(",").map((v) => v.trim());
+  const subjects = chosen.map((v) => {
+    if (v === "name-only") return createPipelineSubject(repo, { useIndex: false, tuning: { excerpts: { ...LEGACY_EXCERPTS } }, indexes: shared, cacheDir });
+    const tuning = RETRIEVAL_VARIANTS[v];
+    if (!tuning) throw new Error(`unknown variant "${v}" (known: name-only, ${Object.keys(RETRIEVAL_VARIANTS).join(", ")})`);
+    return createPipelineSubject(repo, { useIndex: true, name: v, tuning, indexes: shared, cacheDir });
+  });
+  for (const subject of subjects) {
     console.error(`[benchmark] running ${subject.name} over ${set.items.length} items…`);
     reports.push(await runRetrievalBenchmark(set, subject));
   }

@@ -56,6 +56,13 @@ interface StructuredErrorRecord {
 const RETRYABLE_STATUS_CODES = new Set([429, 500, 502, 503, 504]);
 const AUTH_STATUS_CODES = new Set([401, 403]);
 
+/**
+ * OpenCode keeps a local SQLite store. Two OpenCode processes running at once (the analysis worker's global cap is 2) occasionally hit
+ * "database is locked" — a transient local-contention failure, not a provider or request problem (found by the Phase 4B real bulk run:
+ * 19 of 78 analyses failed this way at concurrency 2). Retryable with the normal backoff; it never says anything about the request itself.
+ */
+const LOCAL_CONTENTION_PATTERN = /database is locked|SQLITE_BUSY/i;
+
 const AUTH_PATTERN = /invalid[_ ]?api[_ ]?key|unauthorized|authentication|permission denied|forbidden/i;
 const INVALID_REQUEST_PATTERN = /invalid model|model not found|malformed|bad request|unsupported/i;
 
@@ -72,7 +79,7 @@ export function classifyEngineFailure(stdout: string, stderr: string, exitCode: 
   if (!structured) {
     const detail = stderr.slice(-2000) || stdout.slice(-2000) || `exit code ${exitCode}`;
     return {
-      retryable: false,
+      retryable: LOCAL_CONTENTION_PATTERN.test(`${stderr.slice(-4000)}\n${stdout.slice(-4000)}`),
       category: "unknown",
       reason: `exit code ${exitCode}: ${detail}`,
       statusCode: null,
@@ -91,7 +98,7 @@ export function classifyEngineFailure(stdout: string, stderr: string, exitCode: 
   const errorName = typeof error?.error?.name === "string" ? error.error.name : "APIError";
 
   const category = classifyCategory({ statusCode, message, errorName });
-  const retryable = isRetryableFlag || (category !== "auth" && category !== "invalid_request" && statusCode !== null && RETRYABLE_STATUS_CODES.has(statusCode));
+  const retryable = isRetryableFlag || LOCAL_CONTENTION_PATTERN.test(message) || (category !== "auth" && category !== "invalid_request" && statusCode !== null && RETRYABLE_STATUS_CODES.has(statusCode));
 
   const statusPart = statusCode !== null ? `HTTP ${statusCode}${statusText ? ` ${statusText}` : ""}` : errorName;
   const reason = `${providerName} returned ${retryable ? "retryable " : ""}${statusPart}${message ? `: ${message}` : ""}`;

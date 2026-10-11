@@ -14,6 +14,9 @@ interface BacklogItemRow {
   status_before_analysis: string | null;
   created_at: string;
   updated_at: string;
+  import_id: string | null;
+  source_row: number | null;
+  metadata_json: string | null;
 }
 
 function rowToItem(row: BacklogItemRow): BacklogItem {
@@ -28,6 +31,9 @@ function rowToItem(row: BacklogItemRow): BacklogItem {
     createdBy: row.created_by,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    importId: row.import_id,
+    sourceRow: row.source_row,
+    metadata: row.metadata_json ? (JSON.parse(row.metadata_json) as Record<string, string>) : null,
   };
 }
 
@@ -59,10 +65,10 @@ export class BacklogItemRepository {
   insert(item: BacklogItem): void {
     this.db
       .prepare(
-        `INSERT INTO backlog_items (id, project_id, external_ref, title, description, source, status, created_by, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO backlog_items (id, project_id, external_ref, title, description, source, status, created_by, created_at, updated_at, import_id, source_row, metadata_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(item.id, item.projectId, item.externalRef, item.title, item.description, item.source, item.status, item.createdBy, item.createdAt, item.updatedAt);
+      .run(item.id, item.projectId, item.externalRef, item.title, item.description, item.source, item.status, item.createdBy, item.createdAt, item.updatedAt, item.importId ?? null, item.sourceRow ?? null, item.metadata ? JSON.stringify(item.metadata) : null);
   }
 
   findById(id: string): BacklogItem | null {
@@ -91,6 +97,19 @@ export class BacklogItemRepository {
     const rows = this.db
       .prepare("SELECT * FROM backlog_items WHERE project_id = ? AND id != ? ORDER BY created_at DESC, id ASC")
       .all(projectId, excludeId) as unknown as BacklogItemRow[];
+    return rows.map(rowToItem);
+  }
+
+  /** Every item belonging to a specific import run (including items re-linked as ALREADY_IMPORTED). */
+  listByImport(importId: string): BacklogItem[] {
+    const rows = this.db
+      .prepare(`
+        SELECT b.* FROM backlog_items b
+        WHERE b.import_id = ?
+           OR b.id IN (SELECT backlog_item_id FROM backlog_import_rows WHERE import_id = ? AND backlog_item_id IS NOT NULL)
+        ORDER BY b.source_row ASC, b.rowid ASC
+      `)
+      .all(importId, importId) as unknown as BacklogItemRow[];
     return rows.map(rowToItem);
   }
 

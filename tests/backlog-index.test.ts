@@ -141,7 +141,7 @@ test("generated / declaration / unsupported files have no extractor; extraction 
   assert.equal(extractFile("types/index.d.ts", "export type A = 1;"), null);
   assert.equal(extractFile("README.md", "# x"), null);
   const many = Array.from({ length: 500 }, (_, i) => `export const name${i} = ${i};`).join("\n");
-  assert.ok(extractFile("a.ts", many)!.symbols.length <= 40);
+  assert.ok(extractFile("a.ts", many)!.symbols.length <= 80);
   // A minified-looking line is skipped rather than pattern-matched.
   assert.deepEqual(extractFile("a.js", `export const x = "${"y".repeat(500)}";`)!.symbols, []);
 });

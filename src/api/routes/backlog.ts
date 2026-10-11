@@ -7,6 +7,7 @@ import { toTaskDTO } from "../dto.js";
 import {
   toBacklogAnalysisDTO,
   toBacklogAnalysisJobDTO,
+  toClaimVerificationJobDTO,
   toBacklogItemDetailDTO,
   toBacklogItemDTO,
   toBacklogItemSummaryDTO,
@@ -50,7 +51,7 @@ export function backlogRouter(services: ApplicationServices, taskEvents: TaskEve
   router.get(
     "/backlog/:itemId",
     asyncHandler(async (req, res) => {
-      res.json(toBacklogItemDetailDTO(backlog.getItem(req.params.itemId!, req.user!.id)));
+      res.json({ ...toBacklogItemDetailDTO(backlog.getItem(req.params.itemId!, req.user!.id)), verificationJobs: services.claimVerifier.list(req.params.itemId!, req.user!.id).map(toClaimVerificationJobDTO) });
     }),
   );
 
@@ -90,6 +91,33 @@ export function backlogRouter(services: ApplicationServices, taskEvents: TaskEve
       EmptyActionBodySchema.parse(req.body ?? {});
       const { item, job } = backlog.cancelAnalysis(req.params.itemId!, req.user!.id);
       res.status(202).json({ item: toBacklogItemDTO(item), job: toBacklogAnalysisJobDTO(job) });
+    }),
+  );
+
+  // 202: this only ENQUEUES worker jobs that run the project's own APPROVED check(s) bound to this analysis's behaviour claims at
+  // its exact revision — nothing runs in the API process. Idempotent per (analysis, claim, check). `jobs: []` + `note` when no
+  // approved check is bound (behaviour stays unverified). A model can neither trigger nor shape this.
+  router.post(
+    "/backlog/:itemId/verifications",
+    asyncHandler(async (req, res) => {
+      EmptyActionBodySchema.parse(req.body ?? {});
+      const out = services.claimVerifier.request(req.params.itemId!, req.user!.id);
+      res.status(202).json({ jobs: out.jobs.map(toClaimVerificationJobDTO), enqueued: out.enqueued, revision: out.revision, note: out.note });
+    }),
+  );
+
+  router.get(
+    "/backlog/:itemId/verifications",
+    asyncHandler(async (req, res) => {
+      res.json({ jobs: services.claimVerifier.list(req.params.itemId!, req.user!.id).map(toClaimVerificationJobDTO) });
+    }),
+  );
+
+  router.post(
+    "/backlog/:itemId/verifications/:jobId/cancel",
+    asyncHandler(async (req, res) => {
+      EmptyActionBodySchema.parse(req.body ?? {});
+      res.status(202).json({ job: toClaimVerificationJobDTO(services.claimVerifier.cancel(req.params.itemId!, req.params.jobId!, req.user!.id)) });
     }),
   );
 

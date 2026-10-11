@@ -135,3 +135,10 @@ test("a structured error record mixed in among other NDJSON event types (step_fi
   assert.equal(result.retryable, true);
   assert.equal(result.category, "server_unavailable");
 });
+
+test("local store contention ('database is locked') is retryable; a plain unknown failure still is not", () => {
+  const locked = classifyEngineFailure("", "\u001b[91mError: \u001b[0mUnexpected error\n\ndatabase is locked\n", 1);
+  assert.equal(locked.retryable, true);
+  assert.match(locked.reason, /database is locked/);
+  assert.equal(classifyEngineFailure("", "Error: Unexpected error\n\nboom\n", 1).retryable, false);
+});

@@ -2,9 +2,17 @@ import { useEffect, useState } from "react";
 import { useAuth } from "../auth/AuthContext.js";
 import { githubIntegrationApi, type GitHubConnectionDTO } from "../api/index.js";
 import { GitHubConnectDialog } from "../components/settings/GitHubConnectDialog.js";
+import { AiModelsCard } from "../components/settings/AiModelsCard.js";
 import { LoadingState } from "../components/common/LoadingState.js";
 import { ErrorState } from "../components/common/ErrorState.js";
 import { formatAbsolute } from "../lib/time.js";
+
+const FUTURE_INTEGRATIONS = [
+  { name: "Jira", description: "Connect project work from Jira." },
+  { name: "Slack", description: "Receive engineering requests from Slack." },
+  { name: "Jenkins", description: "Connect CI/CD workflows." },
+  { name: "MCP", description: "Connect external tools and context servers." },
+];
 
 /** See /docs/AUTHENTICATION.md for the account section and /docs/GITHUB_INTEGRATION.md for the GitHub connection. */
 export function SettingsPage() {
@@ -144,6 +152,26 @@ export function SettingsPage() {
               )}
             </div>
           )}
+        </div>
+
+        <AiModelsCard />
+
+        <div className="card card-padded stack" style={{ gap: 8 }}>
+          <h3>Integrations</h3>
+          <p className="field-hint">Future ways to bring work into CodeForge. None of these are required for Chat or Tasks.</p>
+          <div className="stack" style={{ gap: 8 }}>
+            {FUTURE_INTEGRATIONS.map((i) => (
+              <div key={i.name} className="page-header" style={{ marginBottom: 0 }}>
+                <div>
+                  <strong>{i.name}</strong>
+                  <p className="field-hint" style={{ margin: 0 }}>
+                    {i.description}
+                  </p>
+                </div>
+                <span className="status-badge tone-neutral">Coming soon</span>
+              </div>
+            ))}
+          </div>
         </div>
       </div>
 

@@ -362,7 +362,7 @@ test("DTOs expose only the public shape — no creator id, claim/lease columns, 
       assert.ok(!serialized.includes(forbidden), `${forbidden} must not be exposed`);
     }
     const list = await body<{ items: Array<Record<string, unknown>> }>(await h.a.fetch(`/projects/${h.projectId}/backlog`));
-    assert.deepEqual(Object.keys(list.items[0]!).sort(), ["createdAt", "description", "externalRef", "id", "latestAnalysis", "projectId", "proposal", "source", "status", "title", "updatedAt"]);
+    assert.deepEqual(Object.keys(list.items[0]!).sort(), ["createdAt", "description", "externalRef", "id", "latestAnalysis", "projectId", "proposal", "review", "source", "status", "title", "updatedAt"]);
   });
 });
 
@@ -574,4 +574,62 @@ test("HTTP: an analysis with no usage reported has usage null and estimatedCost 
     assert.equal(analysis.usage, null);
     assert.equal(analysis.estimatedCost, null);
   });
+});
+
+test("HTTP verification jobs: POST enqueues (202, nothing runs in the API), is idempotent, is owner-only (404 for others), cancellable, and a project with no approved check queues nothing", async () => {
+  const revision = "d".repeat(40);
+  const root = await mkdtemp(join(tmpdir(), "backlog-api-verif-"));
+  const platform = buildPlatform({
+    dbPath: join(root, "platform.sqlite"),
+    workspacesRoot: join(root, "workspaces"),
+    projectWorkspacesRoot: join(root, "project-workspaces"),
+    engine: new ScriptedEngine(() => json(validAnalysis({ claims: [{ statement: "OTP attempts are not limited on POST /login.", kind: "BEHAVIOR_INCORRECT", path: null, searchTerms: ["otp", "limit"], confidence: "high" }], candidateFiles: [] }))),
+    ownerId: "test-worker-verif",
+    repositoryStructureProvider: fakeStructure(DEFAULT_PATHS, { revision }),
+  });
+  const repoPath = await createFixtureRepo(root);
+  const server = await new Promise<Server>((resolve) => {
+    const s = buildApp(platform).listen(0, "127.0.0.1", () => resolve(s));
+  });
+  const baseUrl = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  try {
+    const a = await registerClient(baseUrl, "verif-a");
+    const b = await registerClient(baseUrl, "verif-b");
+    const check = { id: "otp-throttle", description: "d", command: "node c.js", timeoutMs: 5000, establishes: { scope: { level: "flow", application: "backend", mechanism: "evaluateOtpThrottle", entryPoint: "POST /login", behaviors: [{ id: "throttle", terms: ["limit", "limits", "limited", "limiting", "unlimited", "throttle", "throttles", "throttled", "rate", "cooldown", "cap"] }] }, behavior: "OTP sends are throttled", claimTerms: [["otp"], ["limit", "throttle"]], claimKinds: ["BEHAVIOR_CORRECT", "BEHAVIOR_INCORRECT"] }, passMeans: "behavior_holds" };
+    const created = await a.fetch("/projects", { method: "POST", body: JSON.stringify({ name: "J", sourceControlProvider: "local-git", repoUrl: repoPath, codingEngine: "fixture", commands: { test: "node test.js", claimChecks: [check] } }) });
+    assert.equal(created.status, 201);
+    const projectId = ((await created.json()) as { project: { id: string } }).project.id;
+    const itemRes = await post(a, `/projects/${projectId}/backlog`, { title: "No limit on OTP attempts", description: "There is no limit on OTP attempts during login." });
+    const item = (await itemRes.json()) as { item: { id: string } };
+    const id = item.item.id;
+    assert.equal((await post(a, `/backlog/${id}/verifications`)).status, 409, "no analysis yet");
+    await post(a, `/backlog/${id}/analyze`);
+    await platform.backlogRunner.drain();
+
+    const first = await post(a, `/backlog/${id}/verifications`);
+    assert.equal(first.status, 202);
+    const q = await body<{ jobs: any[]; enqueued: number; revision: string }>(first);
+    assert.equal(q.jobs.length, 1);
+    assert.equal(q.jobs[0].status, "QUEUED");
+    assert.equal(q.jobs[0].revision, revision);
+    assert.equal(q.enqueued, 1);
+    const again = await body<{ jobs: any[]; enqueued: number }>(await post(a, `/backlog/${id}/verifications`));
+    assert.equal(again.jobs[0].id, q.jobs[0].id);
+    assert.equal(again.enqueued, 0);
+
+    assert.equal((await post(b, `/backlog/${id}/verifications`)).status, 404);
+    assert.equal((await b.fetch(`/backlog/${id}/verifications`)).status, 404);
+    assert.equal((await post(b, `/backlog/${id}/verifications/${q.jobs[0].id}/cancel`)).status, 404);
+    assert.equal((await post(a, `/backlog/${id}/verifications`, { command: "rm -rf /" })).status, 400, "no request body can carry a command");
+
+    const detail = await body<{ verificationJobs: any[] }>(await a.fetch(`/backlog/${id}`));
+    assert.equal(detail.verificationJobs[0].id, q.jobs[0].id);
+    const cancelled = await body<{ job: any }>(await post(a, `/backlog/${id}/verifications/${q.jobs[0].id}/cancel`));
+    assert.equal(cancelled.job.status, "CANCELLED");
+    assert.equal((await body<{ jobs: any[] }>(await a.fetch(`/backlog/${id}/verifications`))).jobs[0].status, "CANCELLED");
+  } finally {
+    await platform.backgroundRunner.stop();
+    await new Promise((resolve) => server.close(resolve));
+    platform.db.close();
+  }
 });

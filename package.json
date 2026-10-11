@@ -14,6 +14,9 @@
     "demo": "tsx src/cli/demo.ts",
     "validate:backlog": "node --env-file-if-exists=.env --import tsx src/cli/validate-backlog-analysis.ts",
     "benchmark:retrieval": "node --import tsx src/cli/benchmark-retrieval.ts",
+    "validate:adjudication": "node --env-file-if-exists=.env --import tsx src/cli/validate-adjudication.ts",
+    "validate:bulk-backlog": "node --env-file-if-exists=.env --import tsx src/cli/validate-bulk-backlog.ts",
+    "validate:claim-verification": "node --env-file-if-exists=.env --import tsx src/cli/validate-claim-verification.ts",
     "validate:task-usage": "node --env-file-if-exists=.env --import tsx src/cli/validate-task-usage.ts",
     "api": "node --env-file-if-exists=.env --import tsx src/api/server.ts",
     "worker": "node --env-file-if-exists=.env --import tsx src/worker/run-worker.ts",
@@ -27,6 +30,7 @@
     "web:typecheck": "npm --prefix web run typecheck"
   },
   "dependencies": {
+    "exceljs": "^4.4.0",
     "express": "^4.22.2",
     "zod": "^3.23.8"
   },

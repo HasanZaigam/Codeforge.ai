@@ -45,6 +45,7 @@ export const EVENT_LABELS: Record<TaskEventType, string> = {
   HUMAN_REVIEW_APPROVED: "Approved on GitHub",
   PULL_REQUEST_MERGED: "Pull Request merged on GitHub — task completed",
   EXECUTION_LEASE_LOST: "Handed off to another worker process",
+  CHAT_ACTION_PERFORMED: "Changed via Chat",
 };
 
 export function labelForEvent(type: TaskEventType): string {

@@ -1,12 +1,16 @@
+import type { ApprovedClaimCheck } from "../domain/types.js";
 import type {
   AnalysisClaim,
   ClaimAssessment,
+  ClaimVerificationRecord,
   EvidenceAssessment,
+  Investigation,
   PlatformEvidence,
   Reconciliation,
   ReconciliationFinding,
   ReconciliationOutcome,
 } from "./backlog-types.js";
+import { bindClaimsToChecks, checkFingerprint, claimIdOf } from "./verification.js";
 
 /**
  * Deterministic reconciliation of AI claims with platform evidence (Phase 4A.4 — /docs/BACKLOG_INTELLIGENCE.md §4d).
@@ -38,7 +42,7 @@ import type {
  * limiting", "nothing enforces X", "X is not implemented", "the project has no OTP validation implementation").
  */
 const EXPLICIT_ABSENCE =
-  /\b(?:there (?:is|are) no|has no|have no|no [\w\s-]{0,40}(?:implementation|support|mechanism|logic|check|validation|limit(?:er|ing)?|throttl\w+|guard|protection)|not (?:been )?implemented|nothing (?:implements|handles|enforces|checks|validates|limits|blocks|prevents)|(?:is|are) missing|missing (?:implementation|check|validation|logic)|never implemented)\b/i;
+  /\b(?:there (?:is|are) no|has no|have no|no [\w\s-]{0,40}(?:implementation|support|mechanism|logic|check|validation|limit(?:er|ing)?|throttl\w+|guard|protection)|not (?:been )?implemented|nothing (?:implements|handles|enforces|checks|validates|limits|blocks|prevents)|(?:is|are) missing|missing (?:implementation|check|validation|logic)|never implemented|unlimited|(?:is|are|was|were) not (?:limited|throttled|rate[- ]limited|validated|verified|checked|enforced|protected|restricted|blocked|prevented|guarded))\b/i;
 
 /** BROAD negation wording that a behaviour claim may carry ("does not check", "without validation", "lacks"). Ambiguous on its own. */
 const BROAD_ABSENCE =
@@ -70,9 +74,37 @@ function classify(claim: AnalysisClaim): { claimClass: Class; labelledAsBehavior
 
 const NOT_VERIFIED = "Behavioral correctness was not verified.";
 
-export function reconcile(claims: AnalysisClaim[], assessment: Pick<EvidenceAssessment, "claims" | "evidence" | "verification">, revision: string | null): Reconciliation {
+export interface ReconcileOptions {
+  /** The platform's own investigation of the item premise (independent of the claims). */
+  investigation?: Investigation | null;
+  /** Recorded executions of approved checks. Each counts only if it still binds (claim, check, fingerprint, revision, analysis). */
+  verifications?: ClaimVerificationRecord[];
+  /** The project's CURRENT approved checks — a record for a check that is gone, or whose definition changed, is stale. */
+  checks?: ApprovedClaimCheck[];
+  /** The analysis the claims belong to; a record for another analysis never applies. */
+  analysisId?: string;
+}
+
+export function reconcile(claims: AnalysisClaim[], assessment: Pick<EvidenceAssessment, "claims" | "evidence" | "verification">, revision: string | null, options: ReconcileOptions = {}): Reconciliation {
   const byId = new Map(assessment.evidence.map((e) => [e.id, e]));
   const ignored = new Map<string, string>();
+  const ignoredVerifications = new Map<string, string>();
+  const bindings = bindClaimsToChecks(claims, options.checks);
+  const currentChecks = new Map((options.checks ?? []).map((c) => [c.id, c]));
+
+  /** Why a record cannot count for `claimId`, or null if it binds. Every clause is a way a result could be stale or about something else. */
+  const recordProblem = (rec: ClaimVerificationRecord, claimId: string): string | null => {
+    if (options.analysisId && rec.analysisId !== options.analysisId) return "it belongs to a different analysis";
+    if (rec.claimId !== claimId) return "it is bound to a different claim";
+    if (!revision) return "the analysed revision is unknown";
+    if (rec.revision !== revision) return `it ran at revision ${rec.revision.slice(0, 12)}, not the analysed ${revision.slice(0, 12)}`;
+    if (rec.headBefore !== revision || rec.headAfter !== revision) return "the workspace was not proven to be at the analysed revision before and after the run";
+    const check = currentChecks.get(rec.checkId);
+    if (!check) return `"${rec.checkId}" is no longer an approved check of the project`;
+    if (checkFingerprint(check) !== rec.checkFingerprint) return `the definition of "${rec.checkId}" changed after it ran`;
+    if (!bindings.some((b) => b.claimId === claimId && b.check.id === rec.checkId)) return `"${rec.checkId}" is not bound to this claim`;
+    return null;
+  };
 
   // Evidence is usable only if it is for THIS revision. Evidence with no revision stamp is about the session
   // the assessment was built from (the same revision); a stamp that differs is stale and is dropped.
@@ -95,21 +127,47 @@ export function reconcile(claims: AnalysisClaim[], assessment: Pick<EvidenceAsse
     const evidence = ca.evidenceIds.map((id) => byId.get(id)).filter(usable);
     const ids = evidence.map((e) => e.id);
     const base = { claimIndex: ca.claimIndex, statement: ca.statement, claimClass, labelledAsBehavior, evidenceIds: ids };
+    // Appended to behaviour-relevant explanations: say plainly whether any approved verification exists for this claim.
+    const noteFor = (outcome: ReconciliationOutcome): string => (claimClass === "behavior" || outcome === "IMPLEMENTATION_PRESENT" || outcome === "IMPLEMENTATION_POSSIBLE" ? noteText() : "");
+    let noteText = (): string => "";
     const finding = (outcome: ReconciliationOutcome, strength: "strong" | "weak" | null, explanation: string): ReconciliationFinding => ({
       ...base,
       outcome,
       strength,
-      explanation,
-      behaviorVerified: outcome === "CHECK_VERIFIED",
+      explanation: explanation + noteFor(outcome),
+      behaviorVerified: false,
+      claimId: claimIdOf(claim),
+      availableChecks: bindings.filter((b) => b.claimIndex === ca.claimIndex).map((b) => b.check.id),
+      verificationId: null,
     });
 
-    // CHECK_VERIFIED: ONLY an approved platform check that the contract explicitly binds to this claim, that passed,
-    // and whose CHECK_RESULT belongs to this revision. A project-wide check that happened to pass is not this.
-    const req = (assessment.verification ?? []).find((r) => r.claimIndex === ca.claimIndex && r.bindsClaim === true && r.state === "passed" && r.evidenceId !== null);
-    const checkEvidence = req ? byId.get(req.evidenceId!) : undefined;
-    if (req && checkEvidence?.type === "CHECK_RESULT" && usable(checkEvidence) && checkEvidence.revision === revision) {
-      return { ...base, evidenceIds: [...new Set([...ids, checkEvidence.id])], ...{ outcome: "CHECK_VERIFIED" as const, strength: null, explanation: `The project's configured '${req.checkId}' check, bound to this claim, passed at revision ${revision?.slice(0, 12)}.`, behaviorVerified: true } };
+    // ---- behaviour VERIFIED (or contradicted) by an approved check — only via a record that still binds -------------------
+    const claimId = claimIdOf(claim);
+    const availableChecks = bindings.filter((b) => b.claimIndex === ca.claimIndex).map((b) => b.check.id);
+    const mine = (options.verifications ?? []).filter((r) => r.claimId === claimId || r.claimIndex === ca.claimIndex);
+    let valid: { rec: ClaimVerificationRecord; check: ApprovedClaimCheck } | null = null;
+    for (const rec of mine) {
+      const problem = recordProblem(rec, claimId);
+      if (problem) {
+        ignoredVerifications.set(rec.id, problem);
+        continue;
+      }
+      if (rec.state === "passed") valid = { rec, check: currentChecks.get(rec.checkId)! };
     }
+    const withCheckMeta = (f: ReconciliationFinding): ReconciliationFinding => ({ ...f, claimId, availableChecks, verificationId: valid?.rec.id ?? null });
+    if (valid && (claim.kind === "BEHAVIOR_CORRECT" || claim.kind === "BEHAVIOR_INCORRECT") && (valid.check.establishes.claimKinds ?? ["BEHAVIOR_CORRECT", "BEHAVIOR_INCORRECT"]).includes(claim.kind)) {
+      const checkEvidence = assessment.evidence.filter((e) => e.type === "CHECK_RESULT" && e.revision === revision && (e.detail ?? "").includes(`bound to claim ${claimId}`) && (e.detail ?? "").startsWith(`${valid!.rec.checkId}:`)).map((e) => e.id);
+      const vbase = { ...base, evidenceIds: [...new Set([...ids, ...checkEvidence])], strength: null as null, behaviorVerified: true };
+      const what = `The approved check '${valid.rec.checkId}' (${valid.check.establishes.behavior}), bound to this claim, passed at revision ${revision!.slice(0, 12)}.`;
+      if (claim.kind === "BEHAVIOR_CORRECT") return withCheckMeta({ ...vbase, outcome: "CHECK_VERIFIED", explanation: `${what} The behaviour the claim describes is verified at this revision.` });
+      // Only an EXPLICIT absence statement about the mechanism is contradicted by a verified pass. Broad negation ("triggers X without checking Y")
+      // is usually about some specific behaviour or component the check does not exercise (see verification.ts applicationCompatible).
+      if (assertsExplicitAbsence(claim.statement)) return withCheckMeta({ ...vbase, outcome: "CHECK_CONTRADICTED", explanation: `${what} The claim says that behaviour is missing; a verified pass contradicts it at this revision.` });
+      return withCheckMeta({ ...base, outcome: "UNRESOLVED", strength: null, behaviorVerified: false, explanation: `${what} The claim describes a specific defect the check does not address, so it does not settle it.` });
+    }
+    const failedRecord = mine.some((r) => r.state !== "passed" && r.state !== "rejected" && !recordProblem(r, claimId));
+    const noCheckNote = availableChecks.length === 0 ? " No approved verification is available for this claim." : failedRecord ? " An approved check ran but did not pass, which establishes nothing." : " An approved check could verify this; it has not been run.";
+    noteText = () => noCheckNote;
 
     if (claimClass === "presence") {
       return ca.status === "SUPPORTED"
@@ -161,11 +219,21 @@ export function reconcile(claims: AnalysisClaim[], assessment: Pick<EvidenceAsse
 
   const strong = findings.some((f) => f.outcome === "IMPLEMENTATION_PRESENT" && f.strength === "strong");
   const possible = findings.some((f) => f.outcome === "IMPLEMENTATION_POSSIBLE" || f.outcome === "IMPLEMENTATION_PRESENT"); // (a weak PRESENT counts as possible)
+  const verified = findings.some((f) => f.outcome === "CHECK_VERIFIED" || f.outcome === "CHECK_CONTRADICTED");
+  const fromClaims: "present" | "possible" | "none" = strong || findings.some((f) => f.outcome === "CHECK_CONTRADICTED") ? "present" : possible ? "possible" : "none";
+  const inv = options.investigation;
+  const fromInvestigation: "present" | "possible" | "none" = inv?.signal === "IMPLEMENTATION_PRESENT" ? "present" : inv?.signal === "POSSIBLY_ALREADY_IMPLEMENTED" ? "possible" : "none";
+  const order = { none: 0, possible: 1, present: 2 } as const;
+  const implementation = order[fromClaims] >= order[fromInvestigation] ? fromClaims : fromInvestigation;
   return {
     revision,
     findings,
     alreadyImplemented: strong ? "strong" : possible ? "possible" : "none",
-    behaviorVerified: findings.some((f) => f.outcome === "CHECK_VERIFIED"),
+    behaviorVerified: verified,
     ignoredEvidence: [...ignored].map(([id, reason]) => ({ id, reason })),
+    implementation,
+    implementationSources: [...(fromClaims !== "none" ? (["claim"] as const) : []), ...(fromInvestigation !== "none" ? (["investigation"] as const) : [])],
+    behavior: verified ? "CHECK_VERIFIED" : "BEHAVIOR_UNVERIFIED",
+    ignoredVerifications: [...ignoredVerifications].map(([id, reason]) => ({ id, reason })),
   };
 }

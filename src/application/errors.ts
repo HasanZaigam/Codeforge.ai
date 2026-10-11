@@ -9,7 +9,7 @@
 
 export class NotFoundError extends Error {
   constructor(
-    public readonly kind: "Project" | "Task" | "HumanInputRequest" | "BacklogItem" | "TaskProposal",
+    public readonly kind: "Project" | "Task" | "HumanInputRequest" | "BacklogItem" | "TaskProposal" | "ClaimVerificationJob" | "ProviderConnection",
     public readonly id: string,
   ) {
     super(`${kind} not found: ${id}`);
@@ -246,5 +246,20 @@ export class ProjectHasActiveTasksError extends Error {
         `${blockingTaskTitles.join(", ")}. Cancel or finish them before deleting the project.`,
     );
     this.name = "ProjectHasActiveTasksError";
+  }
+}
+
+/**
+ * Model Gateway — the user's global AI brain is set to a FIXED provider/model, but that provider's
+ * connection is unavailable (never connected, disconnected, or currently in a health cooldown) at
+ * the moment an AI execution needed to resolve a model. Per the Failure/Fallback Rules this feature
+ * was built against: a fixed selection NEVER silently falls back to a different provider — this is
+ * thrown instead, surfacing as an honest, actionable task/analysis failure (see
+ * ModelGatewayService.resolveModelSelection).
+ */
+export class ModelGatewayResolutionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ModelGatewayResolutionError";
   }
 }

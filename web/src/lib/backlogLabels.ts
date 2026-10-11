@@ -164,16 +164,85 @@ export const VERIFICATION_STATE_LABELS: Record<"not_run" | "passed" | "failed" |
   rejected: "refused",
 };
 
-export const RECONCILIATION_LABELS: Record<"IMPLEMENTATION_PRESENT" | "IMPLEMENTATION_POSSIBLE" | "UNRESOLVED" | "NO_CONFLICT" | "CHECK_VERIFIED", string> = {
+export const RECONCILIATION_LABELS: Record<"IMPLEMENTATION_PRESENT" | "IMPLEMENTATION_POSSIBLE" | "UNRESOLVED" | "NO_CONFLICT" | "CHECK_VERIFIED" | "CHECK_CONTRADICTED", string> = {
   IMPLEMENTATION_PRESENT: "Implementation evidence conflicts with the reported absence",
   IMPLEMENTATION_POSSIBLE: "Related code may conflict with the reported absence",
   UNRESOLVED: "Not resolved by the evidence",
   NO_CONFLICT: "No conflict",
   CHECK_VERIFIED: "Verified by a platform check bound to this claim",
+  CHECK_CONTRADICTED: "Contradicted by a verified platform check",
 };
 
 export const USAGE_STATUS_LABELS: Record<"complete" | "partial" | "unavailable", string> = {
   complete: "complete",
   partial: "partial — at least one run failed or reported nothing, so totals are lower bounds",
   unavailable: "unavailable",
+};
+
+export const REVIEW_STATE_LABELS: Record<"NEEDS_ANALYSIS" | "NEEDS_CLARIFICATION" | "POSSIBLY_ALREADY_IMPLEMENTED" | "VERIFIED_CONFLICT" | "READY_FOR_PROPOSAL", { label: string; tone: string }> = {
+  NEEDS_ANALYSIS: { label: "Needs analysis", tone: "neutral" },
+  NEEDS_CLARIFICATION: { label: "Needs clarification", tone: "attention" },
+  POSSIBLY_ALREADY_IMPLEMENTED: { label: "Possibly already implemented", tone: "info" },
+  VERIFIED_CONFLICT: { label: "Verified conflict", tone: "success" },
+  READY_FOR_PROPOSAL: { label: "Ready for proposal", tone: "active" },
+};
+
+/** Implementation presence is NOT behaviour: these labels never say fixed / working. */
+export const IMPLEMENTATION_LABELS: Record<"present" | "possible" | "none_found" | "unknown", string> = {
+  present: "Implementation appears present",
+  possible: "Implementation possibly present",
+  none_found: "No conflicting implementation found",
+  unknown: "Implementation not assessed",
+};
+
+export const BEHAVIOR_LABELS: Record<"BEHAVIOR_UNVERIFIED" | "CHECK_VERIFIED", string> = {
+  BEHAVIOR_UNVERIFIED: "Behavior unverified",
+  CHECK_VERIFIED: "Behavior verified by a platform check",
+};
+
+export const INVESTIGATION_LABELS: Record<"IMPLEMENTATION_PRESENT" | "POSSIBLY_ALREADY_IMPLEMENTED" | "NO_CONFLICTING_IMPLEMENTATION_EVIDENCE" | "UNRESOLVED", string> = {
+  IMPLEMENTATION_PRESENT: "Implementation appears present",
+  POSSIBLY_ALREADY_IMPLEMENTED: "Possibly already implemented",
+  NO_CONFLICTING_IMPLEMENTATION_EVIDENCE: "No conflicting implementation evidence found (not proof of absence)",
+  UNRESOLVED: "Not investigated",
+};
+
+/** Job status describes the RUN; "passed" here means the check passed, not that the claim is verified. */
+export const VERIFICATION_JOB_LABELS: Record<"QUEUED" | "RUNNING" | "SUCCEEDED" | "FAILED" | "TIMED_OUT" | "CANCELLED", string> = {
+  QUEUED: "Queued",
+  RUNNING: "Running",
+  SUCCEEDED: "Passed",
+  FAILED: "Failed",
+  TIMED_OUT: "Timed out",
+  CANCELLED: "Cancelled",
+};
+
+export const FLOW_LABELS: Record<"FLOW_REFERENCE_PRESENT" | "FLOW_NOT_ESTABLISHED" | "ENTRY_POINT_NOT_LOCATED", string> = {
+  FLOW_REFERENCE_PRESENT: "Flow reference present (static name-reference path — not a proven call path)",
+  FLOW_NOT_ESTABLISHED: "Flow not established (the mechanism was not reached from the entry point)",
+  ENTRY_POINT_NOT_LOCATED: "Entry point not located",
+};
+
+export const REVIEW_FILTER_LABELS: Record<"all" | "needs_analysis" | "analysis_ready" | "possibly_implemented" | "needs_clarification" | "duplicate" | "dependency" | "ready_for_proposal" | "verified" | "unverified" | "failed", string> = {
+  all: "All",
+  needs_analysis: "Needs analysis",
+  analysis_ready: "Analysis ready",
+  possibly_implemented: "Possibly already implemented",
+  needs_clarification: "Needs clarification",
+  duplicate: "Duplicate candidate",
+  dependency: "Dependency candidate",
+  ready_for_proposal: "Ready for proposal",
+  verified: "Verified",
+  unverified: "Unverified",
+  failed: "Failed",
+};
+
+export const REJECT_REASON_LABELS: Record<string, string> = {
+  missing_title: "Missing title",
+  missing_description: "Missing description / steps / expected / actual",
+  invalid_bug_id: "Unusable bug id",
+  duplicate_source_row: "Duplicate source row",
+  title_too_long: "Title too long",
+  field_too_long: "A field is too long",
+  malformed_row: "Malformed row",
 };

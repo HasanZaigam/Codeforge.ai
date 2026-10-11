@@ -101,6 +101,7 @@ export class ProjectRepository {
     this.db.prepare("DELETE FROM backlog_events WHERE project_id = ?").run(projectId);
     this.db.prepare("DELETE FROM task_proposals WHERE project_id = ?").run(projectId);
     this.db.prepare("DELETE FROM backlog_relationships WHERE project_id = ?").run(projectId);
+    this.db.prepare("DELETE FROM claim_verifications WHERE project_id = ?").run(projectId); // before analyses: records reference them
     this.db.prepare("DELETE FROM backlog_analysis_jobs WHERE project_id = ?").run(projectId); // before analyses: jobs reference them
     this.db.prepare("DELETE FROM backlog_analyses WHERE project_id = ?").run(projectId);
     this.db.prepare("DELETE FROM backlog_items WHERE project_id = ?").run(projectId);

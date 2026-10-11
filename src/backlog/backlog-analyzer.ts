@@ -6,10 +6,11 @@ import { CancellationError } from "../domain/errors.js";
 import { CodingEngineRegistry, EngineTimeoutError, UnknownCodingEngineError, usageFromError, type CodingEngine } from "../coding-engine/coding-engine.js";
 import { mergeCostMetadata } from "../coding-engine/engine-usage.js";
 import type { ModelRegistry } from "../routing/model-registry.js";
-import { selectModel } from "../routing/model-router.js";
+import { selectModel, type ModelGatewayLookup } from "../routing/model-router.js";
 import { deriveHealthOnFailure, deriveHealthOnSuccess, type CooldownPolicyConfig } from "../routing/provider-health-policy.js";
 import type { ProviderHealthRepository } from "../persistence/repositories/provider-health-repository.js";
 import { classifyOrchestratorFailure } from "../orchestrator/failure-classifier.js";
+import { ModelGatewayResolutionError } from "../application/errors.js";
 import { redactSecrets } from "../security/redact.js";
 import type { AnalysisFailureCategory } from "./backlog-types.js";
 
@@ -85,6 +86,8 @@ export class BacklogAnalyzer {
     private readonly modelRegistry: ModelRegistry | null,
     private readonly providerHealth: ProviderHealthRepository | null,
     private readonly options: BacklogAnalyzerOptions,
+    /** Model Gateway — see Orchestrator's own `modelGateway` doc comment; `null` preserves exact prior (env-registry-only) behavior. */
+    private readonly modelGateway: ModelGatewayLookup | null = null,
   ) {
     this.maxModelAttempts = options.maxModelAttempts ?? 2;
     this.env = options.env ?? process.env;
@@ -114,11 +117,27 @@ export class BacklogAnalyzer {
         if (signal.aborted) return { ok: false, category: "cancelled", reason: "The analysis was cancelled.", selection: lastSelection, engineKey: engine.key, attempts, retryable: false, retryAfterMs: null };
 
         const now = new Date().toISOString();
-        const hasCandidates = this.modelRegistry ? this.modelRegistry.listEnabledForEngine(engine.key).length > 0 : false;
+        // Model Gateway — see Orchestrator.runAgent's own identical wiring/doc comment. Unlike
+        // Orchestrator (which lets a thrown ModelGatewayResolutionError propagate through its own
+        // existing error->TASK_FAILED path), `run()`'s established contract is to NEVER throw —
+        // every failure, including this one, becomes an honest `AnalyzerOutcome`, never silently
+        // falling back to a different model.
+        let gatewayResult: ReturnType<ModelGatewayLookup["resolveModelSelection"]> | null = null;
+        if (this.modelGateway) {
+          try {
+            gatewayResult = this.modelGateway.resolveModelSelection(project.ownerId, engine.key, "backlog_analysis", triedModelIds.length, now, this.modelRegistry);
+          } catch (err) {
+            if (!(err instanceof ModelGatewayResolutionError)) throw err;
+            return { ok: false, category: "engine_error", reason: this.clean(err.message), selection: lastSelection, engineKey: engine.key, attempts, retryable: false, retryAfterMs: null };
+          }
+        }
+        const hasCandidates = this.modelGateway ? gatewayResult!.hadCandidates : this.modelRegistry ? this.modelRegistry.listEnabledForEngine(engine.key).length > 0 : false;
         const selection =
-          this.modelRegistry && this.providerHealth
+          gatewayResult?.selection ??
+          (!this.modelGateway && this.modelRegistry && this.providerHealth
             ? selectModel(this.modelRegistry, this.providerHealth, { operation: "backlog_analysis", engineKey: engine.key, fallbackIndex: triedModelIds.length, now })
-            : null;
+            : null);
+        const credentialEnv = gatewayResult?.credentialEnv ?? null;
 
         // A retry within this attempt is only worthwhile against a genuinely different model. Checked BEFORE
         // the "everything is cooling down" case: when the model that just failed is the only one there is,
@@ -151,6 +170,7 @@ export class BacklogAnalyzer {
             timeoutMs: this.options.timeoutMs,
             signal,
             modelSelection: selection,
+            credentialEnv,
             promptOverride: prompt,
           });
           if (invocation.result.status === "blocked") {

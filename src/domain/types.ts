@@ -349,7 +349,14 @@ export type TaskEventType =
    * raises this — see LeaseLostError's own doc comment. See
    * /docs/TASK_LIFECYCLE.md "Worker concurrency and lease loss".
    */
-  | "EXECUTION_LEASE_LOST";
+  | "EXECUTION_LEASE_LOST"
+  /**
+   * Phase 4D.2 — appended by ActionLayerService AFTER an existing TaskService mutation (create/edit/
+   * start/cancel) has already succeeded AND its result was read back and verified. Never appended
+   * speculatively, never a mutation itself — purely an audit trail so a Chat-originated change shows
+   * up in the SAME task history as one made through the Tasks UI. See action-layer.ts.
+   */
+  | "CHAT_ACTION_PERFORMED";
 
 export interface TaskEvent {
   id: string;
@@ -364,11 +371,66 @@ export interface TaskEvent {
 // Project
 // ---------------------------------------------------------------------------
 
+/**
+ * A project-owned, platform-executed verification of ONE specific behaviour (Phase 4A.5, GAP-033). Unlike
+ * build/test/lint/typecheck (project-wide), it declares what a PASS establishes and which claims it may be bound to, so
+ * "the generic suite passed" can never be mistaken for "this behaviour holds". Declared by the project owner (the same
+ * trust level as the four commands above) — NEVER supplied by a model: an AI claim can only be *matched* to a check
+ * that already exists here. See backlog/claim-verification.ts.
+ */
+/**
+ * What a check actually EXERCISES (Phase 4A.7) — declared by the project owner, never by a model. A check may verify only claims that
+ * fall inside its scope; a passing check is not evidence about anything outside it.
+ */
+export interface CheckScope {
+  /** `mechanism`: exercises one function/module directly (a unit test). `flow`: exercises an entry point end to end (e.g. an HTTP route). */
+  level: "mechanism" | "flow";
+  /** The application exercised ("backend", "mobile", …). */
+  application: string;
+  /** The symbol whose behaviour is asserted (e.g. "evaluateOtpThrottle"). A behaviour claim must name it. */
+  mechanism: string;
+  /** Required for `flow`: the entry point exercised, "POST /request-otp". */
+  entryPoint?: string;
+  /** The behaviours the check asserts, each recognised in a claim by any of its single lowercase words. */
+  behaviors: Array<{ id: string; terms: string[] }>;
+}
+
+export interface ApprovedClaimCheck {
+  /** Stable identifier, `[a-z0-9-]`. Recorded on every result; a check whose definition changes is a different check (fingerprint). */
+  id: string;
+  description: string;
+  /** Shell command run with the project's repository checked out at the analysed revision (like `test`/`typecheck`). Exit 0 ⇒ pass. */
+  command: string;
+  /** Wall-clock limit, ms (default 120,000; max 900,000). Enforced by the existing check runner. */
+  timeoutMs?: number;
+  /** Informational: the application/module this check exercises (e.g. "backend"). */
+  application?: string;
+  /** Prerequisite state: the check only applies when every listed file exists at the analysed revision. */
+  requiresFiles?: string[];
+  establishes: {
+    /** What a pass establishes, in words (shown to reviewers). */
+    behavior: string;
+    /**
+     * Binding keys. A claim is bound to this check only if, for EVERY group, the claim's own words contain at least one
+     * term of that group (groups are ANDed, terms within a group are alternatives): [["otp"], ["limit","throttle","rate"]].
+     */
+    claimTerms: string[][];
+    /** Which behaviour claims a pass speaks to. Default both: it VERIFIES "…works correctly" and CONTRADICTS an absence-worded "…is not handled". */
+    claimKinds?: Array<"BEHAVIOR_CORRECT" | "BEHAVIOR_INCORRECT">;
+    /** The semantic contract. Without it the check is never sufficient for any claim (`claimTerms` alone only ranks candidates). */
+    scope?: CheckScope;
+  };
+  /** The only supported semantics: exit 0 means the described behaviour holds at that revision. A failure is recorded but establishes nothing. */
+  passMeans: "behavior_holds";
+}
+
 export interface ProjectCommands {
   build?: string;
   test?: string;
   lint?: string;
   typecheck?: string;
+  /** Approved, claim-bindable behaviour checks (Phase 4A.5). Not run by task validation. */
+  claimChecks?: ApprovedClaimCheck[];
 }
 
 export interface Project {

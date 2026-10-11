@@ -2,7 +2,6 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { reconcile, assertsAbsence, assertsExplicitAbsence } from "../src/backlog/reconciliation.js";
 import { collectEvidence, findReferences } from "../src/backlog/evidence.js";
-import { applyVerification, planVerification, type VerificationRun } from "../src/backlog/verification.js";
 import { buildRepositoryIndex, sourceKeyOf } from "../src/backlog/repository-index.js";
 import { parseAnalysisOutput } from "../src/backlog/analysis-schema.js";
 import { deriveAnalysisOutcome } from "../src/backlog/backlog-state-machine.js";
@@ -34,7 +33,8 @@ const REPO: Record<string, string> = {
     "  }",
     "}",
   ].join("\n"),
-  "backend/src/modules/profiles/controllers/profile.controller.ts": "export const deleteProfileHandler = async (req, res) => { await profileService.deleteProfile(req.user, req.params.id); };\n",
+  "backend/src/modules/profiles/controllers/profile.controller.ts": "import { ProfileService } from \"../services/profile.service\";\nexport const deleteProfileHandler = async (req, res) => { await new ProfileService().deleteProfile(req.user, req.params.id); };\n",
+  "backend/src/modules/profiles/routes/profile.routes.ts": "import { deleteProfileHandler } from \"../controllers/profile.controller\";\nrouter.delete(\"/:id\", deleteProfileHandler);\n",
   // Declared but NEVER referenced anywhere in the file: existence only, not "wired in".
   "backend/src/modules/user/services/user.service.ts": "export function validateNewMobile(n: string) { return n.length === 10; }\nexport class UserService {}\n",
   "README.md": "# Jinvani\n",
@@ -178,15 +178,21 @@ test("the brief's flagship: 'deletion does not check whether it is allowed' + bl
     assert.equal(f.labelledAsBehavior, true);
     assert.match(f.explanation, /Implementation evidence conflicts with the reported absence/);
     assert.match(f.explanation, /not a conclusion/);
-    assert.equal(a.reconciliation!.alreadyImplemented, "possible");
-    assert.equal(h.platform.backlogItems.findById(item.id)!.status, "ANALYZED", "'possible' is shown, it does not block or close anything");
+    assert.equal(a.reconciliation!.alreadyImplemented, "possible", "the CLAIM alone is only a weak lead");
+    // …but the platform's own investigation of the item text ("A user can delete their main profile") independently finds the wired-in guard.
+    assert.equal(a.investigation!.signal, "IMPLEMENTATION_PRESENT");
+    assert.equal(a.reconciliation!.implementation, "present");
+    assert.deepEqual(a.reconciliation!.implementationSources, ["claim", "investigation"]);
+    assert.equal(a.reconciliation!.behavior, "BEHAVIOR_UNVERIFIED");
+    assert.equal(h.platform.backlogItems.findById(item.id)!.status, "ANALYZED", "'present' is shown, it does not block or close anything");
 
     // The proposal carries the signal and becomes an INVESTIGATION — never "fixed", never an automatic change task.
     const { proposal } = h.services.backlog.generateProposal(item.id, h.owner.id);
     const c = proposal.content!;
-    assert.equal(c.implementationConflict, "possible");
+    assert.equal(c.implementationConflict, "strong");
     assert.equal(c.investigateFirst, true);
-    assert.match(c.goal, /IMPLEMENTATION EVIDENCE CONFLICTS WITH THE REPORTED ABSENCE \(possible\)/);
+    assert.match(c.goal, /IMPLEMENTATION EVIDENCE CONFLICTS WITH THE REPORTED ABSENCE \(strong\)/);
+    assert.match(c.goal, /Platform investigation of this item's premise/);
     assert.match(c.goal, /does NOT mean the item is fixed/);
     assert.match(c.goal, /SYMBOL_REFERENCE/);
     assert.doesNotMatch(c.goal, /BUG FIXED|is fixed\b(?! or)/);
@@ -238,28 +244,6 @@ test("FILE_EXISTS / SYMBOL_MATCH alone can never make a behaviour claim anything
 // CHECK_VERIFIED — only a check explicitly BOUND to the claim, at this revision
 // ===========================================================================
 
-test("CHECK_VERIFIED needs (a) a passed platform check, (b) explicitly bound to the claim, (c) whose CHECK_RESULT is for this revision — a generic passing check never does", () => {
-  const c = claim({ kind: "BEHAVIOR_CORRECT", statement: "The limiter works correctly.", searchTerms: ["otp", "limit"] });
-  const checkEv = (revision: string | null): PlatformEvidence => ({ id: "E1", type: "CHECK_RESULT", source: "platform_check", path: null, detail: "test: passed (exit 0)", matchedTerms: [], revision });
-  const ca: ClaimAssessment = { claimIndex: 0, statement: c.statement, kind: c.kind, aiConfidence: "high", status: "UNRESOLVED", establishes: "nothing", evidenceIds: ["E1"], reason: "r" };
-  const run = (bindsClaim: boolean | undefined, evRev: string | null, atRev: string) =>
-    reconcile([c], { claims: [ca], evidence: [checkEv(evRev)], verification: [{ claimIndex: 0, checkId: "test", state: "passed", reason: "", evidenceId: "E1", ...(bindsClaim === undefined ? {} : { bindsClaim }) }] }, atRev);
-
-  assert.equal(run(undefined, REV_A, REV_A).findings[0]!.outcome, "UNRESOLVED", "today's requirements are never bound ⇒ a passing generic check verifies nothing");
-  assert.equal(run(false, REV_A, REV_A).behaviorVerified, false);
-  const ok = run(true, REV_A, REV_A);
-  assert.equal(ok.findings[0]!.outcome, "CHECK_VERIFIED");
-  assert.equal(ok.findings[0]!.behaviorVerified, true);
-  assert.equal(ok.behaviorVerified, true);
-  // Stale CHECK_RESULT (run against another revision) can never verify — and is reported as ignored.
-  const stale = run(true, REV_A, REV_B);
-  assert.equal(stale.findings[0]!.outcome, "UNRESOLVED");
-  assert.equal(stale.behaviorVerified, false);
-  assert.deepEqual(stale.ignoredEvidence.map((i) => i.id), ["E1"]);
-  // A CHECK_RESULT with no revision cannot be bound to the analysed one either.
-  assert.equal(run(true, null, REV_A).findings[0]!.outcome, "UNRESOLVED");
-});
-
 // ===========================================================================
 // REVISION INTEGRITY — evidence from revision A can never reconcile claims for revision B
 // ===========================================================================
@@ -295,25 +279,6 @@ test("a STALE INDEX (built for another revision) is refused by collectEvidence i
   // …and a session that cannot name its revision never uses an index at all.
   const noRev = await fakeStructure(REPO, { revision: null }).open({} as never, signal);
   assert.ok(!(await collectEvidence(c, noRev, null, signal, idxA)).evidence.some((e) => e.type === "SYMBOL_MATCH"));
-});
-
-test("a STALE CHECK_RESULT (run at revision A) folded into an analysis at revision B cannot reconcile or verify anything", () => {
-  const c = claim({ kind: "BEHAVIOR_CORRECT", statement: "The limiter works.", searchTerms: ["otp", "limit"] });
-  const before: EvidenceAssessment = {
-    evidence: [],
-    claims: [{ claimIndex: 0, statement: c.statement, kind: c.kind, aiConfidence: "high", status: "UNRESOLVED", establishes: "nothing", evidenceIds: [], reason: "r" }],
-    summary: { supported: 0, contradicted: 0, unresolved: 1, notChecked: 0 },
-    confidenceOverridden: false,
-    inspection: { listing: "complete", filesRead: 0, bytesRead: 0, filesSkipped: [], limits: { maxFiles: 1, maxFileBytes: 1, maxTotalBytes: 1 } },
-    verification: planVerification([c], { commands: { test: "npm test" } } as never).map((r) => ({ ...r, bindsClaim: true })),
-  };
-  const runs: VerificationRun[] = [{ checkId: "test", claimIndexes: [0], state: "passed", evidence: { exitCode: 0, durationMs: 5, commitSha: REV_A } as never, reason: "ok" }];
-  const applied = applyVerification(before, runs, REV_A); // the check really did run at A…
-  assert.equal(reconcile([c], applied, REV_A).behaviorVerified, true, "(control) at A it verifies the bound claim");
-  const atB = reconcile([c], applied, REV_B); // …but this analysis is about B
-  assert.equal(atB.behaviorVerified, false);
-  assert.equal(atB.findings[0]!.outcome, "UNRESOLVED");
-  assert.ok(atB.ignoredEvidence.length >= 1);
 });
 
 // ===========================================================================
@@ -355,17 +320,6 @@ test("legacy analyses (no reconciliation) still render/parse: the field is optio
     dependencies: [], duplicateWarnings: [], uncertainty: { overall: "low", uncertainties: [], missingInformation: [] },
   });
   assert.equal(parsed.implementationConflict, "none");
-});
-
-test("CHECK_VERIFIED requires the bound check to have PASSED — a failed or timed-out bound check verifies nothing", () => {
-  const c = claim({ kind: "BEHAVIOR_CORRECT", statement: "The limiter works.", searchTerms: ["otp", "limit"] });
-  const ev: PlatformEvidence = { id: "E1", type: "CHECK_RESULT", source: "platform_check", path: null, detail: "test: failed (exit 1)", matchedTerms: [], revision: REV_A };
-  const ca: ClaimAssessment = { claimIndex: 0, statement: c.statement, kind: c.kind, aiConfidence: "high", status: "UNRESOLVED", establishes: "nothing", evidenceIds: ["E1"], reason: "r" };
-  for (const state of ["failed", "timed_out", "infrastructure_error", "rejected", "not_run"] as const) {
-    const r = reconcile([c], { claims: [ca], evidence: [ev], verification: [{ claimIndex: 0, checkId: "test", state, reason: "", evidenceId: "E1", bindsClaim: true }] }, REV_A);
-    assert.equal(r.behaviorVerified, false, state);
-    assert.equal(r.findings[0]!.outcome, "UNRESOLVED", state);
-  }
 });
 
 test("'wired in' means the reference is in the SAME file as the matching declaration — a reference elsewhere is not wiring", () => {

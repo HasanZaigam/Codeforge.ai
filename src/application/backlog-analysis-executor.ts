@@ -10,7 +10,8 @@ import { assessClaims, buildAssessment, collectEvidence, listingState, type Coll
 import { DEFAULT_INSPECTION_LIMITS, RepositoryInspector, type InspectionLimits } from "../backlog/repository-inspector.js";
 import type { IndexAccess, RepositoryIndexService } from "../backlog/repository-index-service.js";
 import { reconcile } from "../backlog/reconciliation.js";
-import { ANALYSIS_VERIFICATION_DISABLED, planVerification, type VerificationPolicy } from "../backlog/verification.js";
+import { investigate } from "../backlog/investigation.js";
+import { planVerification, verificationCandidates } from "../backlog/verification.js";
 import type { RepositoryStructureProvider } from "../backlog/repository-structure.js";
 import { resolveRelationshipProposals } from "../backlog/relationship-resolution.js";
 import { computeBackoffDelayMs } from "../coding-engine/retry-backoff.js";
@@ -49,8 +50,6 @@ export interface BacklogAnalysisExecutorDeps {
   inspectionLimits?: InspectionLimits;
   /** Lazily builds/serves the revision-bound repository index (Phase 4A.3). `null` = select by file name only. */
   repositoryIndex?: RepositoryIndexService | null;
-  /** Whether analysis may execute the project's checks. Production leaves this at the disabled default. */
-  verificationPolicy?: VerificationPolicy;
   options: BacklogAnalysisExecutorOptions;
 }
 
@@ -162,19 +161,40 @@ export class BacklogAnalysisExecutor {
         }
         throw err;
       }
+      // The platform's OWN investigation of the item's premise — from the item text and the repository, independent of any
+      // claim the model made (real models mostly accept the premise instead of asserting an absence).
+      let investigated;
+      try {
+        investigated = await investigate({
+          text: `${item.title}\n${item.description}`,
+          session: repo.session,
+          inspector: repo.inspector,
+          index: repo.index?.state === "used" ? repo.index.index : null,
+          startEvidenceNumber: collected.evidence.length + 1,
+          signal,
+        });
+      } catch (err) {
+        if (signal.aborted) {
+          this.settleAborted(job, claim, project, item, abortReason(), null);
+          return;
+        }
+        throw err;
+      }
       const baseAssessment = {
+        investigation: investigated.investigation,
         ...buildAssessment(
-          collected.evidence,
+          [...collected.evidence, ...investigated.evidence],
           assessClaims(parsed.value.claims, collected.perClaim, listingState(repo.session)),
           parsed.value.confidence.overall,
           repo.inspector?.summary(listingState(repo.session)) ?? { listing: "unavailable", filesRead: 0, bytesRead: 0, filesSkipped: [], limits: { maxFiles: 0, maxFileBytes: 0, maxTotalBytes: 0 } },
         ),
-        // What verification would bear on the behaviour claims (recorded as `not_run`: analysis executes nothing).
-        verification: planVerification(parsed.value.claims, project, this.deps.verificationPolicy ?? ANALYSIS_VERIFICATION_DISABLED),
+        // Which of the project's APPROVED checks are bound to which behaviour claims (recorded as `not_run`: analysis executes nothing).
+        verification: planVerification(parsed.value.claims, project),
+        verificationCandidates: verificationCandidates(parsed.value.claims, project.commands?.claimChecks),
       };
       // AFTER the model answered and the platform gathered its own evidence: the platform — not the model —
       // decides how claim and evidence relate (see backlog/reconciliation.ts). Bound to the analysed revision.
-      const assessment = { ...baseAssessment, reconciliation: reconcile(parsed.value.claims, baseAssessment, repo.session?.revision ?? null) };
+      const assessment = { ...baseAssessment, reconciliation: reconcile(parsed.value.claims, baseAssessment, repo.session?.revision ?? null, { investigation: investigated.investigation, checks: project.commands?.claimChecks }) };
       this.settleSuccess(job, claim, project, item, startedAt, started, parsed.value, outcome, ctx, collected, assessment);
     } finally {
       await repo.session?.dispose().catch(() => {});
@@ -301,6 +321,8 @@ export class BacklogAnalysisExecutor {
       claimsNotChecked: assessment.summary.notChecked,
       confidenceOverridden: assessment.confidenceOverridden,
       alreadyImplemented: assessment.reconciliation?.alreadyImplemented ?? "none",
+      implementation: assessment.reconciliation?.implementation ?? "none",
+      investigation: assessment.investigation?.signal ?? "UNRESOLVED",
       filesRead: assessment.inspection.filesRead,
       hasUsage: outcome.cost !== null,
       context: ctx.summary,

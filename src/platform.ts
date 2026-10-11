@@ -27,7 +27,11 @@ import { Orchestrator } from "./orchestrator/orchestrator.js";
 import { DEFAULT_ORCHESTRATOR_CONFIG, type OrchestratorConfig } from "./orchestrator/config.js";
 import { ProviderHealthRepository } from "./persistence/repositories/provider-health-repository.js";
 import { ModelRegistry } from "./routing/model-registry.js";
+import { ProviderConnectionRepository } from "./persistence/repositories/provider-connection-repository.js";
+import { GlobalAiConfigRepository } from "./persistence/repositories/global-ai-config-repository.js";
+import { ModelGatewayService } from "./application/model-gateway-service.js";
 import { BacklogItemRepository } from "./persistence/repositories/backlog-item-repository.js";
+import { ChatRepository } from "./persistence/repositories/chat-repository.js";
 import { BacklogAnalysisRepository } from "./persistence/repositories/backlog-analysis-repository.js";
 import { BacklogRelationshipRepository } from "./persistence/repositories/backlog-relationship-repository.js";
 import { TaskProposalRepository } from "./persistence/repositories/task-proposal-repository.js";
@@ -39,8 +43,15 @@ import type { BacklogServiceOptions } from "./application/backlog-service.js";
 import { BacklogAnalysisJobRepository } from "./persistence/repositories/backlog-analysis-job-repository.js";
 import { BacklogAnalysisExecutor } from "./application/backlog-analysis-executor.js";
 import { RepositoryIndexRepository } from "./persistence/repositories/repository-index-repository.js";
+import { BacklogBulkRepository } from "./persistence/repositories/backlog-bulk-repository.js";
+import { BacklogAdjudicationRepository } from "./persistence/repositories/backlog-adjudication-repository.js";
+import { BacklogAdjudicationBaselineRepository } from "./persistence/repositories/backlog-adjudication-baseline-repository.js";
+import { ClaimVerificationRepository } from "./persistence/repositories/claim-verification-repository.js";
 import { RepositoryIndexService, type RepositoryIndexServiceOptions } from "./backlog/repository-index-service.js";
-import type { VerificationPolicy } from "./backlog/verification.js";
+import { ClaimVerificationJobRepository } from "./persistence/repositories/claim-verification-job-repository.js";
+import { ClaimVerificationExecutor, type WorkspaceFactory } from "./application/claim-verification-executor.js";
+import { ClaimVerificationRunner, DEFAULT_MAX_VERIFICATION_CONCURRENCY, DEFAULT_VERIFICATION_HEARTBEAT_MS, DEFAULT_VERIFICATION_LEASE_MS } from "./worker/claim-verification-runner.js";
+import { CompositeRunner } from "./worker/worker.js";
 import { BacklogAnalysisRunner, DEFAULT_ANALYSIS_HEARTBEAT_MS, DEFAULT_ANALYSIS_LEASE_MS, DEFAULT_MAX_ANALYSIS_CONCURRENCY } from "./worker/backlog-analysis-runner.js";
 
 /**
@@ -71,6 +82,14 @@ export interface Platform {
   modelRegistry: ModelRegistry;
   /** V1.1 Slice 5 — see persistence/repositories/provider-health-repository.ts. */
   providerHealth: ProviderHealthRepository;
+  /** Model Gateway — see application/model-gateway-service.ts. */
+  providerConnections: ProviderConnectionRepository;
+  globalAiConfig: GlobalAiConfigRepository;
+  /** Model Gateway — the single account-scoped model/provider resolution point every AI execution
+   *  (Orchestrator, BacklogAnalyzer/Chat) goes through. Exposed here (rather than only inside
+   *  application/index.ts) for the SAME reason `backlogAnalyzer` is: it must be constructed once and
+   *  handed to both the Orchestrator and BacklogAnalyzer at THEIR construction time, below. */
+  modelGateway: ModelGatewayService;
   /** Phase 4A — Backlog Intelligence (see /docs/BACKLOG_INTELLIGENCE.md). Consumed only by BacklogService (application/backlog-service.ts). */
   backlogItems: BacklogItemRepository;
   backlogAnalyses: BacklogAnalysisRepository;
@@ -78,8 +97,14 @@ export interface Platform {
   taskProposals: TaskProposalRepository;
   backlogEvents: BacklogEventRepository;
   backlogJobs: BacklogAnalysisJobRepository;
+  claimVerifications: ClaimVerificationRepository;
+  backlogBulk: BacklogBulkRepository;
+  backlogAdjudication: BacklogAdjudicationRepository;
+  backlogAdjudicationBaselines: BacklogAdjudicationBaselineRepository;
   backlogAnalyzer: BacklogAnalyzer;
   backlogContextBuilder: BacklogContextBuilder;
+  /** Phase 4C — project-aware Chat (see /docs/CHAT.md). Reuses this same engine/model registry via backlogAnalyzer; never a second call path to a model. */
+  chatMessages: ChatRepository;
   /** Phase 4A.1 — executes one claimed analysis job. Used ONLY by the runner below (worker process); the API process never touches it. */
   backlogExecutor: BacklogAnalysisExecutor;
   /**
@@ -88,6 +113,12 @@ export interface Platform {
    * happens inside an HTTP request.
    */
   backlogRunner: BacklogAnalysisRunner;
+  /** Phase 4A.6 — claim-bound verification jobs (same worker, same DB; the API process only enqueues). */
+  claimVerificationJobs: ClaimVerificationJobRepository;
+  claimVerificationExecutor: ClaimVerificationExecutor;
+  claimVerificationRunner: ClaimVerificationRunner;
+  /** What the ONE worker loop drives: backlog analysis + claim verification. */
+  backgroundRunner: CompositeRunner;
   /** The RESOLVED options (defaults filled in). */
   backlogOptions: BacklogServiceOptions;
 }
@@ -107,6 +138,8 @@ export interface BuildPlatformOptions {
   engine: CodingEngine;
   additionalCodingEngines?: CodingEngine[];
   ownerId?: string;
+  /** Phase 4A.6 test seams for claim verification (production: a SHA-pinned throwaway checkout, the check's own timeout). */
+  verification?: { workspaceFactory?: WorkspaceFactory; checkTimeoutMsOverride?: number; leaseMs?: number; heartbeatMs?: number; maxConcurrency?: number; maxAttempts?: number; retryBaseDelayMs?: number };
   orchestratorConfig?: Partial<OrchestratorConfig>;
   /**
    * Test-only escape hatch: registered after the default providers, so a
@@ -136,8 +169,6 @@ export interface BuildPlatformOptions {
   backlogOptions?: BacklogServiceOptions;
   /** Repository-index tuning (limits, leases) — tests only. `false` disables the index entirely (selection by file name only). */
   repositoryIndex?: RepositoryIndexServiceOptions | false;
-  /** Whether backlog analysis may execute the project's checks. Defaults to disabled (analysis is read-only) — tests only. */
-  analysisVerificationPolicy?: VerificationPolicy;
 }
 
 export function buildPlatform(options: BuildPlatformOptions): Platform {
@@ -160,6 +191,8 @@ export function buildPlatform(options: BuildPlatformOptions): Platform {
   const githubCredentials = new GitHubCredentialRepository(db);
   const providerHealth = new ProviderHealthRepository(db);
   const modelRegistry = options.modelRegistry ?? new ModelRegistry();
+  const providerConnections = new ProviderConnectionRepository(db);
+  const globalAiConfig = new GlobalAiConfigRepository(db);
 
   const engines = new CodingEngineRegistry();
   engines.register(new OpenCodeAdapter());
@@ -188,18 +221,33 @@ export function buildPlatform(options: BuildPlatformOptions): Platform {
   // provider-health repository as task execution (no second way to call a model); the context builder
   // reuses the SAME project-context loader.
   const backlogItems = new BacklogItemRepository(db);
+  const chatMessages = new ChatRepository(db);
   const backlogAnalyses = new BacklogAnalysisRepository(db);
   const backlogRelationships = new BacklogRelationshipRepository(db);
   const taskProposals = new TaskProposalRepository(db);
   const backlogEvents = new BacklogEventRepository(db);
-  const backlogAnalyzer = new BacklogAnalyzer(engines, modelRegistry, providerHealth, {
-    timeoutMs: orchestratorConfig.agentInvocationTimeoutMs,
-    cooldown: { defaultCooldownMs: orchestratorConfig.providerCooldownDefaultMs, maxCooldownMs: orchestratorConfig.providerCooldownMaxMs },
-  });
+  // Model Gateway — built once, shared by the Orchestrator (task execution) and BacklogAnalyzer
+  // (Chat/backlog analysis) below, exactly the way `modelRegistry`/`providerHealth` already were —
+  // never a second, divergent resolution path for either call site.
+  const modelGateway = new ModelGatewayService(providerConnections, globalAiConfig, providerHealth, agentRuns, () => loadEncryptionKey());
+  const backlogAnalyzer = new BacklogAnalyzer(
+    engines,
+    modelRegistry,
+    providerHealth,
+    {
+      timeoutMs: orchestratorConfig.agentInvocationTimeoutMs,
+      cooldown: { defaultCooldownMs: orchestratorConfig.providerCooldownDefaultMs, maxCooldownMs: orchestratorConfig.providerCooldownMaxMs },
+    },
+    modelGateway,
+  );
   const structureProvider =
     options.repositoryStructureProvider === undefined ? new GitRepositoryStructureProvider(sourceControlProviders) : options.repositoryStructureProvider;
   const backlogContextBuilder = new BacklogContextBuilder(projectWorkspaces, projectContext);
   const backlogJobs = new BacklogAnalysisJobRepository(db);
+  const claimVerifications = new ClaimVerificationRepository(db);
+  const backlogBulk = new BacklogBulkRepository(db);
+  const backlogAdjudication = new BacklogAdjudicationRepository(db);
+  const backlogAdjudicationBaselines = new BacklogAdjudicationBaselineRepository(db);
   const backlogOptions: BacklogServiceOptions = {
     analysisLeaseMs: DEFAULT_ANALYSIS_LEASE_MS,
     analysisHeartbeatMs: DEFAULT_ANALYSIS_HEARTBEAT_MS,
@@ -220,7 +268,6 @@ export function buildPlatform(options: BuildPlatformOptions): Platform {
     contextBuilder: backlogContextBuilder,
     repository: structureProvider,
     repositoryIndex: structureProvider && options.repositoryIndex !== false ? new RepositoryIndexService(new RepositoryIndexRepository(db), options.repositoryIndex ?? {}) : null,
-    ...(options.analysisVerificationPolicy ? { verificationPolicy: options.analysisVerificationPolicy } : {}),
     options: {
       retryBaseDelayMs: orchestratorConfig.infrastructureRetryBaseDelayMs,
       retryMaxDelayMs: orchestratorConfig.infrastructureRetryMaxDelayMs,
@@ -233,6 +280,27 @@ export function buildPlatform(options: BuildPlatformOptions): Platform {
     leaseMs: backlogOptions.analysisLeaseMs!,
     heartbeatMs: backlogOptions.analysisHeartbeatMs!,
   });
+  const claimVerificationJobs = new ClaimVerificationJobRepository(db);
+  const claimVerificationExecutor = new ClaimVerificationExecutor({
+    db,
+    items: backlogItems,
+    analyses: backlogAnalyses,
+    projects,
+    jobs: claimVerificationJobs,
+    claimVerifications,
+    events: backlogEvents,
+    sourceControlProviders,
+    workspaceFactory: options.verification?.workspaceFactory,
+    checkTimeoutMsOverride: options.verification?.checkTimeoutMsOverride,
+    retryBaseDelayMs: options.verification?.retryBaseDelayMs ?? orchestratorConfig.infrastructureRetryBaseDelayMs,
+  });
+  const claimVerificationRunner = new ClaimVerificationRunner(claimVerificationJobs, claimVerificationExecutor, {
+    ownerId,
+    maxConcurrency: options.verification?.maxConcurrency ?? DEFAULT_MAX_VERIFICATION_CONCURRENCY,
+    leaseMs: options.verification?.leaseMs ?? DEFAULT_VERIFICATION_LEASE_MS,
+    heartbeatMs: options.verification?.heartbeatMs ?? DEFAULT_VERIFICATION_HEARTBEAT_MS,
+  });
+  const backgroundRunner = new CompositeRunner([backlogRunner, claimVerificationRunner]);
 
   const orchestrator = new Orchestrator(
     tasks,
@@ -251,6 +319,7 @@ export function buildPlatform(options: BuildPlatformOptions): Platform {
     projectContext,
     modelRegistry,
     providerHealth,
+    modelGateway,
   );
 
   return {
@@ -272,16 +341,28 @@ export function buildPlatform(options: BuildPlatformOptions): Platform {
     sourceControlProviders,
     modelRegistry,
     providerHealth,
+    providerConnections,
+    globalAiConfig,
+    modelGateway,
     backlogItems,
+    chatMessages,
     backlogAnalyses,
     backlogRelationships,
     taskProposals,
     backlogEvents,
     backlogJobs,
+    claimVerifications,
+    backlogBulk,
+    backlogAdjudication,
+    backlogAdjudicationBaselines,
     backlogAnalyzer,
     backlogContextBuilder,
     backlogExecutor,
     backlogRunner,
+    claimVerificationJobs,
+    claimVerificationExecutor,
+    claimVerificationRunner,
+    backgroundRunner,
     backlogOptions,
   };
 }

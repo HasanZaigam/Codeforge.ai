@@ -19,9 +19,10 @@ export interface InspectionLimits {
 }
 
 export const DEFAULT_INSPECTION_LIMITS: InspectionLimits = {
-  maxFiles: 12,
+  // 4A.5: room for the excerpt set (8) + claim evidence + the platform's own premise investigation, each drawing on the same pool.
+  maxFiles: 24,
   maxFileBytes: 64 * 1024,
-  maxTotalBytes: 256 * 1024,
+  maxTotalBytes: 384 * 1024,
   deadlineMs: 30_000,
 };
 

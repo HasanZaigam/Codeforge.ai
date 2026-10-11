@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { Project, Task } from "../domain/types.js";
 import type {
+  ClaimVerificationRecord,
+  ReviewSummary,
   BacklogAnalysis,
   BacklogAnalysisJob,
   BacklogEvent,
@@ -11,6 +13,8 @@ import type {
   TaskProposal,
 } from "../backlog/backlog-types.js";
 import { buildTaskProposalContent } from "../backlog/task-proposal-builder.js";
+import { deriveReview, withVerification } from "../backlog/review-state.js";
+import type { ClaimVerificationRepository } from "../persistence/repositories/claim-verification-repository.js";
 import { runInTransaction } from "../persistence/transaction.js";
 import type { ProjectRepository } from "../persistence/repositories/project-repository.js";
 import type { TaskRepository } from "../persistence/repositories/task-repository.js";
@@ -39,6 +43,8 @@ export interface UpdateBacklogItemInput {
 
 export interface BacklogItemSummary {
   item: BacklogItem;
+  /** Implementation-vs-behaviour review summary (Phase 4A.5). */
+  review: ReviewSummary;
   latestAnalysis: { id: string; status: BacklogAnalysis["status"]; completedAt: string } | null;
   proposal: { id: string; status: TaskProposal["status"]; taskId: string | null } | null;
 }
@@ -52,6 +58,7 @@ export interface RelationshipView {
 
 export interface BacklogItemDetail {
   item: BacklogItem;
+  review: ReviewSummary;
   latestAnalysis: BacklogAnalysis | null;
   /** The most recent analysis job — QUEUED / RUNNING (with attempt + retry info) / finished. `null` if the item was never analyzed. */
   analysisJob: BacklogAnalysisJob | null;
@@ -59,6 +66,8 @@ export interface BacklogItemDetail {
   relationships: RelationshipView[];
   proposal: TaskProposal | null;
   events: BacklogEvent[];
+  /** Recorded executions of approved claim checks for the latest analysis (Phase 4A.5). */
+  claimVerifications: ClaimVerificationRecord[];
 }
 
 export interface BacklogServiceOptions {
@@ -90,6 +99,8 @@ export interface BacklogServiceDeps {
   projects: ProjectRepository;
   tasks: TaskRepository;
   taskService: TaskService;
+  /** Recorded claim verifications (Phase 4A.5); when present, reads fold them in. */
+  claimVerifications?: ClaimVerificationRepository;
   options?: BacklogServiceOptions;
 }
 
@@ -166,28 +177,39 @@ export class BacklogService {
   }
 
   listItems(projectId: string, actorId: string): BacklogItemSummary[] {
-    assertProjectAccess(this.deps.projects, projectId, actorId);
+    const project = assertProjectAccess(this.deps.projects, projectId, actorId);
     return this.deps.items.listByProject(projectId, this.listLimit).map((item) => {
       const analysis = this.deps.analyses.findLatestForItem(item.id);
       const proposal = this.deps.proposals.findLatestForItem(item.id);
       return {
         item,
+        review: deriveReview(item, this.readable(this.deps.analyses.findLatestSucceededForItem(item.id), project)),
         latestAnalysis: analysis ? { id: analysis.id, status: analysis.status, completedAt: analysis.completedAt } : null,
         proposal: proposal ? { id: proposal.id, status: proposal.status, taskId: proposal.taskId } : null,
       };
     });
   }
 
+  /** An analysis as it should be read today: recorded verifications folded in, reconciliation recomputed against the project's current approved checks. */
+  private readable(analysis: BacklogAnalysis | null, project: Project | null): BacklogAnalysis | null {
+    if (!analysis || !this.deps.claimVerifications) return analysis;
+    return withVerification(analysis, this.deps.claimVerifications.listForAnalysis(analysis.id), project);
+  }
+
   getItem(itemId: string, actorId: string): BacklogItemDetail {
     const item = assertBacklogItemAccess(this.deps.items, this.deps.projects, itemId, actorId);
+    const project = this.deps.projects.findById(item.projectId);
+    const latest = this.deps.analyses.findLatestForItem(item.id);
     return {
       item,
-      latestAnalysis: this.deps.analyses.findLatestForItem(item.id),
+      review: deriveReview(item, this.readable(this.deps.analyses.findLatestSucceededForItem(item.id), project)),
+      latestAnalysis: latest ? this.readable(latest, project) : null,
       analysisJob: this.deps.jobs.findLatestForItem(item.id),
       analysisCount: this.deps.analyses.countForItem(item.id),
       relationships: this.relationshipViews(item),
       proposal: this.deps.proposals.findLatestForItem(item.id),
       events: this.deps.events.listForItem(item.id),
+      claimVerifications: latest && this.deps.claimVerifications ? this.deps.claimVerifications.listForAnalysis(latest.id) : [],
     };
   }
 
@@ -371,11 +393,12 @@ export class BacklogService {
       throw new InvalidOperationError(`A task proposal can only be generated for an ANALYZED backlog item — this one is ${fresh.status}.`);
     }
     const analysis = this.deps.analyses.findLatestSucceededForItem(item.id);
+    const project = this.deps.projects.findById(item.projectId);
     if (!analysis) throw new InvalidOperationError("This backlog item has no successful analysis to build a proposal from.");
 
     const content = buildTaskProposalContent({
       item: fresh,
-      analysis,
+      analysis: this.readable(analysis, project) ?? analysis,
       outgoing: this.deps.relationships.listOutgoing(item.id),
       incoming: this.deps.relationships.listIncoming(item.id),
       findItem: (id) => {

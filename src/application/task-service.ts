@@ -101,6 +101,20 @@ export interface CreateTaskInput {
  */
 export type EditTaskInput = Omit<CreateTaskInput, "projectId">;
 
+/** Phase 4D.5 — see TaskService.getPullRequestStatus's own doc comment for why this is a separate, explicit shape from `BranchStateSummary`'s `mergeState`. */
+export type TaskPullRequestState = "OPEN" | "MERGED" | "CLOSED_NOT_MERGED";
+
+export interface TaskPullRequestInfo {
+  hasPullRequest: boolean;
+  /** False only when `hasPullRequest` is true but the live provider fetch itself failed — distinct from "no PR exists at all" (`hasPullRequest: false`, `available: true`). */
+  available: boolean;
+  number: number | null;
+  url: string | null;
+  provider: string | null;
+  state: TaskPullRequestState | null;
+  error: string | null;
+}
+
 /**
  * Translates task requests into domain operations. Task *creation* is the
  * only write this service performs directly (inserting a TODO task is not
@@ -325,6 +339,45 @@ export class TaskService {
     return deriveBranchState(pr, prStatus, comparison);
   }
 
+  /**
+   * Phase 4D.5 — the real GitHub (or other provider) Pull Request state for a task, kept DELIBERATELY
+   * separate from `TaskStatus`: a task can be `DONE` with its PR merged OR unmerged (human-confirmed
+   * completion never checks the PR at all — see `completeTaskByHuman`), and a task can be `REVIEW` with
+   * its PR open, closed-without-merging, or already merged (the next poll/on-demand check will catch up).
+   * Reuses the EXACT SAME `sourceControlProviders` registry and `getPullRequestStatus` call
+   * `getBranchState`/`finalizeMergedPullRequest` already use — never a second GitHub client. Unlike
+   * `getBranchState` (which folds "no PR" and "the live fetch failed" into the same `mergeState:
+   * "UNKNOWN"`), this distinguishes them explicitly, since Chat needs to say something different for each
+   * ("No PR is associated with this task" vs. "GitHub is currently unavailable").
+   */
+  async getPullRequestStatus(taskId: string, actorId: string): Promise<TaskPullRequestInfo> {
+    const task = assertTaskAccess(this.tasks, this.projects, taskId, actorId);
+    const pr = task.taskRecord.pullRequest;
+    if (!pr) {
+      return { hasPullRequest: false, available: true, number: null, url: null, provider: null, state: null, error: null };
+    }
+    const project = this.projects.findById(task.projectId); // already known-accessible via assertTaskAccess above
+    if (!project) {
+      return { hasPullRequest: true, available: false, number: pr.number, url: pr.url, provider: pr.provider, state: null, error: "This project could no longer be found." };
+    }
+    const scProvider = this.sourceControlProviders.resolve(project.sourceControlProvider);
+    try {
+      const status = await scProvider.getPullRequestStatus(project, pr, new AbortController().signal);
+      const state: TaskPullRequestState = status.merged ? "MERGED" : status.state === "closed" ? "CLOSED_NOT_MERGED" : "OPEN";
+      return { hasPullRequest: true, available: true, number: pr.number, url: pr.url, provider: pr.provider, state, error: null };
+    } catch (err) {
+      return {
+        hasPullRequest: true,
+        available: false,
+        number: pr.number,
+        url: pr.url,
+        provider: pr.provider,
+        state: null,
+        error: err instanceof Error ? err.message : "Could not reach the source control provider.",
+      };
+    }
+  }
+
   get(taskId: string, actorId: string): Task {
     return assertTaskAccess(this.tasks, this.projects, taskId, actorId);
   }
@@ -374,6 +427,20 @@ export class TaskService {
   async cancelTask(taskId: string, actorId: string): Promise<Task> {
     assertTaskAccess(this.tasks, this.projects, taskId, actorId);
     return this.orchestrator.requestCancellation(taskId, actorId);
+  }
+
+  /**
+   * Phase 4D.4 — a human explicitly marks a REVIEW task Done (e.g. via Chat, after an explicit
+   * confirmation — see ActionLayerService.completeTaskAsHuman). Delegates entirely to
+   * Orchestrator.acceptReview(), the SAME "accepted" transition the automatic PR-merge path
+   * (`finalizeReviewAsDoneOnMerge`) drives — this is not a second completion mechanism, just a second
+   * caller of the one that already existed. `completedVia` records the surface that asked, purely for
+   * audit/history — never trusted as an authorization signal (the real check is `assertTaskAccess`
+   * just below, exactly like every other mutation here).
+   */
+  completeTaskByHuman(taskId: string, actorId: string, completedVia: string): Task {
+    assertTaskAccess(this.tasks, this.projects, taskId, actorId);
+    return this.orchestrator.acceptReview(taskId, { completedBy: actorId, completedVia });
   }
 
   /**

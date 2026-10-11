@@ -4,6 +4,7 @@ import type {
   BacklogItemDetailDTO,
   BacklogItemDTO,
   BacklogItemSummaryDTO,
+  ClaimVerificationJobDTO,
   ConvertProposalResult,
   CreateBacklogItemInput,
   TaskProposalDTO,
@@ -32,6 +33,11 @@ export const backlogApi = {
   /** 202 — a QUEUED job is cancelled at once; a RUNNING one gets cancelRequested and stops at its next heartbeat. */
   cancelAnalysis: (itemId: string) =>
     apiClient.post<{ item: BacklogItemDTO; job: BacklogAnalysisJobDTO }>(`/backlog/${itemId}/analysis/cancel`, {}),
+  /** 202 — only ENQUEUES worker jobs for the approved checks bound to this analysis (idempotent); poll `get`. `jobs: []` + `note` when none is bound. */
+  requestVerification: (itemId: string) =>
+    apiClient.post<{ jobs: ClaimVerificationJobDTO[]; enqueued: number; revision: string; note: string | null }>(`/backlog/${itemId}/verifications`, {}),
+  cancelVerification: (itemId: string, jobId: string) =>
+    apiClient.post<{ job: ClaimVerificationJobDTO }>(`/backlog/${itemId}/verifications/${jobId}/cancel`, {}).then((r) => r.job),
   generateProposal: (itemId: string) =>
     apiClient.post<{ proposal: TaskProposalDTO; created: boolean }>(`/backlog/${itemId}/proposal`, {}),
   approveProposal: (proposalId: string) =>

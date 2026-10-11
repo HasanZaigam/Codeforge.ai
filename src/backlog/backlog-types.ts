@@ -36,6 +36,10 @@ export interface BacklogItem {
   createdBy: string;
   createdAt: string;
   updatedAt: string;
+  /** Phase 4B: the import this item came from, its source row, and bounded inert metadata (module, priority, platform, …). Data only. */
+  importId?: string | null;
+  sourceRow?: number | null;
+  metadata?: Record<string, string> | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -182,13 +186,10 @@ export type VerificationState = "not_run" | "passed" | "failed" | "timed_out" | 
 
 export interface VerificationRequirement {
   claimIndex: number;
-  checkId: "build" | "test" | "lint" | "typecheck";
-  /**
-   * True only if the project's verification contract explicitly BINDS this check to this claim (a check that
-   * exercises exactly what the claim asserts). Nothing sets it today — checks are project-wide — so a passing
-   * check can never become `CHECK_VERIFIED` (see reconciliation.ts).
-   */
-  bindsClaim?: boolean;
+  /** Stable content hash of the claim this requirement is bound to (see verification.ts `claimIdOf`). */
+  claimId?: string;
+  /** The project's APPROVED claim check (`ApprovedClaimCheck.id`) the platform matched to this claim. Never model-supplied. */
+  checkId: string;
   state: VerificationState;
   /** Platform-written explanation (why it was not run / what the outcome does and does not show). */
   reason: string;
@@ -205,9 +206,11 @@ export interface VerificationRequirement {
  *                          absence): worth a human look, not a conclusion.
  *  UNRESOLVED              the evidence does not decide it (behaviour claims always land here).
  *  NO_CONFLICT             the claim does not assert an absence, or evidence agrees with it.
- *  CHECK_VERIFIED          a platform-run check, explicitly bound to this claim, passed at this revision.
+ *  CHECK_VERIFIED          a platform-run APPROVED check, explicitly bound to this claim (id + fingerprint), passed at this
+ *                          revision, and its declared semantics establish what the claim says.
+ *  CHECK_CONTRADICTED      the same, for an absence-worded BEHAVIOR_INCORRECT claim: the check verified the OPPOSITE behaviour.
  */
-export type ReconciliationOutcome = "IMPLEMENTATION_PRESENT" | "IMPLEMENTATION_POSSIBLE" | "UNRESOLVED" | "NO_CONFLICT" | "CHECK_VERIFIED";
+export type ReconciliationOutcome = "IMPLEMENTATION_PRESENT" | "IMPLEMENTATION_POSSIBLE" | "UNRESOLVED" | "NO_CONFLICT" | "CHECK_VERIFIED" | "CHECK_CONTRADICTED";
 
 export interface ReconciliationFinding {
   claimIndex: number;
@@ -221,8 +224,14 @@ export interface ReconciliationFinding {
   evidenceIds: string[];
   /** Platform-written. */
   explanation: string;
-  /** Always false unless `outcome === "CHECK_VERIFIED"`. */
+  /** True only for CHECK_VERIFIED / CHECK_CONTRADICTED — a bound approved check actually established behaviour. */
   behaviorVerified: boolean;
+  /** Stable id of the claim (content hash) — what a verification is bound to. */
+  claimId?: string;
+  /** The approved checks that COULD verify this claim (bound by the platform from the project's own declared checks); empty ⇒ behaviour stays BEHAVIOR_UNVERIFIED. */
+  availableChecks?: string[];
+  /** The verification record that produced a CHECK_* outcome. */
+  verificationId?: string | null;
 }
 
 export interface Reconciliation {
@@ -234,17 +243,156 @@ export interface Reconciliation {
    * by declared-and-wired-in code), `possible` (weaker conflict), `none`. Never means "bug fixed".
    */
   alreadyImplemented: "strong" | "possible" | "none";
-  /** True only if some claim is CHECK_VERIFIED. */
+  /** True only if some claim is CHECK_VERIFIED / CHECK_CONTRADICTED. */
   behaviorVerified: boolean;
   /** Evidence ids that were NOT used because they describe a different revision. */
   ignoredEvidence: Array<{ id: string; reason: string }>;
+  /**
+   * The combined implementation-presence conclusion (Phase 4A.5): the strongest of what the CLAIMS reconcile to and what
+   * the platform's own INVESTIGATION found. `present` = declared-and-wired-in implementation evidence conflicts with a
+   * reported absence; `possible` = weaker; `none` = nothing found. Independent of, and never implying, behaviour.
+   */
+  implementation?: "present" | "possible" | "none";
+  implementationSources?: Array<"claim" | "investigation">;
+  behavior?: BehaviorStatus;
+  /** Verification records that were IGNORED (stale revision, changed check, different claim…), with why. */
+  ignoredVerifications?: Array<{ id: string; reason: string }>;
+}
+
+export type BehaviorStatus = "BEHAVIOR_UNVERIFIED" | "CHECK_VERIFIED";
+
+/**
+ * The platform's OWN investigation of a backlog item's premise (Phase 4A.5), done from the item text and the
+ * repository index/content — independent of anything the model claimed. It answers one question: does the repository
+ * at this revision already contain an implementation of the mechanism the item says is missing? It never answers
+ * whether that implementation WORKS (`behavior` is always BEHAVIOR_UNVERIFIED here).
+ *  IMPLEMENTATION_PRESENT                    a declaration naming the mechanism AND the subject exists and is wired in (used)
+ *  POSSIBLY_ALREADY_IMPLEMENTED              such names/files exist, but nothing shows them wired in
+ *  NO_CONFLICTING_IMPLEMENTATION_EVIDENCE    a premise was recognised and nothing conflicting was found in what was inspected
+ *                                            (NOT proof of absence)
+ *  UNRESOLVED                                no recognisable premise, or no repository/index to look in
+ */
+export type InvestigationSignal = "IMPLEMENTATION_PRESENT" | "POSSIBLY_ALREADY_IMPLEMENTED" | "NO_CONFLICTING_IMPLEMENTATION_EVIDENCE" | "UNRESOLVED";
+
+export interface InvestigationCandidate {
+  path: string;
+  /** The declared name that matched (null for a file matched by its name/path alone). */
+  symbol: string | null;
+  /** Item words that matched the candidate's name/path. */
+  subjectHits: string[];
+  /** Where the platform saw it used — a file that references the symbol / imports the file ("path:line"), or null. */
+  wiredIn: string | null;
+  evidenceIds: string[];
+}
+
+/** Static flow evidence tying the item's ENTRY POINT to the mechanism (see flow.ts). A found path is a name-reference path, not a proven call path. */
+export interface InvestigationFlow {
+  status: "FLOW_REFERENCE_PRESENT" | "FLOW_NOT_ESTABLISHED" | "ENTRY_POINT_NOT_LOCATED";
+  entries: Array<{ route: string; file: string; handlers: string[]; located: "named_in_item" | "inferred_from_subject" }>;
+  path: Array<{ kind: "ROUTE_TO_HANDLER" | "DIRECT_REFERENCE" | "IMPORT_REFERENCE"; symbol: string; file: string }>;
+  evidenceIds: string[];
+}
+
+export interface Investigation {
+  /** Mechanism existence, entry point and flow are separate facts (Phase 4A.6): `IMPLEMENTATION_PRESENT` now REQUIRES `flow.status === "FLOW_REFERENCE_PRESENT"`. */
+  flow?: InvestigationFlow;
+  revision: string | null;
+  premise: { kind: "absence" | "permissive"; mechanism: string; subjectTerms: string[] } | null;
+  signal: InvestigationSignal;
+  behavior: BehaviorStatus;
+  candidates: InvestigationCandidate[];
+  filesRead: number;
+  /** Platform-written. */
+  explanation: string;
+}
+
+/**
+ * One execution of ONE approved check for ONE claim at ONE revision (append-only; migration 016). The binding is
+ * (claimId, checkId, checkFingerprint, revision): a record only counts if all four still match.
+ */
+export interface ClaimVerificationRecord {
+  id: string;
+  analysisId: string;
+  claimId: string;
+  claimIndex: number;
+  checkId: string;
+  /** Hash of the check's definition when it ran — a later edit to the check makes an old record stale. */
+  checkFingerprint: string;
+  /** The analysed revision the claim is about, and the revision the workspace was proven to be at before AND after the run. */
+  revision: string;
+  headBefore: string | null;
+  headAfter: string | null;
+  state: VerificationState;
+  exitCode: number | null;
+  durationMs: number;
+  /** The exact command that ran (taken from the project's check, never from a claim). */
+  command: string;
+  logExcerpt: string | null;
+  requestedBy: string;
+  createdAt: string;
+  /** Phase 4A.6 provenance (null for a record written before verification became a worker job). */
+  jobId?: string | null;
+  executor?: string | null;
+  workspaceId?: string | null;
+  startedAt?: string | null;
+  completedAt?: string | null;
+  timedOut?: boolean;
+}
+
+export type VerificationJobStatus = "QUEUED" | "RUNNING" | "SUCCEEDED" | "FAILED" | "TIMED_OUT" | "CANCELLED";
+
+/** One approved check for one claim of one analysis at one exact revision, executed by the worker. Status describes the EXECUTION only. */
+export interface ClaimVerificationJob {
+  id: string;
+  backlogItemId: string;
+  projectId: string;
+  analysisId: string;
+  claimId: string;
+  claimIndex: number;
+  checkId: string;
+  checkFingerprint: string;
+  revision: string;
+  status: VerificationJobStatus;
+  requestedBy: string;
+  attemptCount: number;
+  maxAttempts: number;
+  availableAt: string;
+  claimOwner: string | null;
+  leaseExpiresAt: string | null;
+  lockGeneration: number;
+  cancelRequestedAt: string | null;
+  failureReason: string | null;
+  createdAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+  updatedAt: string;
+}
+
+/** The small, explicit review vocabulary bulk review will use (Phase 4A.5). Derived by the platform; nothing a model returns sets it. */
+export type ReviewState =
+  | "NEEDS_ANALYSIS"
+  | "NEEDS_CLARIFICATION"
+  | "POSSIBLY_ALREADY_IMPLEMENTED"
+  | "VERIFIED_CONFLICT"
+  | "READY_FOR_PROPOSAL";
+
+export interface ReviewSummary {
+  /** `null` once the item has left review (proposal approved, converted or rejected). */
+  state: ReviewState | null;
+  /** Two orthogonal facts, never merged: an implementation can be present while behaviour is unverified. */
+  implementation: "present" | "possible" | "none_found" | "unknown";
+  behavior: BehaviorStatus;
 }
 
 export interface EvidenceAssessment {
   /** Phase 4A.4 — the deterministic reconciliation pass over claims + evidence. Absent on older analyses. */
   reconciliation?: Reconciliation;
+  /** Phase 4A.5 — the platform's own investigation of the item's premise, independent of the model's claims. Absent on older analyses. */
+  investigation?: Investigation;
   /** Verification the platform judged relevant to behaviour claims. Absent on analyses recorded before it existed. */
   verification?: VerificationRequirement[];
+  /** Relevant approved checks per behaviour claim with the platform's SUFFICIENCY verdict (Phase 4A.7). A check listed here as insufficient can never verify the claim. */
+  verificationCandidates?: Array<{ claimIndex: number; claimId: string; checkId: string; claimClass: string; relevance: "not_relevant" | "relevant"; sufficiency: "sufficient" | "insufficient"; reason: string }>;
   evidence: PlatformEvidence[];
   claims: ClaimAssessment[];
   summary: { supported: number; contradicted: number; unresolved: number; notChecked: number };
@@ -522,7 +670,13 @@ export type BacklogEventType =
   | "TASK_PROPOSAL_GENERATED"
   | "TASK_PROPOSAL_APPROVED"
   | "TASK_PROPOSAL_REJECTED"
-  | "TASK_PROPOSAL_CONVERTED";
+  | "TASK_PROPOSAL_CONVERTED"
+  | "CLAIM_VERIFICATION_QUEUED"
+  | "CLAIM_VERIFICATION_RUN"
+  | "BACKLOG_ITEM_IMPORTED"
+  | "BULK_ANALYSIS_QUEUED"
+  | "RELATIONSHIP_CONFIRMED"
+  | "RELATIONSHIP_DISMISSED";
 
 export interface BacklogEvent {
   id: string;

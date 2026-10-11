@@ -75,7 +75,7 @@ describe("BacklogItemPage", () => {
 
     // A REAL 3 s poll interval (usePolling): the wait is on an observable outcome, with generous margin
     // for a loaded machine — a starved CI/dev box has previously run right up against a tighter bound.
-    await waitFor(() => expect(screen.getByText("The session refresh path drops the token.")).toBeInTheDocument(), { timeout: 10_000 });
+    await waitFor(() => expect(screen.getAllByText("The session refresh path drops the token.").length).toBeGreaterThan(0), { timeout: 10_000 });
     expect(mockedBacklog.get.mock.calls.length).toBeGreaterThanOrEqual(2);
     expect(screen.getByRole("button", { name: "Re-analyze" })).toBeEnabled();
   }, 20_000);
@@ -175,7 +175,7 @@ describe("BacklogItemPage", () => {
 
   it("renders a succeeded analysis with BLOCKING info, platform file checks and the model/provider", async () => {
     await open(detail("ANALYZED", { latestAnalysis: makeAnalysis() }));
-    expect(screen.getByText("The session refresh path drops the token.")).toBeInTheDocument();
+    expect(screen.getAllByText("The session refresh path drops the token.").length).toBeGreaterThan(0);
     expect(screen.getByText("BLOCKING")).toBeInTheDocument();
     expect(screen.getByText("Which browsers are affected?")).toBeInTheDocument();
     expect(screen.getByText("verified in repository")).toBeInTheDocument();

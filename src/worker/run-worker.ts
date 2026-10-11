@@ -39,7 +39,7 @@ async function main() {
       console.error(`[worker] task ${taskId} raised an unexpected error outside the Orchestrator's own handling: ${err instanceof Error ? `${err.name}: ${err.message}` : String(err)}`);
     },
     // Phase 4A.1 — backlog analysis is executed HERE (never in the API process), on this same loop.
-    platform.backlogRunner,
+    platform.backgroundRunner,
   );
 
   console.log(

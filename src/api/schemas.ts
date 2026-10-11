@@ -7,11 +7,49 @@ import { z } from "zod";
  * server should assign, or anything else the client shouldn't control.
  */
 
+const Term = z.string().trim().toLowerCase().regex(/^[a-z0-9]{2,30}$/, "binding terms are single lowercase words");
+
+/** An approved, claim-bindable behaviour check (Phase 4A.5) — declared by the project OWNER, never by a model. Strict: an unknown key is a 400. */
+const ClaimCheckShape = z
+  .object({
+    id: z.string().trim().regex(/^[a-z0-9][a-z0-9-]{1,48}$/, "check ids are lowercase letters, digits and hyphens"),
+    description: z.string().trim().min(1).max(300),
+    command: z.string().trim().min(1).max(2000),
+    timeoutMs: z.number().int().min(1000).max(900_000).optional(),
+    application: z.string().trim().min(1).max(100).optional(),
+    requiresFiles: z.array(z.string().trim().min(1).max(400).regex(/^(?!\/)(?!.*\.\.)[^\\\0]+$/, "repo-relative paths only")).max(10).optional(),
+    establishes: z
+      .object({
+        behavior: z.string().trim().min(1).max(300),
+        claimTerms: z.array(z.array(Term).min(1).max(8)).min(1).max(6),
+        claimKinds: z.array(z.enum(["BEHAVIOR_CORRECT", "BEHAVIOR_INCORRECT"])).min(1).max(2).optional(),
+        scope: z
+          .object({
+            level: z.enum(["mechanism", "flow"]),
+            application: z.string().trim().min(1).max(100),
+            mechanism: z.string().trim().regex(/^[A-Za-z_$][\w$]{1,80}$/, "a symbol name"),
+            entryPoint: z.string().trim().regex(/^(GET|POST|PUT|PATCH|DELETE) \/\S*$/, 'like "POST /request-otp"').optional(),
+            behaviors: z.array(z.object({ id: z.string().trim().regex(/^[a-z0-9-]{2,40}$/), terms: z.array(Term).min(1).max(16) }).strict()).min(1).max(8),
+          })
+          .strict()
+          .refine((sc) => sc.level !== "flow" || !!sc.entryPoint, "a flow-level scope needs an entryPoint")
+          .optional(),
+      })
+      .strict(),
+    passMeans: z.literal("behavior_holds"),
+  })
+  .strict();
+
 const CommandsShape = z.object({
   build: z.string().trim().min(1).optional(),
   test: z.string().trim().min(1).optional(),
   lint: z.string().trim().min(1).optional(),
   typecheck: z.string().trim().min(1).optional(),
+  claimChecks: z
+    .array(ClaimCheckShape)
+    .max(30)
+    .refine((cs) => new Set(cs.map((c) => c.id)).size === cs.length, "claim check ids must be unique")
+    .optional(),
 });
 
 const CommandsSchema = CommandsShape.optional();
@@ -268,3 +306,144 @@ export const UpdateBacklogItemSchema = z
 
 /** For action endpoints (analyze / reject / approve / convert): no body content is meaningful, and none is accepted. */
 export const EmptyActionBodySchema = z.object({}).strict();
+
+
+// ---------------------------------------------------------------------------
+// Phase 4B — bulk backlog. Every body is strict; nothing here can set a status, an approval or a command.
+// ---------------------------------------------------------------------------
+
+const CanonicalFieldKeys = ["bugId", "title", "description", "steps", "expected", "actual", "severity", "priority", "module", "platform", "environment", "reporter", "status"] as const;
+
+export const ImportBodySchema = z
+  .object({
+    csv: z.string().min(1).max(600_000),
+    sourceName: z.string().trim().min(1).max(100),
+    mapping: z.record(z.enum(CanonicalFieldKeys), z.string().trim().min(1).max(60)).optional(),
+  })
+  .strict();
+
+export const StartBulkAnalysisSchema = z
+  .object({
+    importId: z.string().uuid().optional(),
+    itemIds: z.array(z.string().uuid()).min(1).max(500).optional(),
+  })
+  .strict()
+  .refine((b) => (b.importId ? 1 : 0) + (b.itemIds ? 1 : 0) === 1, "give exactly one of importId or itemIds");
+
+export const ReviewRelationshipSchema = z.object({ decision: z.enum(["confirm", "dismiss"]) }).strict();
+
+export const BulkActionSchema = z
+  .object({
+    action: z.enum(["generate_proposals", "approve_proposals", "reject_proposals", "convert_proposals", "dismiss_duplicates"]),
+    itemIds: z.array(z.string().uuid()).min(1).max(100),
+  })
+  .strict();
+
+// ---------------------------------------------------------------------------
+// Phase 4B.1 — human ground-truth adjudication. Bodies never accept an analysisId or revision: the server always binds a
+// judgment to whatever is CURRENT for the target at write time, so a client can never forge one onto a different
+// analysis/revision than the one actually reviewed.
+// ---------------------------------------------------------------------------
+
+export const RelationshipJudgmentSchema = z
+  .object({
+    label: z.enum(["CONFIRMED_DUPLICATE", "RELATED_NOT_DUPLICATE", "REJECTED"]),
+    note: z.string().trim().max(2000).optional(),
+  })
+  .strict();
+
+export const ItemJudgmentSchema = z
+  .object({
+    category: z.enum(["CLARIFICATION", "PROPOSAL_READINESS"]),
+    label: z.string().trim().min(1).max(40),
+    note: z.string().trim().max(2000).optional(),
+  })
+  .strict()
+  .superRefine((b, ctx) => {
+    const allowed = b.category === "CLARIFICATION" ? ["CORRECT_CLARIFICATION", "SHOULD_BE_PROPOSAL_READY", "INSUFFICIENT_ANALYSIS", "OTHER"] : ["CORRECT_PROPOSAL_READY", "NEEDS_CLARIFICATION", "INSUFFICIENT_ANALYSIS", "OTHER"];
+    if (!allowed.includes(b.label)) ctx.addIssue({ code: z.ZodIssueCode.custom, message: `label must be one of ${allowed.join(", ")} for ${b.category}` });
+  });
+
+export const AdjudicationSampleQuerySchema = z.object({
+  seed: z.string().trim().min(1).max(100),
+  size: z.coerce.number().int().min(1).max(500),
+  /** Phase 4B.4 — scopes the sample to one specific bulk analysis run (its members only), so it can never mix with a different run's items. */
+  runId: z.string().uuid().optional(),
+});
+
+// ---------------------------------------------------------------------------
+// Phase 4B.2 — human-filled CSV import and baseline snapshots.
+// ---------------------------------------------------------------------------
+
+export const AdjudicationImportSchema = z
+  .object({
+    csv: z.string().min(1).max(400_000),
+  })
+  .strict();
+
+export const CreateBaselineSchema = z
+  .object({
+    seed: z.string().trim().min(1).max(100),
+    duplicateSize: z.number().int().min(1).max(500),
+    clarificationSize: z.number().int().min(1).max(500),
+    proposalReadySize: z.number().int().min(1).max(500),
+    sourceName: z.string().trim().min(1).max(100).optional(),
+    runId: z.string().uuid().optional(),
+  })
+  .strict();
+
+// ---------------------------------------------------------------------------
+// Phase 4C — Chat.
+// ---------------------------------------------------------------------------
+
+/** Base64 can be up to ~33% larger than the raw bytes it encodes; ChatService enforces the real byte-size cap on the decoded buffer — this is just a shape/length sanity bound at the API boundary. */
+export const SendChatMessageSchema = z
+  .object({
+    text: z.string().max(4_000).default(""),
+    attachment: z
+      .object({
+        filename: z.string().trim().min(1).max(200),
+        mimeType: z.string().trim().min(1).max(100),
+        contentBase64: z.string().min(1).max(700_000),
+      })
+      .strict()
+      .optional(),
+    /** Phase 4D.7 — reference to a binary attachment uploaded via POST /projects/:projectId/chat/attachments.
+     *  When present, ChatService resolves the pending upload by ID instead of decoding inline base64. */
+    attachmentId: z.string().uuid().optional(),
+  })
+  .strict();
+
+export const CreateTasksFromChatSchema = z
+  .object({
+    itemIds: z.array(z.string().uuid()).min(1).max(50),
+  })
+  .strict();
+
+// ---------------------------------------------------------------------------
+// Model Gateway — Settings -> AI / Models
+// ---------------------------------------------------------------------------
+
+export const AiProviderIdSchema = z.enum(["google", "anthropic", "openai"]);
+
+export const ConnectAiProviderSchema = z
+  .object({
+    apiKey: z.string().trim().min(1).max(4000),
+    model: z.string().trim().min(1).max(200),
+  })
+  .strict();
+
+export const ListAiProviderModelsSchema = z
+  .object({
+    apiKey: z.string().trim().min(1).max(4000),
+  })
+  .strict();
+
+export const SetGlobalAiConfigSchema = z
+  .object({
+    mode: z.enum(["auto", "fixed"]),
+    fixedProvider: AiProviderIdSchema.optional(),
+    fixedModel: z.string().trim().min(1).max(200).optional(),
+    autoAllowedProviders: z.array(AiProviderIdSchema).max(3).optional(),
+  })
+  .strict();

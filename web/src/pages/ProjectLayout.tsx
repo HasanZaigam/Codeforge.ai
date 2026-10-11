@@ -38,14 +38,11 @@ export function ProjectLayout() {
         <NavLink to="" end className={({ isActive }) => (isActive ? "active" : "")}>
           Overview
         </NavLink>
-        <NavLink to="tasks" className={({ isActive }) => (isActive ? "active" : "")}>
-          Tasks
-        </NavLink>
-        <NavLink to="backlog" className={({ isActive }) => (isActive ? "active" : "")}>
-          Backlog
-        </NavLink>
         <NavLink to="workspace" className={({ isActive }) => (isActive ? "active" : "")}>
           Workspace
+        </NavLink>
+        <NavLink to="tasks" className={({ isActive }) => (isActive ? "active" : "")}>
+          Tasks
         </NavLink>
         <NavLink to="settings" className={({ isActive }) => (isActive ? "active" : "")}>
           Settings

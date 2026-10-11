@@ -186,3 +186,16 @@ export class Worker {
     }
   }
 }
+
+/** Composes several background runners behind the Worker's single `BackgroundRunner` slot — one worker loop, one shutdown. A failing runner never blocks the others. */
+export class CompositeRunner implements BackgroundRunner {
+  constructor(private readonly runners: BackgroundRunner[]) {}
+
+  async tick(): Promise<void> {
+    await Promise.all(this.runners.map((r) => r.tick().catch((err) => console.error("[worker] background runner tick failed:", err instanceof Error ? err.message : String(err)))));
+  }
+
+  async stop(): Promise<void> {
+    await Promise.all(this.runners.map((r) => r.stop()));
+  }
+}

@@ -1,9 +1,9 @@
-import type { BacklogAnalysisDTO, BacklogItemStatus } from "../../api/index.js";
+import type { BacklogAnalysisDTO, BacklogItemStatus, ClaimVerificationDTO } from "../../api/index.js";
 import { CONFIDENCE_LABELS, FAILURE_CATEGORY_LABELS, ISSUE_TYPE_LABELS } from "../../lib/backlogLabels.js";
 import { formatAbsolute, formatDurationMs } from "../../lib/time.js";
 import { EmptyState } from "../common/EmptyState.js";
 import { CandidateFileList } from "./CandidateFileList.js";
-import { AiClaimsList, AssessmentSection, PlatformEvidenceSection, SelectionLine, UsageBlock } from "./EvidencePanel.js";
+import { AiClaimsList, AssessmentSection, InvestigationSection, PlatformEvidenceSection, SelectionLine, UsageBlock, type VerificationControls } from "./EvidencePanel.js";
 
 function StringList({ items }: { items: string[] }) {
   if (items.length === 0) return <p className="field-hint">None.</p>;
@@ -39,7 +39,7 @@ function ContextSummary({ analysis }: { analysis: BacklogAnalysisDTO }) {
  * and the only facts shown are the platform's own checks (`platformChecks`). A failed analysis shows
  * the failure plainly; nothing from it was accepted.
  */
-export function AnalysisPanel({ analysis, itemStatus, jobStatus = null }: { analysis: BacklogAnalysisDTO | null; itemStatus: BacklogItemStatus; jobStatus?: string | null }) {
+export function AnalysisPanel({ analysis, itemStatus, jobStatus = null, verifications = [], controls }: { analysis: BacklogAnalysisDTO | null; itemStatus: BacklogItemStatus; jobStatus?: string | null; verifications?: ClaimVerificationDTO[]; controls?: VerificationControls }) {
   if (!analysis) {
     if (itemStatus === "ANALYZING") return <p>{jobStatus === "QUEUED" ? "Waiting for a worker to start the analysis…" : "Analysis in progress…"}</p>;
     return <EmptyState message="This item has not been analyzed yet. Run “Analyze” to have CodeForge investigate it." />;
@@ -135,12 +135,13 @@ export function AnalysisPanel({ analysis, itemStatus, jobStatus = null }: { anal
 
       <section className="trust-section trust-platform" aria-labelledby="trust-platform">
         <h3 id="trust-platform">Platform evidence — what CodeForge actually checked</h3>
+        <InvestigationSection assessment={assessment} />
         <PlatformEvidenceSection assessment={assessment} />
       </section>
 
       <section className="trust-section trust-assessment" aria-labelledby="trust-assessment">
         <h3 id="trust-assessment">Evidence assessment — claim vs evidence</h3>
-        <AssessmentSection assessment={assessment} itemStatus={itemStatus} />
+        <AssessmentSection assessment={assessment} itemStatus={itemStatus} verifications={verifications} controls={controls} />
       </section>
 
       {(analysis.usage || analysis.estimatedCost) && (

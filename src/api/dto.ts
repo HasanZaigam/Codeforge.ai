@@ -185,6 +185,7 @@ const ACTIVITY_LABELS: Partial<Record<TaskEventType, string>> = {
   HUMAN_REVIEW_APPROVED: "Approved on GitHub",
   PULL_REQUEST_MERGED: "Pull Request merged on GitHub",
   EXECUTION_LEASE_LOST: "Handed off to another worker process",
+  CHAT_ACTION_PERFORMED: "Changed via Chat",
 };
 
 function deriveCurrentActivity(task: Task, latestEvent: TaskEvent | undefined): string {

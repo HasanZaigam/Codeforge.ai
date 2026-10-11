@@ -38,6 +38,25 @@ export interface SelectModelParams {
  * same candidate list, since only one model is ever realistically
  * registered/enabled.
  */
+/**
+ * Model Gateway — the narrow read the Orchestrator (and BacklogAnalyzer) actually need from
+ * `ModelGatewayService` (src/application/model-gateway-service.ts). Defined here, in the routing
+ * layer, rather than importing the concrete application-layer class directly — the Orchestrator is
+ * a lower layer than `application/` (TaskService holds `platform.orchestrator`, never the reverse),
+ * so depending on this interface instead keeps that direction intact, the same way `ModelRegistry`
+ * and `ProviderHealthLookup` already keep `selectModel` independent of its concrete callers.
+ */
+export interface ModelGatewayLookup {
+  resolveModelSelection(
+    ownerId: string,
+    engineKey: string,
+    operation: OperationClass,
+    fallbackIndex: number,
+    now: string,
+    legacyRegistry: ModelRegistry | null,
+  ): { selection: ModelSelection | null; credentialEnv: Record<string, string> | null; hadCandidates: boolean };
+}
+
 export function selectModel(registry: ModelRegistry, health: ProviderHealthLookup, params: SelectModelParams): ModelSelection | null {
   const candidates = registry.listEnabledForEngine(params.engineKey);
   if (candidates.length === 0) return null;

@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import userEvent from "@testing-library/user-event";
 import { render, screen, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { AnalysisPanel } from "./AnalysisPanel.js";
@@ -332,6 +333,188 @@ describe("Reconciliation (Phase 4A.4) — claim, evidence and reconciliation sta
     expect(screen.getByText(/may already be implemented/)).toBeInTheDocument();
     expect(screen.getByText(/not a claim that it works or is fixed/)).toBeInTheDocument();
     expect(screen.queryByText(/contradicts an AI claim this proposal/)).not.toBeInTheDocument();
+  });
+});
+
+describe("Investigation and behavioral verification (Phase 4A.5) — four separate parts; nothing reads as fixed", () => {
+  const investigation = {
+    revision: "abcdef1234567890",
+    premise: { kind: "absence" as const, mechanism: "limit", subjectTerms: ["otp"] },
+    signal: "IMPLEMENTATION_PRESENT" as const,
+    behavior: "BEHAVIOR_UNVERIFIED" as const,
+    candidates: [{ path: "backend/auth/otpThrottle.ts", symbol: "evaluateOtpThrottle", subjectHits: ["otp"], wiredIn: "backend/auth/auth.service.ts:12", evidenceIds: ["E9"] }],
+    filesRead: 2,
+    explanation: "The item reports a missing limit mechanism, but this revision declares one that is wired in. Behavior is unverified.",
+  };
+
+  it("shows the platform investigation in the PLATFORM region — not among the AI's claims, and never as fixed", () => {
+    render(<AnalysisPanel analysis={makeAssessedAnalysis({ investigation })} itemStatus="ANALYZED" />);
+    const platform = within(region(PLATFORM));
+    expect(platform.getByRole("heading", { name: /Platform investigation of the item/ })).toBeInTheDocument();
+    expect(platform.getByText("Implementation appears present")).toBeInTheDocument();
+    expect(platform.getByText(/used in backend\/auth\/auth\.service\.ts:12/)).toBeInTheDocument();
+    expect(platform.getByText(/is not evidence that it works/)).toBeInTheDocument();
+    expect(within(region(AI)).queryByText(/Platform investigation/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/bug fixed|is fixed\b/i)).not.toBeInTheDocument();
+  });
+
+  it("an investigation-only signal is called out in the assessment as 'possibly already implemented' with behavior unverified", () => {
+    render(
+      <AnalysisPanel
+        analysis={makeAssessedAnalysis({
+          investigation,
+          reconciliation: { revision: "abcdef1234567890", alreadyImplemented: "none", behaviorVerified: false, ignoredEvidence: [], implementation: "present", implementationSources: ["investigation"], behavior: "BEHAVIOR_UNVERIFIED", findings: [] },
+        })}
+        itemStatus="ANALYZED"
+      />,
+    );
+    const a = within(region(ASSESSMENT));
+    // (No claim findings ⇒ the reconciliation block itself is omitted; the platform region still carries the signal.)
+    expect(a.queryByText(/fixed/i)).not.toBeInTheDocument();
+    expect(within(region(PLATFORM)).getByText("Implementation appears present")).toBeInTheDocument();
+  });
+
+  it("BEHAVIORAL VERIFICATION: an unbound behaviour claim is 'Behavior unverified — no approved verification'; a bound check shows not run / ran with its exact command", () => {
+    const base = makeAssessedAnalysis();
+    const findings = [
+      { claimIndex: 2, statement: "Rotation is implemented correctly", claimClass: "behavior" as const, labelledAsBehavior: false, outcome: "UNRESOLVED" as const, strength: null, evidenceIds: [], explanation: "e", behaviorVerified: false, availableChecks: [] },
+    ];
+    render(
+      <AnalysisPanel
+        analysis={makeAssessedAnalysis({ reconciliation: { revision: "abcdef1234567890", alreadyImplemented: "none", behaviorVerified: false, ignoredEvidence: [], findings, behavior: "BEHAVIOR_UNVERIFIED", implementation: "none" }, verification: [{ claimIndex: 1, claimId: "c1", checkId: "otp-throttle", state: "not_run", reason: "Backlog analysis is read-only by policy.", evidenceId: null }] })}
+        itemStatus="ANALYZED"
+        verifications={[{ id: "v1", claimId: "c1", claimIndex: 1, checkId: "otp-throttle", revision: "abcdef1234567890", state: "passed", exitCode: 0, durationMs: 812, command: "node throttle-check.js", logExcerpt: null, createdAt: "2026-01-01T00:00:00.000Z" }]}
+      />,
+    );
+    void base;
+    const a = within(region(ASSESSMENT));
+    expect(a.getByRole("heading", { name: "Behavioral verification" })).toBeInTheDocument();
+    expect(a.getByText("otp-throttle")).toBeInTheDocument();
+    expect(a.getByText(/Ran at abcdef1: passed \(exit 0\) in 812 ms/)).toBeInTheDocument();
+    expect(a.getByText("node throttle-check.js")).toBeInTheDocument();
+    expect(a.getAllByText("Behavior unverified").length).toBeGreaterThan(0);
+    expect(a.getByText("No approved verification is available for this claim.")).toBeInTheDocument();
+  });
+
+  it("a CHECK_CONTRADICTED finding is shown as verified by a platform check — the only path to 'verified'", () => {
+    render(
+      <AnalysisPanel
+        analysis={makeAssessedAnalysis({
+          reconciliation: {
+            revision: "abcdef1234567890",
+            alreadyImplemented: "strong",
+            behaviorVerified: true,
+            ignoredEvidence: [],
+            behavior: "CHECK_VERIFIED",
+            implementation: "present",
+            findings: [{ claimIndex: 0, statement: "OTP attempts are not limited", claimClass: "behavior", labelledAsBehavior: false, outcome: "CHECK_CONTRADICTED", strength: null, evidenceIds: [], explanation: "The approved check passed.", behaviorVerified: true, availableChecks: ["otp-throttle"] }],
+          },
+        })}
+        itemStatus="NEEDS_CLARIFICATION"
+      />,
+    );
+    const a = within(region(ASSESSMENT));
+    expect(a.getByText("Contradicted by a verified platform check")).toBeInTheDocument();
+    expect(a.getByText(/a platform check bound to a claim passed at this revision/)).toBeInTheDocument();
+  });
+});
+
+describe("Flow-aware evidence and worker verification jobs (Phase 4A.6) — RUNNING/FAILED/CANCELLED never read as verified", () => {
+  const flowInv = (status: "FLOW_REFERENCE_PRESENT" | "FLOW_NOT_ESTABLISHED" | "ENTRY_POINT_NOT_LOCATED") => ({
+    revision: "abcdef1234567890",
+    premise: { kind: "absence" as const, mechanism: "limit", subjectTerms: ["otp"] },
+    signal: status === "FLOW_REFERENCE_PRESENT" ? ("IMPLEMENTATION_PRESENT" as const) : ("POSSIBLY_ALREADY_IMPLEMENTED" as const),
+    behavior: "BEHAVIOR_UNVERIFIED" as const,
+    candidates: [],
+    filesRead: 2,
+    explanation: "e",
+    flow: {
+      status,
+      entries: [{ route: "PATCH /user", file: "routes/user.routes.ts", handlers: ["updateMyProfileHandler"], located: "named_in_item" as const }],
+      path: status === "FLOW_REFERENCE_PRESENT" ? [{ kind: "ROUTE_TO_HANDLER" as const, symbol: "updateMyProfileHandler", file: "c.ts" }, { kind: "DIRECT_REFERENCE" as const, symbol: "verifySecondaryOTP", file: "s.ts" }] : [],
+      evidenceIds: [],
+    },
+  });
+  const job = (status: "QUEUED" | "RUNNING" | "SUCCEEDED" | "FAILED" | "TIMED_OUT" | "CANCELLED", over = {}) => ({
+    id: "job-12345678", analysisId: "a", claimId: "c1", claimIndex: 1, checkId: "otp-throttle", revision: "abcdef1234567890", status, attemptCount: 1, maxAttempts: 2, cancelRequested: false, failureReason: null, createdAt: "t", startedAt: null, completedAt: null, ...over,
+  });
+  const withReq = (state: "not_run" | "passed" | "failed") =>
+    makeAssessedAnalysis({
+      investigation: flowInv("FLOW_REFERENCE_PRESENT"),
+      reconciliation: { revision: "abcdef1234567890", alreadyImplemented: "none", behaviorVerified: state === "passed", ignoredEvidence: [], findings: [], behavior: state === "passed" ? "CHECK_VERIFIED" : "BEHAVIOR_UNVERIFIED", implementation: "present" },
+      verification: [{ claimIndex: 1, claimId: "c1", checkId: "otp-throttle", state, reason: state === "passed" ? "Passed at the analysed revision." : "Not run.", evidenceId: null }],
+    });
+
+  it("presents Implementation → Flow → Behavior in order, worded as a static reference path (not a call path)", () => {
+    render(<AnalysisPanel analysis={withReq("not_run")} itemStatus="ANALYZED" />);
+    const p = within(region(PLATFORM));
+    const h = p.getAllByRole("heading", { level: 5 }).map((x) => x.textContent);
+    expect(h).toEqual(["1. Implementation", "2. Flow", "3. Behavior"]);
+    expect(p.getByText(/Flow reference present \(static name-reference path — not a proven call path\)/)).toBeInTheDocument();
+    expect(p.getByText("PATCH /user")).toBeInTheDocument();
+    expect(p.getByText("verifySecondaryOTP")).toBeInTheDocument();
+  });
+
+  it("a mechanism whose flow is NOT established says so", () => {
+    render(<AnalysisPanel analysis={makeAssessedAnalysis({ investigation: flowInv("FLOW_NOT_ESTABLISHED") })} itemStatus="ANALYZED" />);
+    expect(within(region(PLATFORM)).getByText(/Flow not established/)).toBeInTheDocument();
+  });
+
+  it.each([
+    ["QUEUED", /Queued — not verified yet/],
+    ["RUNNING", /Running — not verified yet/],
+    ["FAILED", /Failed/],
+    ["TIMED_OUT", /Timed out/],
+    ["CANCELLED", /Cancelled/],
+  ] as const)("%s job: shown with its state and NEVER as verified", (status, label) => {
+    render(<AnalysisPanel analysis={withReq("not_run")} itemStatus="ANALYZED" controls={{ jobs: [job(status)], busy: false, onRun: () => {}, onCancel: () => {} }} />);
+    const a = within(region(ASSESSMENT));
+    expect(a.getAllByText(label).length).toBeGreaterThan(0);
+    expect(a.queryByText(/Verified by this check/)).not.toBeInTheDocument();
+  });
+
+  it("only a bound, passed requirement reads 'Verified by this check'; a passed job that no longer binds does not", () => {
+    const { unmount } = render(<AnalysisPanel analysis={withReq("passed")} itemStatus="ANALYZED" controls={{ jobs: [job("SUCCEEDED")], busy: false, onRun: () => {}, onCancel: () => {} }} />);
+    expect(within(region(ASSESSMENT)).getAllByText(/Verified by this check/).length).toBeGreaterThan(0);
+    unmount();
+    render(<AnalysisPanel analysis={withReq("not_run")} itemStatus="ANALYZED" controls={{ jobs: [job("SUCCEEDED")], busy: false, onRun: () => {}, onCancel: () => {} }} />);
+    const a = within(region(ASSESSMENT));
+    expect(a.queryByText(/Verified by this check/)).not.toBeInTheDocument();
+    expect(a.getByText(/no longer binds to this analysis/)).toBeInTheDocument();
+  });
+
+  it("offers Run and Cancel, and disables Run while a job is live", async () => {
+    const onRun = vi.fn();
+    const onCancel = vi.fn();
+    const { unmount } = render(<AnalysisPanel analysis={withReq("not_run")} itemStatus="ANALYZED" controls={{ jobs: [], busy: false, onRun, onCancel }} />);
+    await userEvent.click(screen.getByRole("button", { name: "Run approved check(s)" }));
+    expect(onRun).toHaveBeenCalledTimes(1);
+    unmount();
+    render(<AnalysisPanel analysis={withReq("not_run")} itemStatus="ANALYZED" controls={{ jobs: [job("RUNNING")], busy: false, onRun, onCancel }} />);
+    expect(screen.getByRole("button", { name: "Verification in progress…" })).toBeDisabled();
+    await userEvent.click(screen.getByRole("button", { name: "Cancel verification" }));
+    expect(onCancel).toHaveBeenCalledWith("job-12345678");
+  });
+});
+
+describe("Semantic sufficiency (Phase 4A.7) — a passing check is not a verified claim", () => {
+  it("an insufficient relevant check is shown as NOT sufficient, unverified, and never as Verified", () => {
+    render(
+      <AnalysisPanel
+        analysis={makeAssessedAnalysis({
+          reconciliation: { revision: "abcdef1234567890", alreadyImplemented: "none", behaviorVerified: false, ignoredEvidence: [], findings: [], behavior: "BEHAVIOR_UNVERIFIED", implementation: "none" },
+          verification: [],
+          verificationCandidates: [{ claimIndex: 1, claimId: "c1", checkId: "otp-send-throttle", claimClass: "WIRING", relevance: "relevant", sufficiency: "insufficient", reason: "The claim is about how code is wired (imports/calls/uses); it establishes throttle behaviour, not that." }],
+        })}
+        itemStatus="ANALYZED"
+      />,
+    );
+    const a = within(region(ASSESSMENT));
+    expect(a.getByText(/NOT sufficient/)).toBeInTheDocument();
+    expect(a.getByText(/Semantic sufficiency:/)).toBeInTheDocument();
+    expect(a.getByText(/The claim is about how code is wired/)).toBeInTheDocument();
+    expect(a.queryByText(/Verified by this check/)).not.toBeInTheDocument();
+    expect(a.queryByText(/^Verified$/)).not.toBeInTheDocument();
   });
 });
 

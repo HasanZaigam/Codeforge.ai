@@ -189,7 +189,7 @@ export class OpenCodeAdapter implements CodingEngine {
       }
       args.push(prompt);
 
-      const cleanEnv = this.buildCleanEnvironment(request.workspacePath);
+      const cleanEnv = this.buildCleanEnvironment(request.workspacePath, request.credentialEnv);
 
       let child;
       try {
@@ -263,7 +263,7 @@ export class OpenCodeAdapter implements CodingEngine {
    * happen). Reproduced directly, fixed by this line, and covered by a
    * regression test — see tests/opencode-adapter.test.ts.
    */
-  private buildCleanEnvironment(workspacePath: string): NodeJS.ProcessEnv {
+  private buildCleanEnvironment(workspacePath: string, credentialEnv?: Record<string, string> | null): NodeJS.ProcessEnv {
     const baseEnv = this.customEnv ?? process.env;
     const clean: NodeJS.ProcessEnv = {};
 
@@ -277,6 +277,16 @@ export class OpenCodeAdapter implements CodingEngine {
     }
 
     clean.PWD = resolvePath(workspacePath);
+
+    // Model Gateway — a per-invocation, per-account decrypted provider API key (see
+    // EngineInvocationRequest.credentialEnv's own doc comment) always wins over whatever this
+    // process's own ambient environment happens to have, so a per-user BYOK key is never shadowed
+    // by an operator-wide fallback key. Applied AFTER sanitization, never logged.
+    if (credentialEnv) {
+      for (const [key, value] of Object.entries(credentialEnv)) {
+        clean[key] = value;
+      }
+    }
 
     return clean;
   }
