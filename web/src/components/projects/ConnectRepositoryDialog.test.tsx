@@ -1,12 +1,12 @@
 import { describe, test, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { CreateProjectDialog } from "./CreateProjectDialog.js";
+import { ConnectRepositoryDialog } from "./ConnectRepositoryDialog.js";
 import { projectsApi, githubIntegrationApi, ApiError } from "../../api/index.js";
-import { makeProject } from "../../test/fixtures.js";
+import { makeRepository } from "../../test/fixtures.js";
 
 vi.mock("../../api/projects.js", () => ({
-  projectsApi: { create: vi.fn(), list: vi.fn(), get: vi.fn(), listTasks: vi.fn(), createTask: vi.fn(), verifyGitHubRepo: vi.fn(), listBranches: vi.fn() },
+  projectsApi: { create: vi.fn(), addRepository: vi.fn(), list: vi.fn(), get: vi.fn(), listTasks: vi.fn(), createTask: vi.fn(), verifyGitHubRepo: vi.fn(), listBranches: vi.fn() },
 }));
 vi.mock("../../api/integrations.js", () => ({
   githubIntegrationApi: { getStatus: vi.fn(), connect: vi.fn(), disconnect: vi.fn() },
@@ -21,12 +21,12 @@ async function renderConnected() {
   mockedGithubApi.getStatus.mockResolvedValue({ connected: true, githubLogin: "octocat", connectedAt: "2026-01-01T00:00:00.000Z" });
   const onCreated = vi.fn();
   const onClose = vi.fn();
-  const view = render(<CreateProjectDialog onClose={onClose} onCreated={onCreated} />);
+  const view = render(<ConnectRepositoryDialog projectId="p1" onClose={onClose} onConnected={onCreated} />);
   await waitFor(() => expect(screen.getByLabelText(/GitHub repository URL/)).toBeInTheDocument());
   return { onCreated, onClose, container: view.container };
 }
 
-describe("CreateProjectDialog", () => {
+describe("ConnectRepositoryDialog", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -35,12 +35,12 @@ describe("CreateProjectDialog", () => {
     await renderConnected();
     expect(screen.getByText(/Paste the repository's GitHub URL/i)).toBeInTheDocument();
     expect(screen.getByText(/confirms — with a real GitHub API call/i)).toBeInTheDocument();
-    expect(screen.getByText(/Nothing is created until you click "Connect project"/i)).toBeInTheDocument();
+    expect(screen.getByText(/Nothing is connected until you click "Connect repository"/i)).toBeInTheDocument();
   });
 
-  test("Connect project is disabled until a repository URL has been successfully validated", async () => {
+  test("Connect repository is disabled until a repository URL has been successfully validated", async () => {
     await renderConnected();
-    const submit = screen.getByRole("button", { name: /Connect project/i });
+    const submit = screen.getByRole("button", { name: /Connect repository/i });
     expect(submit).toBeDisabled();
 
     const validate = screen.getByRole("button", { name: /Validate repository/i });
@@ -64,19 +64,19 @@ describe("CreateProjectDialog", () => {
     expect(screen.getByText("HasanZaigam")).toBeInTheDocument();
     expect(screen.getByText("testing-repo-")).toBeInTheDocument();
 
-    const nameInput = screen.getByLabelText("Project name *") as HTMLInputElement;
+    const nameInput = screen.getByLabelText("Repository name *") as HTMLInputElement;
     expect(nameInput.value).toBe("testing-repo-"); // auto-suggested…
     await user.clear(nameInput);
     await user.type(nameInput, "My Own Name");
     expect(nameInput).toHaveValue("My Own Name"); // …but never forced/locked
 
-    const branchInput = screen.getByLabelText("Base branch") as HTMLInputElement;
+    const branchInput = screen.getByLabelText("Default branch") as HTMLInputElement;
     expect(branchInput.value).toBe("main");
 
     expect(mockedProjectsApi.verifyGitHubRepo).toHaveBeenCalledWith("https://github.com/HasanZaigam/testing-repo-.git");
   });
 
-  test("a failed validation (e.g. inaccessible repository) shows a clear error and never enables Connect project", async () => {
+  test("a failed validation (e.g. inaccessible repository) shows a clear error and never enables Connect repository", async () => {
     const user = userEvent.setup();
     mockedProjectsApi.verifyGitHubRepo.mockRejectedValue(new ApiError(400, "INVALID_REPOSITORY", "Repository acme/does-not-exist does not exist"));
     await renderConnected();
@@ -86,10 +86,10 @@ describe("CreateProjectDialog", () => {
 
     await waitFor(() => expect(screen.getByText("Repository acme/does-not-exist does not exist")).toBeInTheDocument());
     expect(screen.queryByText("Repository verified")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Connect project/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /Connect repository/i })).toBeDisabled();
   });
 
-  test("editing the URL after a successful validation invalidates it — Connect project is disabled again until re-validated", async () => {
+  test("editing the URL after a successful validation invalidates it — Connect repository is disabled again until re-validated", async () => {
     const user = userEvent.setup();
     mockedProjectsApi.verifyGitHubRepo.mockResolvedValue(VERIFIED);
     await renderConnected();
@@ -101,26 +101,26 @@ describe("CreateProjectDialog", () => {
 
     await user.type(urlInput, "x");
     expect(screen.queryByText("Repository verified")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Connect project/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /Connect repository/i })).toBeDisabled();
   });
 
   test("submitting after validation sends the derived owner/repo and the (possibly edited) name/base branch — never the raw pasted URL", async () => {
     const user = userEvent.setup();
     mockedProjectsApi.verifyGitHubRepo.mockResolvedValue(VERIFIED);
-    const project = makeProject({ name: "testing-repo-", owner: "HasanZaigam", repo: "testing-repo-" });
-    mockedProjectsApi.create.mockResolvedValue(project);
+    const project = makeRepository({ name: "testing-repo-", owner: "HasanZaigam", repo: "testing-repo-" });
+    mockedProjectsApi.addRepository.mockResolvedValue(project);
     const { onCreated } = await renderConnected();
 
     await user.type(screen.getByLabelText(/GitHub repository URL/), "https://github.com/HasanZaigam/testing-repo-.git");
     await user.click(screen.getByRole("button", { name: /Validate repository/i }));
     await waitFor(() => expect(screen.getByText("Repository verified")).toBeInTheDocument());
 
-    const submit = screen.getByRole("button", { name: /Connect project/i });
+    const submit = screen.getByRole("button", { name: /Connect repository/i });
     expect(submit).toBeEnabled();
     await user.click(submit);
 
     await waitFor(() => expect(onCreated).toHaveBeenCalledWith(project));
-    expect(mockedProjectsApi.create).toHaveBeenCalledWith({
+    expect(mockedProjectsApi.addRepository).toHaveBeenCalledWith("p1", {
       sourceControlProvider: "github",
       name: "testing-repo-",
       owner: "HasanZaigam",
@@ -132,7 +132,7 @@ describe("CreateProjectDialog", () => {
   test("a server-side error on submission (after validation passed) still surfaces a labeled, readable message", async () => {
     const user = userEvent.setup();
     mockedProjectsApi.verifyGitHubRepo.mockResolvedValue(VERIFIED);
-    mockedProjectsApi.create.mockRejectedValue(
+    mockedProjectsApi.addRepository.mockRejectedValue(
       new ApiError(400, "INVALID_REQUEST", "Request body failed validation", { fieldErrors: { name: ["Required"] } }),
     );
     await renderConnected();
@@ -140,32 +140,32 @@ describe("CreateProjectDialog", () => {
     await user.type(screen.getByLabelText(/GitHub repository URL/), "https://github.com/HasanZaigam/testing-repo-.git");
     await user.click(screen.getByRole("button", { name: /Validate repository/i }));
     await waitFor(() => expect(screen.getByText("Repository verified")).toBeInTheDocument());
-    await user.click(screen.getByRole("button", { name: /Connect project/i }));
+    await user.click(screen.getByRole("button", { name: /Connect repository/i }));
 
-    await waitFor(() => expect(screen.getByText(/Project name: Required/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/Repository name: Required/)).toBeInTheDocument());
     expect(screen.queryByText("Request body failed validation")).not.toBeInTheDocument();
   });
 
   test("the dialog description explains the GitHub credentials/PR workflow when GitHub is selected", async () => {
     await renderConnected();
-    expect(screen.getByText(/Connect an existing GitHub repository so AI agents can work on tasks in it\./i)).toBeInTheDocument();
+    expect(screen.getByText(/Connect a GitHub repository of this project so AI agents can work on tasks in it\./i)).toBeInTheDocument();
   });
 
   test("local-git provider still submits a single required Repository URL field, unchanged from the existing request shape", async () => {
     const user = userEvent.setup();
     mockedGithubApi.getStatus.mockResolvedValue({ connected: true, githubLogin: "octocat", connectedAt: "2026-01-01T00:00:00.000Z" });
-    const project = makeProject({ sourceControlProvider: "local-git", owner: null, repo: null, repoUrl: "/tmp/repo" });
-    mockedProjectsApi.create.mockResolvedValue(project);
+    const project = makeRepository({ sourceControlProvider: "local-git", owner: null, repo: null, repoUrl: "/tmp/repo" });
+    mockedProjectsApi.addRepository.mockResolvedValue(project);
     const onCreated = vi.fn();
-    render(<CreateProjectDialog onClose={vi.fn()} onCreated={onCreated} />);
+    render(<ConnectRepositoryDialog projectId="p1" onClose={vi.fn()} onConnected={onCreated} />);
 
     await user.selectOptions(screen.getByLabelText("Source control"), "local-git");
-    await user.type(screen.getByLabelText("Project name *"), "Local test");
+    await user.type(screen.getByLabelText("Repository name *"), "Local test");
     await user.type(screen.getByLabelText("Repository URL *"), "/tmp/repo");
-    await user.click(screen.getByRole("button", { name: /Connect project/i }));
+    await user.click(screen.getByRole("button", { name: /Connect repository/i }));
 
     await waitFor(() => expect(onCreated).toHaveBeenCalledWith(project));
-    expect(mockedProjectsApi.create).toHaveBeenCalledWith({ sourceControlProvider: "local-git", name: "Local test", repoUrl: "/tmp/repo" });
+    expect(mockedProjectsApi.addRepository).toHaveBeenCalledWith("p1", { sourceControlProvider: "local-git", name: "Local test", repoUrl: "/tmp/repo" });
   });
 
   test("the Local Git option is labeled to signal it does not open a Pull Request", async () => {
@@ -178,12 +178,12 @@ describe("CreateProjectDialog", () => {
   test("switching to Local Git swaps the dialog description and shows a plain-language 'no PR' explanation callout", async () => {
     const user = userEvent.setup();
     mockedGithubApi.getStatus.mockResolvedValue({ connected: true, githubLogin: "octocat", connectedAt: "2026-01-01T00:00:00.000Z" });
-    render(<CreateProjectDialog onClose={vi.fn()} onCreated={vi.fn()} />);
+    render(<ConnectRepositoryDialog projectId="p1" onClose={vi.fn()} onConnected={vi.fn()} />);
 
     await user.selectOptions(screen.getByLabelText("Source control"), "local-git");
 
     // The GitHub-only top description is gone, replaced by one that doesn't promise a PR workflow.
-    expect(screen.queryByText(/Connect an existing GitHub repository so AI agents can work on tasks in it\./i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Connect a GitHub repository of this project so AI agents can work on tasks in it\./i)).not.toBeInTheDocument();
     expect(screen.getByText(/evaluation or testing/i)).toBeInTheDocument();
 
     // The existing info-callout/field-hint pattern is reused, not a new UI pattern, and states the
@@ -198,19 +198,19 @@ describe("CreateProjectDialog", () => {
   test("a production-disabled local-git submission surfaces the server's explanatory error message", async () => {
     const user = userEvent.setup();
     mockedGithubApi.getStatus.mockResolvedValue({ connected: true, githubLogin: "octocat", connectedAt: "2026-01-01T00:00:00.000Z" });
-    mockedProjectsApi.create.mockRejectedValue(
+    mockedProjectsApi.addRepository.mockRejectedValue(
       new ApiError(
         403,
         "LOCAL_GIT_PROJECTS_DISABLED",
         "Local git / plain-git testing projects are disabled in production. Set ALLOW_LOCAL_GIT_PROJECTS=true to explicitly enable it.",
       ),
     );
-    render(<CreateProjectDialog onClose={vi.fn()} onCreated={vi.fn()} />);
+    render(<ConnectRepositoryDialog projectId="p1" onClose={vi.fn()} onConnected={vi.fn()} />);
 
     await user.selectOptions(screen.getByLabelText("Source control"), "local-git");
-    await user.type(screen.getByLabelText("Project name *"), "Local test");
+    await user.type(screen.getByLabelText("Repository name *"), "Local test");
     await user.type(screen.getByLabelText("Repository URL *"), "/tmp/repo");
-    await user.click(screen.getByRole("button", { name: /Connect project/i }));
+    await user.click(screen.getByRole("button", { name: /Connect repository/i }));
 
     await waitFor(() => expect(screen.getByText(/disabled in production/i)).toBeInTheDocument());
   });

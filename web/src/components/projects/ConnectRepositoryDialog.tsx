@@ -7,10 +7,14 @@ import {
   projectsApi,
   githubIntegrationApi,
   ApiError,
-  type ProjectDTO,
+  type ProjectRepoDTO,
   type GitHubConnectionDTO,
   type VerifyGitHubRepositoryResult,
 } from "../../api/index.js";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { NativeSelect } from "@/components/ui/native-select";
 
 type Provider = "github" | "local-git";
 
@@ -22,7 +26,7 @@ interface ValidationDetails {
 
 /** Human labels for backend field names, used when turning a raw validation error into a readable message. */
 const FIELD_LABELS: Record<string, string> = {
-  name: "Project name",
+  name: "Repository name",
   repoUrl: "Repository URL",
   defaultBranch: "Base branch",
 };
@@ -42,12 +46,13 @@ function friendlyErrorMessage(err: unknown): string {
       return `${FIELD_LABELS[firstField] ?? firstField}: ${firstMessage}`;
     }
   }
-  return err instanceof Error ? err.message : "Could not connect this project. Please try again.";
+  return err instanceof Error ? err.message : "Could not connect this repository. Please try again.";
 }
 
 /**
- * Connects a project either to a real GitHub repository or, for local
- * development/testing, a plain local-git repo URL.
+ * Connects one repository to an existing project — a real GitHub repository or, for local
+ * development/testing, a plain local-git repo URL. A project can hold several (frontend, backend,
+ * admin …) or exactly one for a monorepo; every task then targets one of them (TD-62).
  *
  * GitHub flow (see /docs/GITHUB_INTEGRATION.md "Repository connection"): the
  * user pastes a full repository URL and clicks "Validate repository" — a
@@ -55,12 +60,20 @@ function friendlyErrorMessage(err: unknown): string {
  * URL-shape validation, and the UI says so explicitly. On success it shows
  * the derived owner/repository/default branch (not editable — they're a
  * fact about the repository, not a choice) plus an editable, auto-suggested
- * project name and an editable base-branch selector. Editing the URL after a
- * successful validation invalidates it — the previous result no longer
- * describes what's in the field, so "Connect project" is disabled again
- * until it's re-validated.
+ * repository name (the short label tasks and Chat use) and an editable
+ * default-branch field. Editing the URL after a successful validation
+ * invalidates it — the previous result no longer describes what's in the
+ * field, so "Connect repository" is disabled again until it's re-validated.
  */
-export function CreateProjectDialog({ onClose, onCreated }: { onClose: () => void; onCreated: (project: ProjectDTO) => void }) {
+export function ConnectRepositoryDialog({
+  projectId,
+  onClose,
+  onConnected,
+}: {
+  projectId: string;
+  onClose: () => void;
+  onConnected: (repository: ProjectRepoDTO) => void;
+}) {
   const [provider, setProvider] = useState<Provider>("github");
   const [name, setName] = useState("");
   const [nameEdited, setNameEdited] = useState(false);
@@ -110,7 +123,8 @@ export function CreateProjectDialog({ onClose, onCreated }: { onClose: () => voi
     setSubmitting(true);
     setError(undefined);
     try {
-      const project = await projectsApi.create(
+      const repository = await projectsApi.addRepository(
+        projectId,
         provider === "github"
           ? {
               sourceControlProvider: "github",
@@ -121,7 +135,7 @@ export function CreateProjectDialog({ onClose, onCreated }: { onClose: () => voi
             }
           : { sourceControlProvider: "local-git", name: name.trim(), repoUrl: repoUrl.trim() },
       );
-      onCreated(project);
+      onConnected(repository);
     } catch (err) {
       setError(friendlyErrorMessage(err));
       setSubmitting(false);
@@ -134,42 +148,42 @@ export function CreateProjectDialog({ onClose, onCreated }: { onClose: () => voi
 
   const dialogDescription =
     provider === "github"
-      ? "Connect an existing GitHub repository so AI agents can work on tasks in it."
+      ? "Connect a GitHub repository of this project so AI agents can work on tasks in it."
       : "Point at a plain local/self-hosted git repository for evaluation or testing — no GitHub account, no Pull Request.";
 
   return (
-    <Dialog title="Connect a project" description={dialogDescription} onClose={onClose}>
+    <Dialog title="Connect a repository" description={dialogDescription} onClose={onClose}>
       <form onSubmit={handleSubmit}>
-        <div className="field">
-          <label htmlFor="project-provider">Source control</label>
-          <select id="project-provider" value={provider} onChange={(e) => setProvider(e.target.value as Provider)}>
+        <div className="mb-4 flex flex-col gap-2">
+          <Label htmlFor="project-provider">Source control</Label>
+          <NativeSelect className="w-full" id="project-provider" value={provider} onChange={(e) => setProvider(e.target.value as Provider)}>
             <option value="github">GitHub repository</option>
             <option value="local-git">Local / plain-git testing (no PR)</option>
-          </select>
+          </NativeSelect>
         </div>
 
         {provider === "github" ? (
           <>
             {githubStatus === undefined && <LoadingState label="Checking your GitHub connection…" />}
             {githubStatus && !githubStatus.connected && (
-              <div className="field">
-                <p className="field-hint">
-                  Connect a GitHub account before creating a GitHub-backed project — the platform needs it to verify the
+              <div className="mb-4 flex flex-col gap-2">
+                <p className="text-sm text-muted-foreground">
+                  Connect a GitHub account before connecting a GitHub repository — the platform needs it to verify the
                   repository and later commit/push/open a Pull Request.
                 </p>
-                <button type="button" className="btn btn-secondary" onClick={() => setShowConnect(true)}>
+                <Button variant="outline" type="button" onClick={() => setShowConnect(true)}>
                   Connect GitHub account
-                </button>
+                </Button>
               </div>
             )}
             {githubStatus?.connected && (
               <>
-                <div className="field">
-                  <label htmlFor="project-github-url">
-                    GitHub repository URL <span className="field-required">*</span>
-                  </label>
-                  <p className="field-hint">Paste the repository's GitHub URL — https:// or git@ form both work.</p>
-                  <input
+                <div className="mb-4 flex flex-col gap-2">
+                  <Label htmlFor="project-github-url">
+                    GitHub repository URL <span className="text-destructive">*</span>
+                  </Label>
+                  <p className="text-sm text-muted-foreground">Paste the repository's GitHub URL — https:// or git@ form both work.</p>
+                  <Input
                     id="project-github-url"
                     value={githubUrl}
                     onChange={(e) => handleGithubUrlChange(e.target.value)}
@@ -177,15 +191,15 @@ export function CreateProjectDialog({ onClose, onCreated }: { onClose: () => voi
                     required
                     maxLength={2000}
                   />
-                  <div className="dialog-actions" style={{ justifyContent: "flex-start", padding: 0, border: "none", marginTop: 8 }}>
-                    <button type="button" className="btn btn-secondary" onClick={handleValidate} disabled={!canValidate}>
+                  <div>
+                    <Button variant="outline" type="button" onClick={handleValidate} disabled={!canValidate}>
                       {verifying ? "Validating…" : "Validate repository"}
-                    </button>
+                    </Button>
                   </div>
-                  <p className="field-hint">
+                  <p className="text-sm text-muted-foreground">
                     Validating checks that the URL is a well-formed GitHub repository AND confirms — with a real GitHub API
                     call using your connected account — that the repository exists, is accessible, and its base branch
-                    exists. Nothing is created until you click "Connect project".
+                    exists. Nothing is connected until you click "Connect repository".
                   </p>
                 </div>
 
@@ -194,24 +208,24 @@ export function CreateProjectDialog({ onClose, onCreated }: { onClose: () => voi
 
                 {verified && (
                   <>
-                    <div className="info-callout">
-                      <div className="info-callout-title">Repository verified</div>
-                      <dl>
-                        <dt>Owner / organization</dt>
+                    <div className="info-callout mb-4 rounded-2xl bg-tone-info/10 px-4 py-3 text-sm text-tone-info">
+                      <div className="mb-1 font-semibold">Repository verified</div>
+                      <dl className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-foreground">
+                        <dt className="text-muted-foreground">Owner / organization</dt>
                         <dd>{verified.owner}</dd>
-                        <dt>Repository</dt>
+                        <dt className="text-muted-foreground">Repository</dt>
                         <dd>{verified.repo}</dd>
-                        <dt>Default branch</dt>
+                        <dt className="text-muted-foreground">Default branch</dt>
                         <dd>{verified.defaultBranch}</dd>
                       </dl>
                     </div>
 
-                    <div className="field">
-                      <label htmlFor="project-name">
-                        Project name <span className="field-required">*</span>
-                      </label>
-                      <p className="field-hint">A friendly name for this project inside AI Task Manager — it doesn't need to match the GitHub repository name.</p>
-                      <input
+                    <div className="mb-4 flex flex-col gap-2">
+                      <Label htmlFor="project-name">
+                        Repository name <span className="text-destructive">*</span>
+                      </Label>
+                      <p className="text-sm text-muted-foreground">A short label for this repository inside the project — e.g. "frontend", "backend" or "admin". Tasks and Chat refer to it by this name.</p>
+                      <Input
                         id="project-name"
                         value={name}
                         onChange={(e) => {
@@ -219,13 +233,13 @@ export function CreateProjectDialog({ onClose, onCreated }: { onClose: () => voi
                           setNameEdited(true);
                         }}
                         required
-                        maxLength={200}
+                        maxLength={60}
                       />
                     </div>
-                    <div className="field">
-                      <label htmlFor="project-branch">Base branch</label>
-                      <p className="field-hint">The branch AI agents start from. Defaults to the repository's own default branch — change it if you want a different one.</p>
-                      <input id="project-branch" value={defaultBranch} onChange={(e) => setDefaultBranch(e.target.value)} maxLength={200} />
+                    <div className="mb-4 flex flex-col gap-2">
+                      <Label htmlFor="project-branch">Default branch</Label>
+                      <p className="text-sm text-muted-foreground">The branch AI agents start from in this repository. Defaults to the repository's own default branch — change it if you want a different one.</p>
+                      <Input id="project-branch" value={defaultBranch} onChange={(e) => setDefaultBranch(e.target.value)} maxLength={200} />
                     </div>
                   </>
                 )}
@@ -234,28 +248,28 @@ export function CreateProjectDialog({ onClose, onCreated }: { onClose: () => voi
           </>
         ) : (
           <>
-            <div className="info-callout">
-              <div className="info-callout-title">How it works</div>
-              <p style={{ margin: 0 }}>
+            <div className="info-callout mb-4 rounded-2xl bg-tone-info/10 px-4 py-3 text-sm text-tone-info">
+              <div className="mb-1 font-semibold">How it works</div>
+              <p>
                 No GitHub account is needed, and no Pull Request is ever created. Work is committed and pushed to
                 this repository using plain git — the task never receives a GitHub merge signal, so it stays in
                 "Review" once the agent finishes. This mode is for evaluation and testing, not the normal
                 production workflow.
               </p>
             </div>
-            <div className="field">
-              <label htmlFor="project-name">
-                Project name <span className="field-required">*</span>
-              </label>
-              <p className="field-hint">A friendly name for this project inside AI Task Manager.</p>
-              <input id="project-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="Testing Repo" required maxLength={200} />
+            <div className="mb-4 flex flex-col gap-2">
+              <Label htmlFor="project-name">
+                Repository name <span className="text-destructive">*</span>
+              </Label>
+              <p className="text-sm text-muted-foreground">A short label for this repository inside the project — e.g. "frontend" or "backend".</p>
+              <Input id="project-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="backend" required maxLength={60} />
             </div>
-            <div className="field">
-              <label htmlFor="project-repo-url">
-                Repository URL <span className="field-required">*</span>
-              </label>
-              <p className="field-hint">A local filesystem path or a plain git remote URL — not a GitHub repository.</p>
-              <input
+            <div className="mb-4 flex flex-col gap-2">
+              <Label htmlFor="project-repo-url">
+                Repository URL <span className="text-destructive">*</span>
+              </Label>
+              <p className="text-sm text-muted-foreground">A local filesystem path or a plain git remote URL — not a GitHub repository.</p>
+              <Input
                 id="project-repo-url"
                 value={repoUrl}
                 onChange={(e) => setRepoUrl(e.target.value)}
@@ -268,13 +282,13 @@ export function CreateProjectDialog({ onClose, onCreated }: { onClose: () => voi
         )}
 
         {error && <ErrorState message={error} />}
-        <div className="dialog-actions">
-          <button type="button" className="btn btn-secondary" onClick={onClose} disabled={submitting}>
+        <div className="flex flex-col-reverse gap-2 pt-2 sm:flex-row sm:justify-end">
+          <Button variant="outline" type="button" onClick={onClose} disabled={submitting}>
             Cancel
-          </button>
-          <button type="submit" className="btn btn-primary" disabled={submitting || !canSubmit || (provider === "github" && !githubStatus?.connected)}>
-            {submitting ? "Connecting…" : "Connect project"}
-          </button>
+          </Button>
+          <Button type="submit" disabled={submitting || !canSubmit || (provider === "github" && !githubStatus?.connected)}>
+            {submitting ? "Connecting…" : "Connect repository"}
+          </Button>
         </div>
       </form>
 

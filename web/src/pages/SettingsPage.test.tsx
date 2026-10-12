@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { AuthProvider } from "../auth/AuthContext.js";
@@ -15,7 +15,7 @@ vi.mock("../api/integrations.js", () => ({
 }));
 
 vi.mock("../api/model-gateway.js", () => ({
-  modelGatewayApi: { listConnections: vi.fn(), getConfig: vi.fn(), getUsage: vi.fn(), connect: vi.fn(), testConnection: vi.fn(), disconnect: vi.fn(), setConfig: vi.fn() },
+  modelGatewayApi: { listConnections: vi.fn(), getConfig: vi.fn(), getUsage: vi.fn(), connect: vi.fn(), testConnection: vi.fn(), disconnect: vi.fn(), setConfig: vi.fn(), listConnectionModels: vi.fn(), changeModel: vi.fn() },
 }));
 
 const mockedAuthApi = vi.mocked(authApi);
@@ -93,6 +93,43 @@ describe("SettingsPage", () => {
     expect(screen.getByRole("button", { name: "Test connection" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Disconnect" })).toBeInTheDocument();
     expect(screen.getAllByRole("button", { name: "Connect" })).toHaveLength(2);
+  });
+
+  it("Manage changes a connected provider's model using the saved key — no API key field, and a Replace API key escape hatch", async () => {
+    const googleConnected = { provider: "google" as const, connected: true, model: "gemini-2.0-flash", status: "connected" as const, lastVerifiedAt: "2026-01-01T00:00:00.000Z", lastError: null };
+    mockedGithubApi.getStatus.mockResolvedValue({ connected: false, githubLogin: null, connectedAt: null });
+    mockedModelGatewayApi.listConnections.mockResolvedValue({ connections: [googleConnected, DISCONNECTED_CONNECTIONS[1]!, DISCONNECTED_CONNECTIONS[2]!] });
+    mockedModelGatewayApi.getConfig.mockResolvedValue({
+      mode: "auto",
+      fixedProvider: null,
+      fixedModel: null,
+      autoAllowed: [
+        { provider: "google", allowed: true, connected: true },
+        { provider: "anthropic", allowed: false, connected: false },
+        { provider: "openai", allowed: false, connected: false },
+      ],
+    });
+    mockedModelGatewayApi.listConnectionModels.mockResolvedValue({ models: ["gemini-2.5-pro", "gemini-2.0-flash"], error: null });
+    mockedModelGatewayApi.changeModel.mockResolvedValue({ ...googleConnected, model: "gemini-2.5-pro" });
+    renderSettings();
+
+    await userEvent.click(await screen.findByRole("button", { name: "Manage" }));
+    const dialog = await screen.findByRole("dialog", { name: "Manage Google" });
+    expect(mockedModelGatewayApi.listConnectionModels).toHaveBeenCalledWith("google");
+    expect(within(dialog).queryByLabelText(/api key/i)).not.toBeInTheDocument();
+
+    const select = await within(dialog).findByLabelText("Model");
+    expect(select).toHaveValue("gemini-2.0-flash");
+    expect(within(dialog).getByRole("button", { name: "Save model" })).toBeDisabled();
+
+    await userEvent.selectOptions(select, "gemini-2.5-pro");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Save model" }));
+    await waitFor(() => expect(mockedModelGatewayApi.changeModel).toHaveBeenCalledWith("google", "gemini-2.5-pro"));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Manage Google" })).not.toBeInTheDocument());
+
+    await userEvent.click(screen.getByRole("button", { name: "Manage" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Replace API key" }));
+    expect(await screen.findByRole("dialog", { name: "Replace Google API key" })).toBeInTheDocument();
   });
 
   it("Integrations shows Jira/Slack/Jenkins/MCP as Coming soon only — no connect buttons or fake status", async () => {

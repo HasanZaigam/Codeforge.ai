@@ -48,9 +48,10 @@ describe("ProjectWorkspacePage", () => {
 
       renderApp("/projects/p1/workspace");
 
-      await waitFor(() => expect(screen.getByText(/Workspace ID: workspace-xyz/)).toBeInTheDocument());
-      expect(screen.getByText(/Created:/)).toBeInTheDocument();
-      expect(screen.getByText(/Updated:/)).toBeInTheDocument();
+      await waitFor(() => expect(screen.getByText("workspace-xyz")).toBeInTheDocument());
+      expect(screen.getByText("Workspace ID")).toBeInTheDocument();
+      expect(screen.getByText("Created")).toBeInTheDocument();
+      expect(screen.getByText("Updated")).toBeInTheDocument();
     });
 
     it("shows a loading state before the workspace request resolves", async () => {

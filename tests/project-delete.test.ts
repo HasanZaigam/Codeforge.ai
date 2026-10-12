@@ -151,3 +151,91 @@ test("DELETE /projects/:projectId: a non-owner gets a 404, and the project is le
     await teardown(h);
   }
 });
+
+test("DELETE /projects/:projectId: a project whose Chat was used and that imported a bug sheet is still deletable, leaving nothing behind (regression)", async () => {
+  const h = await setupHarness("chat-import");
+  try {
+    const client = await registerClient(h.baseUrl, "chat-import");
+    const createRes = await client.fetch("/projects", {
+      method: "POST",
+      body: JSON.stringify({ name: "Fixture", sourceControlProvider: "local-git", repoUrl: h.repoPath }),
+    });
+    const { project } = await json<{ project: { id: string } }>(createRes);
+
+    // Opening the Overview creates the Chat conversation; a deterministic question adds messages without a model call.
+    assert.equal((await client.fetch(`/projects/${project.id}/chat/messages`)).status, 200);
+    const chatRes = await client.fetch(`/projects/${project.id}/chat/messages`, { method: "POST", body: JSON.stringify({ text: "How many tasks are in Review?" }) });
+    assert.equal(chatRes.status, 201);
+    const csv = "Bug Id,Bug title,Step to Reproduce,Expected Result,Actual Result\nBUG-1,Login broken,Open app,Works,Broken\n";
+    const importRes = await client.fetch(`/projects/${project.id}/backlog/imports`, { method: "POST", body: JSON.stringify({ csv, sourceName: "bugs.csv" }) });
+    assert.equal(importRes.status, 201);
+
+    const deleteRes = await client.fetch(`/projects/${project.id}`, { method: "DELETE" });
+    assert.equal(deleteRes.status, 204);
+
+    const db = h.platform.db;
+    const projectScoped = (db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as { name: string }[])
+      .map((t) => t.name)
+      .filter((t) => (db.prepare(`PRAGMA table_info(${t})`).all() as { name: string }[]).some((c) => c.name === "project_id"));
+    for (const table of projectScoped) {
+      const left = (db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE project_id = ?`).get(project.id) as { n: number }).n;
+      assert.equal(left, 0, `${table} still has rows for the deleted project`);
+    }
+    assert.equal((db.prepare("PRAGMA foreign_key_check").all() as unknown[]).length, 0);
+    assert.equal((db.prepare("SELECT COUNT(*) AS n FROM chat_messages").get() as { n: number }).n, 0);
+  } finally {
+    await teardown(h);
+  }
+});
+
+test("deleteCascade covers every project-scoped table and every table hanging off one — a new one can't silently block deletes again", async () => {
+  const h = await setupHarness("coverage");
+  try {
+    const db = h.platform.db;
+    const source = (await import("node:fs")).readFileSync(join(process.cwd(), "src/persistence/repositories/project-repository.ts"), "utf8");
+    const body = source.slice(source.indexOf("deleteCascade(projectId: string): void {"));
+    const tables = (db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as { name: string }[])
+      .map((t) => t.name)
+      .filter((t) => !t.startsWith("sqlite_") && !t.startsWith("_"));
+    const fks = new Map(tables.map((t) => [t, (db.prepare(`PRAGMA foreign_key_list(${t})`).all() as { table: string }[]).map((f) => f.table)]));
+
+    // Project-scoped: has project_id, or references (directly or transitively) a project-scoped table.
+    const scoped = new Set(tables.filter((t) => (db.prepare(`PRAGMA table_info(${t})`).all() as { name: string }[]).some((c) => c.name === "project_id")));
+    scoped.add("projects");
+    let grew = true;
+    while (grew) {
+      grew = false;
+      for (const t of tables) {
+        if (!scoped.has(t) && fks.get(t)!.some((parent) => scoped.has(parent) && parent !== "users")) {
+          scoped.add(t);
+          grew = true;
+        }
+      }
+    }
+    const missing = [...scoped].filter((t) => !body.includes(`FROM ${t} `) && !body.includes(`FROM ${t}"`));
+    assert.deepEqual(missing, [], `deleteCascade doesn't delete from: ${missing.join(", ")}`);
+  } finally {
+    await teardown(h);
+  }
+});
+
+test("deleteCascade is all-or-nothing: if the final delete fails, nothing has been removed", async () => {
+  const h = await setupHarness("atomic");
+  try {
+    const client = await registerClient(h.baseUrl, "atomic");
+    const { project } = await json<{ project: { id: string } }>(
+      await client.fetch("/projects", { method: "POST", body: JSON.stringify({ name: "Fixture", sourceControlProvider: "local-git", repoUrl: h.repoPath }) }),
+    );
+    await client.fetch(`/projects/${project.id}/chat/messages`);
+
+    h.platform.db.exec("CREATE TRIGGER block_project_delete BEFORE DELETE ON projects BEGIN SELECT RAISE(ABORT, 'simulated failure'); END;");
+    assert.throws(() => h.platform.projects.deleteCascade(project.id), /simulated failure/);
+
+    const count = (sql: string) => (h.platform.db.prepare(sql).get(project.id) as { n: number }).n;
+    assert.equal(count("SELECT COUNT(*) AS n FROM chat_conversations WHERE project_id = ?"), 1, "the conversation was rolled back, not half-deleted");
+    assert.equal(count("SELECT COUNT(*) AS n FROM project_repos WHERE project_id = ?"), 1);
+    assert.equal(count("SELECT COUNT(*) AS n FROM projects WHERE id = ?"), 1);
+  } finally {
+    await teardown(h);
+  }
+});

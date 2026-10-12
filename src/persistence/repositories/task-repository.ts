@@ -5,6 +5,7 @@ interface TaskRow {
   id: string;
   tenant_id: string;
   project_id: string;
+  repository_id: string | null;
   title: string;
   goal: string;
   status: string;
@@ -32,6 +33,7 @@ function rowToTask(row: TaskRow): Task {
     id: row.id,
     tenantId: row.tenant_id,
     projectId: row.project_id,
+    repositoryId: row.repository_id,
     title: row.title,
     goal: row.goal,
     status: row.status as TaskStatus,
@@ -73,7 +75,7 @@ export function isActiveExistingBranchConstraintViolation(err: unknown): boolean
   return (
     err instanceof Error &&
     (err as { code?: string }).code === "ERR_SQLITE_ERROR" &&
-    /UNIQUE constraint failed:\s*tasks\.project_id,\s*tasks\.working_branch/i.test(err.message)
+    /UNIQUE constraint failed:\s*tasks\.project_id,\s*(tasks\.repository_id,\s*)?tasks\.working_branch/i.test(err.message)
   );
 }
 
@@ -91,15 +93,19 @@ export class TaskRepository {
     this.db
       .prepare(
         `INSERT INTO tasks
-          (id, tenant_id, project_id, title, goal, status, task_record_json,
+          (id, tenant_id, project_id, repository_id, title, goal, status, task_record_json,
            current_agent_run_id, workspace_id, lock_owner, lock_expires_at,
            created_by, created_at, updated_at, started_at, completed_at,
            cancel_requested_at, cancel_requested_by, branch_mode, working_branch, base_branch)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?,
+           COALESCE(?, (SELECT id FROM project_repos WHERE project_id = ? ORDER BY created_at, rowid LIMIT 1)),
+           ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         task.id,
         task.tenantId,
+        task.projectId,
+        task.repositoryId ?? null,
         task.projectId,
         task.title,
         task.goal,
@@ -382,16 +388,17 @@ export class TaskRepository {
    */
   updateBacklogConfig(
     id: string,
-    fields: { title: string; goal: string; branchMode: BranchMode; workingBranch: string | null; baseBranch: string | null },
+    fields: { title: string; goal: string; branchMode: BranchMode; workingBranch: string | null; baseBranch: string | null; repositoryId?: string | null },
     now: string,
   ): boolean {
     const result = this.db
       .prepare(
         `UPDATE tasks
-         SET title = ?, goal = ?, branch_mode = ?, working_branch = ?, base_branch = ?, updated_at = ?
+         SET title = ?, goal = ?, branch_mode = ?, working_branch = ?, base_branch = ?,
+             repository_id = COALESCE(?, repository_id), updated_at = ?
          WHERE id = ? AND status = 'BACKLOG'`,
       )
-      .run(fields.title, fields.goal, fields.branchMode, fields.workingBranch, fields.baseBranch, now, id);
+      .run(fields.title, fields.goal, fields.branchMode, fields.workingBranch, fields.baseBranch, fields.repositoryId ?? null, now, id);
     return result.changes > 0;
   }
 
@@ -404,14 +411,16 @@ export class TaskRepository {
    * project-scoped table scan is fine at this MVP's scale — see
    * /docs/MVP_SCOPE.md.
    */
-  listActiveUsingExistingBranch(projectId: string, branch: string): Task[] {
+  listActiveUsingExistingBranch(projectId: string, branch: string, repositoryId: string | null = null): Task[] {
+    // Scoped to one repository (TD-62): the same branch name in two repositories is two different branches.
     const rows = this.db
       .prepare(
         `SELECT * FROM tasks
          WHERE project_id = ? AND branch_mode = 'existing' AND working_branch = ?
+           AND (? IS NULL OR repository_id IS ?)
            AND status NOT IN ('DONE', 'FAILED', 'CANCELLED')`,
       )
-      .all(projectId, branch) as unknown as TaskRow[];
+      .all(projectId, branch, repositoryId, repositoryId) as unknown as TaskRow[];
     return rows.map(rowToTask);
   }
 

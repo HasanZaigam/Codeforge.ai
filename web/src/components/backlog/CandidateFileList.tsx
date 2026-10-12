@@ -1,3 +1,5 @@
+import { ToneBadge } from "../common/ToneBadge.js";
+
 /** Renders the platform's own verification of a model-claimed file path — the model's claim is never shown as fact. */
 export function repoCheckLabel(exists: boolean | null | undefined): string {
   if (exists === true) return "verified in repository";
@@ -6,16 +8,18 @@ export function repoCheckLabel(exists: boolean | null | undefined): string {
 }
 
 export function CandidateFileList({ files }: { files: Array<{ path: string; reason: string; existsInRepository: boolean | null | undefined }> }) {
-  if (files.length === 0) return <p className="field-hint">No candidate files were suggested.</p>;
+  if (files.length === 0) return <p className="text-sm text-muted-foreground">No candidate files were suggested.</p>;
   return (
-    <ul className="backlog-file-list">
+    <ul className="space-y-2">
       {files.map((f) => (
-        <li key={f.path}>
-          <code>{f.path}</code>{" "}
-          <span className={`backlog-check ${f.existsInRepository === true ? "ok" : f.existsInRepository === false ? "missing" : "unchecked"}`}>
-            {repoCheckLabel(f.existsInRepository)}
-          </span>
-          {f.reason && <div className="field-hint">{f.reason}</div>}
+        <li key={f.path} className="space-y-1 text-sm">
+          <div className="flex flex-wrap items-center gap-2">
+            <code>{f.path}</code>{" "}
+            <ToneBadge tone={f.existsInRepository === true ? "success" : f.existsInRepository === false ? "danger" : "neutral"}>
+              {repoCheckLabel(f.existsInRepository)}
+            </ToneBadge>
+          </div>
+          {f.reason && <div className="text-muted-foreground">{f.reason}</div>}
         </li>
       ))}
     </ul>

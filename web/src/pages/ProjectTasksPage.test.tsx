@@ -103,8 +103,8 @@ describe("ProjectTasksPage", () => {
     renderApp("/projects/p1/tasks");
     await waitFor(() => expect(screen.getByText("Backlog task")).toBeInTheDocument());
 
-    expect(screen.getByRole("button", { name: /▶ Start Task/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /✎ Edit/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Start Task$/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Edit$/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /^Cancel task$/i })).toBeInTheDocument();
   });
 
@@ -115,10 +115,10 @@ describe("ProjectTasksPage", () => {
     renderApp("/projects/p1/tasks");
     await waitFor(() => expect(screen.getByText("Backlog task")).toBeInTheDocument());
 
-    await userEvent.click(screen.getByRole("button", { name: /▶ Start Task/i }));
+    await userEvent.click(screen.getByRole("button", { name: /^Start Task$/i }));
 
     expect(mockedTasksApi.start).toHaveBeenCalledWith("t0");
-    await waitFor(() => expect(screen.queryByRole("button", { name: /▶ Start Task/i })).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByRole("button", { name: /^Start Task$/i })).not.toBeInTheDocument());
     expect(screen.getByText("Backlog task")).toBeInTheDocument();
   });
 
@@ -169,7 +169,7 @@ describe("ProjectTasksPage", () => {
     renderApp("/projects/p1/tasks");
     await waitFor(() => expect(screen.getByText("Backlog task")).toBeInTheDocument());
 
-    await userEvent.click(screen.getByRole("button", { name: /✎ Edit/i }));
+    await userEvent.click(screen.getByRole("button", { name: /^Edit$/i }));
 
     const dialog = screen.getByRole("dialog");
     expect(within(dialog).getByLabelText(/title/i)).toHaveValue("Backlog task");
@@ -183,6 +183,7 @@ describe("ProjectTasksPage", () => {
     await userEvent.click(within(dialog).getByRole("button", { name: /^Save changes$/i }));
 
     expect(mockedTasksApi.edit).toHaveBeenCalledWith("t0", {
+      repositoryId: "p1-repo", // the project's one repository, now always explicit
       title: "Updated title",
       description: "Original description",
       branchMode: "new",
@@ -219,8 +220,9 @@ describe("ProjectTasksPage", () => {
     await waitFor(() => expect(screen.getByText("Fix OTP timeout login")).toBeInTheDocument());
     const backlogColumn = document.querySelectorAll(".board-column")[0]!;
     expect(within(backlogColumn as HTMLElement).getByText("Fix OTP timeout login")).toBeInTheDocument();
-    expect(within(backlogColumn as HTMLElement).getByText("▶ Start Task")).toBeInTheDocument();
+    expect(within(backlogColumn as HTMLElement).getByText("Start Task")).toBeInTheDocument();
     expect(mockedProjectsApi.createTask).toHaveBeenCalledWith("p1", {
+      repositoryId: "p1-repo",
       title: "Fix OTP timeout login",
       description: "Client reports OTP login fails after session timeout.",
       branchMode: "new",
@@ -266,11 +268,11 @@ describe("ProjectTasksPage", () => {
     renderApp("/projects/p1/tasks");
     await waitFor(() => expect(screen.getByText("Dependent task")).toBeInTheDocument());
 
-    await userEvent.click(screen.getByRole("button", { name: /▶ Start Task/i }));
+    await userEvent.click(screen.getByRole("button", { name: /^Start Task$/i }));
 
     await waitFor(() => expect(screen.getByText(/dependency "Write migration" is not completed/i)).toBeInTheDocument());
     expect(screen.getByText("Dependent task")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /▶ Start Task/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Start Task$/i })).toBeInTheDocument();
   });
 
   describe("mobile representation", () => {

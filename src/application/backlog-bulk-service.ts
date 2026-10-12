@@ -18,6 +18,7 @@ import type { TaskProposalRepository } from "../persistence/repositories/task-pr
 import { assertProjectAccess } from "./authorization.js";
 import type { BacklogService } from "./backlog-service.js";
 import { InvalidOperationError, NotFoundError, InvalidRequestError } from "./errors.js";
+import { resolveRepositoryFor } from "./repository-resolution.js";
 
 export interface BulkDeps {
   db: DatabaseSync;
@@ -129,8 +130,15 @@ export class BacklogBulkService {
    * the import, every row's outcome and one BacklogItem per newly accepted row. A source row already imported (same source name + bug id)
    * is linked, not duplicated — and never modified. Nothing is analysed: the user starts analysis explicitly.
    */
-  confirmImport(projectId: string, csv: string, opts: { sourceName: string; mapping?: Partial<Record<CanonicalField, string>> }, actorId: string): { import: BacklogImportRecord; rows: BacklogImportRowRecord[] } {
+  confirmImport(
+    projectId: string,
+    csv: string,
+    opts: { sourceName: string; mapping?: Partial<Record<CanonicalField, string>>; repositoryId?: string | null },
+    actorId: string,
+  ): { import: BacklogImportRecord; rows: BacklogImportRowRecord[] } {
     const project = assertProjectAccess(this.d.projects, projectId, actorId);
+    // Every row of one import concerns the same repository (TD-62); absent: the project's primary repository.
+    if (opts.repositoryId) resolveRepositoryFor(this.d.projects.listRepos(project.id), opts.repositoryId);
     const sourceName = opts.sourceName.trim();
     if (sourceName === "" || sourceName.length > 100) throw new InvalidRequestError("sourceName must be 1–100 characters");
     const preview = buildPreview(csv, { mapping: opts.mapping });
@@ -173,7 +181,7 @@ export class BacklogBulkService {
         metadata.sourceName = sourceName;
         if (r.bugId) metadata.bugId = r.bugId;
         this.d.items.insert({
-          id: itemId, projectId: project.id, externalRef: ref, title: r.title!, description: r.description!, source: "import", status: "NEW", createdBy: actorId, createdAt: ts, updatedAt: ts,
+          id: itemId, projectId: project.id, repositoryId: opts.repositoryId ?? null, externalRef: ref, title: r.title!, description: r.description!, source: "import", status: "NEW", createdBy: actorId, createdAt: ts, updatedAt: ts,
           importId, sourceRow: r.rowNumber, metadata,
         });
         this.d.events.append(project.id, itemId, "BACKLOG_ITEM_IMPORTED", { importId, rowNumber: r.rowNumber, sourceKey: r.sourceKey }, ts);
@@ -335,7 +343,8 @@ export class BacklogBulkService {
     return withVerification(analysis, this.d.claimVerifications.listForAnalysis(analysis.id), project);
   }
 
-  private row(item: BacklogItem, project: Project, rels: BacklogRelationship[]): ReviewRow {
+  private row(item: BacklogItem, projectView: Project, rels: BacklogRelationship[]): ReviewRow {
+    const project = this.d.projects.findScoped(item.projectId, item.repositoryId) ?? projectView; // the item's own repository's checks (TD-62)
     const latest = this.d.analyses.findLatestForItem(item.id);
     const succeeded = latest?.status === "succeeded" ? latest : this.d.analyses.findLatestSucceededForItem(item.id);
     const readable = this.readable(succeeded, project);

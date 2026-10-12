@@ -4,6 +4,15 @@ import { useProjectTasks } from "../hooks/useProjectTasks.js";
 import { STATUS_META, BOARD_COLUMNS, CONDITIONAL_BOARD_COLUMNS } from "../lib/statusMeta.js";
 import type { TaskStatus } from "../api/index.js";
 import { ChatPanel } from "../components/chat/ChatPanel.js";
+import { ProjectTokenMeter } from "../components/projects/ProjectTokenMeter.js";
+import { useState } from "react";
+import { StatusBadge } from "../components/common/StatusBadge.js";
+import { TONE_DOT } from "../lib/tone.js";
+import { ArrowRightIcon, FolderGit2Icon } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { buttonVariants } from "@/components/ui/button";
+import { Card, CardAction, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { cn } from "@/lib/utils";
 
 /** Statuses that genuinely need a human to look at them, in priority order — everything else is just a count. */
 const ATTENTION_STATUSES: TaskStatus[] = ["NEEDS_INPUT", "REVIEW", "FAILED"];
@@ -17,6 +26,9 @@ const ATTENTION_STATUSES: TaskStatus[] = ["NEEDS_INPUT", "REVIEW", "FAILED"];
  */
 export function ProjectOverviewPage() {
   const { project } = useOutletContext<ProjectOutletContext>();
+  const repos = project.repositories ?? [];
+  // Bumped after every Chat reply so the token meter reflects what that reply used.
+  const [usageVersion, setUsageVersion] = useState(0);
   const { tasks, error: tasksError, loading: tasksLoading } = useProjectTasks(project.id);
 
   const statusCounts = new Map<TaskStatus, number>();
@@ -29,74 +41,128 @@ export function ProjectOverviewPage() {
     .sort((a, b) => ATTENTION_STATUSES.indexOf(a.status) - ATTENTION_STATUSES.indexOf(b.status));
 
   return (
-    <div className="overview-page">
-      <div className="overview-meta">
-        <span className="status-badge tone-neutral">{project.sourceControlProvider}</span>
-        <span className="status-badge tone-neutral">branch: {project.defaultBranch}</span>
+    <div className="space-y-4">
+      <ProjectTokenMeter projectId={project.id} refreshKey={usageVersion} />
+
+      <div className="flex flex-wrap gap-2">
+        {repos.length === 1 && (
+          <>
+            <Badge variant="secondary">{repos[0]!.sourceControlProvider}</Badge>
+            <Badge variant="secondary">branch: {repos[0]!.defaultBranch}</Badge>
+          </>
+        )}
+        {repos.length > 1 &&
+          repos.map((r) => (
+            <Badge key={r.id} variant="outline" title={r.repoUrl}>
+              <FolderGit2Icon data-icon="inline-start" />
+              {r.name}
+            </Badge>
+          ))}
       </div>
 
-      {/* DOM order is Chat-first (matches the mobile stacking order: header → Chat → Tasks → Workspace);
-          on desktop, .overview-main reverses the visual order via flex-direction so Chat lands on the
-          right (65%) and Tasks/Workspace form the left column (35%) — see index.css. */}
-      <div className="overview-main">
-        <section className="overview-chat-col">
-          <div className="overview-chat-card">
-            <ChatPanel projectId={project.id} />
+      {repos.length === 0 && (
+        <div className="flex flex-col gap-3 rounded-3xl border border-dashed p-5 sm:flex-row sm:items-center sm:justify-between">
+          <div className="space-y-1">
+            <p className="font-medium">Connect a repository to start</p>
+            <p className="text-sm text-muted-foreground">
+              One repository for a monorepo, or each one the project is split across. Tasks need a repository to work in.
+            </p>
           </div>
+          <Link to={`/projects/${project.id}/settings`} className={buttonVariants()}>
+            Connect repository
+          </Link>
+        </div>
+      )}
+
+      {/* DOM order is Chat-first (matches the mobile stacking order: Chat → Tasks → Workspace); on
+          desktop the grid puts Chat in the wide left column and Tasks/Workspace in a narrow right rail. */}
+      <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_340px]">
+        <section className="overflow-hidden rounded-4xl bg-card ring-1 ring-foreground/10 lg:sticky lg:top-6">
+          <ChatPanel projectId={project.id} onReply={() => setUsageVersion((v) => v + 1)} />
         </section>
 
-        <div className="overview-left-col">
-          <section className="overview-block overview-block-tasks">
-            <div className="overview-block-header">
-              <h3>Tasks</h3>
-              <Link to={`/projects/${project.id}/tasks`} className="btn-link">
-                View all →
-              </Link>
-            </div>
+        <div className="space-y-4">
+          <Card className="overview-block">
+            <CardHeader>
+              <CardTitle>
+                <h3>Tasks</h3>
+              </CardTitle>
+              <CardAction>
+                <Link to={`/projects/${project.id}/tasks`} className={buttonVariants({ variant: "ghost", size: "sm" })}>
+                  View all
+                  <ArrowRightIcon data-icon="inline-end" />
+                </Link>
+              </CardAction>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {tasksLoading && <p className="text-sm text-muted-foreground">Loading task summary…</p>}
+              {tasksError && !tasksLoading && (
+                <p className="text-sm text-muted-foreground">Couldn't load a task summary right now.</p>
+              )}
+              {!tasksLoading && !tasksError && (tasks?.length ?? 0) === 0 && (
+                <p className="text-sm text-muted-foreground">No tasks yet.</p>
+              )}
 
-            {tasksLoading && <p className="field-hint">Loading task summary…</p>}
-            {tasksError && !tasksLoading && <p className="field-hint">Couldn't load a task summary right now.</p>}
-            {!tasksLoading && !tasksError && (tasks?.length ?? 0) === 0 && <p className="field-hint">No tasks yet.</p>}
-
-            {!tasksLoading && !tasksError && (tasks?.length ?? 0) > 0 && (
-              <>
-                <div className="overview-status-pills">
-                  {statusesToShow.map((status) => (
-                    <span key={status} className={`overview-status-pill tone-${STATUS_META[status].tone}`}>
-                      {STATUS_META[status].label} <strong>{statusCounts.get(status) ?? 0}</strong>
-                    </span>
-                  ))}
-                </div>
-
-                {attentionTasks.length > 0 ? (
-                  <div>
-                    <p className="overview-attention-label">Needs attention ({attentionTasks.length})</p>
-                    <ul className="overview-attention-list">
-                      {attentionTasks.map((t) => (
-                        <li key={t.id}>
-                          <span className={`status-badge tone-${STATUS_META[t.status].tone}`}>{STATUS_META[t.status].label}</span>
-                          <Link to={`/tasks/${t.id}`}>{t.title}</Link>
-                        </li>
-                      ))}
-                    </ul>
+              {!tasksLoading && !tasksError && (tasks?.length ?? 0) > 0 && (
+                <>
+                  <div className="grid grid-cols-2 gap-2">
+                    {statusesToShow.map((status) => (
+                      <span
+                        key={status}
+                        className="overview-status-pill flex items-center justify-between gap-2 rounded-xl border px-3 py-2 text-sm"
+                      >
+                        <span className="flex items-center gap-2 text-muted-foreground">
+                          <span className={cn("size-2 rounded-full", TONE_DOT[STATUS_META[status].tone])} aria-hidden="true" />
+                          {STATUS_META[status].label}
+                        </span>
+                        <strong className="tabular-nums">{statusCounts.get(status) ?? 0}</strong>
+                      </span>
+                    ))}
                   </div>
-                ) : (
-                  <p className="field-hint">Nothing needs your attention right now.</p>
-                )}
-              </>
-            )}
-          </section>
 
-          <section className="overview-block overview-block-workspace">
-            <div className="overview-block-header">
-              <h3>Workspace</h3>
-              <Link to={`/projects/${project.id}/workspace`} className="btn-link">
-                Open →
-              </Link>
-            </div>
-            <p className="overview-workspace-label">Project context</p>
-            <p className="field-hint">Architecture, rules and validation guidance are available to CodeForge.</p>
-          </section>
+                  {attentionTasks.length > 0 ? (
+                    <div className="space-y-2">
+                      <p className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
+                        Needs attention ({attentionTasks.length})
+                      </p>
+                      <ul className="space-y-1">
+                        {attentionTasks.map((t) => (
+                          <li key={t.id} className="flex items-center gap-2 rounded-lg px-1 py-1 text-sm hover:bg-muted/60">
+                            <StatusBadge status={t.status} />
+                            <Link className="min-w-0 truncate hover:underline" to={`/tasks/${t.id}`}>
+                              {t.title}
+                            </Link>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : (
+                    <p className="text-sm text-muted-foreground">Nothing needs your attention right now.</p>
+                  )}
+                </>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card className="overview-block">
+            <CardHeader>
+              <CardTitle>
+                <h3>Workspace</h3>
+              </CardTitle>
+              <CardAction>
+                <Link to={`/projects/${project.id}/workspace`} className={buttonVariants({ variant: "ghost", size: "sm" })}>
+                  Open
+                  <ArrowRightIcon data-icon="inline-end" />
+                </Link>
+              </CardAction>
+            </CardHeader>
+            <CardContent className="space-y-1">
+              <p className="text-sm font-medium">Project context</p>
+              <p className="text-sm text-muted-foreground">
+                Architecture, rules and validation guidance are available to CodeForge.
+              </p>
+            </CardContent>
+          </Card>
         </div>
       </div>
     </div>

@@ -7,6 +7,7 @@ import { LoadingState } from "../common/LoadingState.js";
 import { ErrorState } from "../common/ErrorState.js";
 import { EmptyState } from "../common/EmptyState.js";
 import { DuplicateGroupsPanel } from "./DuplicateGroupsPanel.js";
+import { Button } from "@/components/ui/button";
 
 const FILTERS = Object.keys(REVIEW_FILTER_LABELS) as ReviewFilterKey[];
 const ANALYSIS_LABELS: Record<ReviewRowDTO["analysis"]["state"], string> = { NONE: "Not analyzed", QUEUED: "Queued", RUNNING: "Analyzing…", SUCCEEDED: "Analyzed", FAILED: "Failed", CANCELLED: "Cancelled" };
@@ -50,10 +51,9 @@ export function BulkReviewPanel({ projectId, onOpenImport }: { projectId: string
 
   return (
     <div>
-      <div className="bulk-toolbar">
-        <button className="btn btn-secondary" onClick={onOpenImport}>Import bugs</button>
-        <button
-          className="btn btn-primary"
+      <div className="mb-4 flex flex-wrap gap-2">
+        <Button variant="outline" type="button" onClick={onOpenImport}>Import bugs</Button>
+        <Button type="button"
           disabled={busy || ids.length === 0}
           onClick={() => act(async () => {
             const { bulk, created } = await bulkBacklogApi.startAnalysis(projectId, { itemIds: ids });
@@ -62,39 +62,39 @@ export function BulkReviewPanel({ projectId, onOpenImport }: { projectId: string
           })}
         >
           Analyze selected ({ids.length})
-        </button>
+        </Button>
         {bulkId && (
-          <button className="btn btn-secondary" disabled={busy} onClick={() => act(async () => { const b = await bulkBacklogApi.cancelBulk(bulkId); return `Cancel requested — ${b.counts.cancelled} cancelled so far; completed analyses are kept.`; })}>
+          <Button variant="outline" type="button" disabled={busy} onClick={() => act(async () => { const b = await bulkBacklogApi.cancelBulk(bulkId); return `Cancel requested — ${b.counts.cancelled} cancelled so far; completed analyses are kept.`; })}>
             Cancel bulk analysis
-          </button>
+          </Button>
         )}
       </div>
 
-      <div className="bulk-filters" role="tablist" aria-label="Review filter">
+      <div className="mb-4 flex gap-1 overflow-x-auto rounded-full bg-muted p-1" role="tablist" aria-label="Review filter">
         {FILTERS.map((f) => (
-          <button key={f} role="tab" aria-selected={filter === f} className={`btn ${filter === f ? "btn-primary" : "btn-secondary"}`} onClick={() => { setFilter(f); setSelected(new Set()); }}>
+          <button key={f} type="button" role="tab" aria-selected={filter === f} className="shrink-0 rounded-full px-3 py-1.5 text-sm whitespace-nowrap text-muted-foreground transition-colors hover:text-foreground aria-selected:bg-background aria-selected:text-foreground aria-selected:shadow-sm" onClick={() => { setFilter(f); setSelected(new Set()); }}>
             {REVIEW_FILTER_LABELS[f]} {data ? `(${data.counts[f]})` : ""}
           </button>
         ))}
       </div>
 
-      {message && <p role="status" className="field-hint">{message}</p>}
+      {message && <p role="status" className="text-sm text-muted-foreground">{message}</p>}
       {loading && <LoadingState label="Loading review…" />}
       {error && !loading && <ErrorState message="Couldn't load the bulk review." onRetry={refetch} />}
       {!loading && !error && rows.length === 0 && <EmptyState message={filter === "all" ? "No backlog items yet. Import a bug sheet to get started." : "No items match this filter."} />}
 
       {rows.length > 0 && (
         <>
-          <div className="bulk-actions" aria-label="Actions for selected items">
-            <span className="field-hint">{ids.length} selected — actions apply to each item independently and never start a task:</span>{" "}
-            <button className="btn btn-secondary" disabled={busy || ids.length === 0} onClick={() => runAction("generate_proposals", "Proposals")}>Generate proposals</button>{" "}
-            <button className="btn btn-secondary" disabled={busy || ids.length === 0} onClick={() => runAction("approve_proposals", "Approve")}>Approve proposals</button>{" "}
-            <button className="btn btn-secondary" disabled={busy || ids.length === 0} onClick={() => runAction("reject_proposals", "Reject")}>Reject proposals</button>{" "}
-            <button className="btn btn-secondary" disabled={busy || ids.length === 0} onClick={() => runAction("convert_proposals", "Convert")}>Convert approved to tasks</button>{" "}
-            <button className="btn btn-secondary" disabled={busy || ids.length === 0} onClick={() => runAction("dismiss_duplicates", "Dismiss duplicates")}>Dismiss duplicate proposals</button>
+          <div className="mb-4 flex flex-wrap items-center gap-2 rounded-2xl border bg-muted/30 p-3" aria-label="Actions for selected items">
+            <span className="w-full text-sm text-muted-foreground">{ids.length} selected — actions apply to each item independently and never start a task:</span>{" "}
+            <Button variant="outline" type="button" disabled={busy || ids.length === 0} onClick={() => runAction("generate_proposals", "Proposals")}>Generate proposals</Button>{" "}
+            <Button variant="outline" type="button" disabled={busy || ids.length === 0} onClick={() => runAction("approve_proposals", "Approve")}>Approve proposals</Button>{" "}
+            <Button variant="outline" type="button" disabled={busy || ids.length === 0} onClick={() => runAction("reject_proposals", "Reject")}>Reject proposals</Button>{" "}
+            <Button variant="outline" type="button" disabled={busy || ids.length === 0} onClick={() => runAction("convert_proposals", "Convert")}>Convert approved to tasks</Button>{" "}
+            <Button variant="outline" type="button" disabled={busy || ids.length === 0} onClick={() => runAction("dismiss_duplicates", "Dismiss duplicates")}>Dismiss duplicate proposals</Button>
           </div>
-          <div className="table-scroll">
-            <table className="bulk-table">
+          <div className="overflow-x-auto">
+            <table className="data-table">
               <thead>
                 <tr>
                   <th><input type="checkbox" aria-label="Select all" checked={selected.size === rows.length} onChange={() => setSelected(selected.size === rows.length ? new Set() : new Set(rows.map((r) => r.itemId)))} /></th>
@@ -106,21 +106,21 @@ export function BulkReviewPanel({ projectId, onOpenImport }: { projectId: string
                   <tr key={r.itemId}>
                     <td><input type="checkbox" aria-label={`Select ${r.ref ?? r.title}`} checked={selected.has(r.itemId)} onChange={() => toggle(r.itemId)} /></td>
                     <td>
-                      <Link to={r.itemId}>{r.title}</Link>
-                      <div className="field-hint">{r.ref}</div>
+                      <Link className="font-medium hover:text-primary hover:underline" to={r.itemId}>{r.title}</Link>
+                      <div className="text-sm text-muted-foreground">{r.ref}</div>
                     </td>
                     <td>{r.module ?? "—"}</td>
                     <td>
                       {ANALYSIS_LABELS[r.analysis.state]}
-                      {r.analysis.state === "FAILED" && <div className="field-hint danger">{r.analysis.failureCategory ?? "failed"}</div>}
+                      {r.analysis.state === "FAILED" && <div className="text-xs text-destructive">{r.analysis.failureCategory ?? "failed"}</div>}
                     </td>
                     <td>{r.review.state ? REVIEW_STATE_LABELS[r.review.state].label : "—"}</td>
                     <td>
                       {r.analysis.state === "SUCCEEDED" ? (
                         <>
                           <div data-fact="implementation">{IMPLEMENTATION_LABELS[r.review.implementation]}</div>
-                          <div data-fact="flow" className="field-hint">{r.flow ? FLOW_LABELS[r.flow].split(" (")[0] : "Flow: not analysed"}</div>
-                          <div data-fact="behavior" className="field-hint">{BEHAVIOR_LABELS[r.review.behavior]}</div>
+                          <div data-fact="flow" className="text-sm text-muted-foreground">{r.flow ? FLOW_LABELS[r.flow].split(" (")[0] : "Flow: not analysed"}</div>
+                          <div data-fact="behavior" className="text-sm text-muted-foreground">{BEHAVIOR_LABELS[r.review.behavior]}</div>
                         </>
                       ) : "—"}
                     </td>
@@ -137,7 +137,7 @@ export function BulkReviewPanel({ projectId, onOpenImport }: { projectId: string
             </table>
           </div>
           {data && (
-            <p className="field-hint">
+            <p className="text-sm text-muted-foreground">
               Usage across {data.usage.analyses} analyses: {data.usage.withReportedUsage} reported ({data.usage.inputTokens} in / {data.usage.outputTokens} out tokens), {data.usage.unavailable} unavailable
               {data.usage.estimatedCost.length > 0 ? `; provider-reported estimate ${data.usage.estimatedCost.map((c) => `${c.amount.toFixed(4)} ${c.currency} (${c.analysesWithEstimate} analyses)`).join(", ")}` : "; no cost estimate was supplied"}.
             </p>

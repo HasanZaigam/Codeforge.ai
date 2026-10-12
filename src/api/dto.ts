@@ -1,4 +1,4 @@
-import type { HumanInputRequest, Project, ProjectCommands, ProjectWorkspace, Task, TaskEvent, TaskEventType, User } from "../domain/types.js";
+import type { HumanInputRequest, Project, ProjectCommands, ProjectRepo, ProjectWorkspace, Task, TaskEvent, TaskEventType, User } from "../domain/types.js";
 import type { ProjectContextManifest } from "../project-workspace/project-context-manifest.js";
 import type { BranchStateSummary } from "../reporting/branch-state.js";
 import type { DependencyStatus } from "../persistence/repositories/task-dependency-repository.js";
@@ -23,9 +23,43 @@ export function toUserDTO(user: User): UserDTO {
   return { id: user.id, email: user.email, name: user.name, createdAt: user.createdAt };
 }
 
+/** One repository of a project (TD-62). */
+export interface ProjectRepoDTO {
+  id: string;
+  projectId: string;
+  name: string;
+  repoUrl: string;
+  defaultBranch: string;
+  sourceControlProvider: string;
+  owner: string | null;
+  repo: string | null;
+  commands: ProjectCommands | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export function toProjectRepoDTO(repo: ProjectRepo): ProjectRepoDTO {
+  return {
+    id: repo.id,
+    projectId: repo.projectId,
+    name: repo.name,
+    repoUrl: repo.repoUrl,
+    defaultBranch: repo.defaultBranch,
+    sourceControlProvider: repo.sourceControlProvider,
+    owner: repo.owner,
+    repo: repo.repo,
+    commands: repo.commands,
+    createdAt: repo.createdAt,
+    updatedAt: repo.updatedAt,
+  };
+}
+
 export interface ProjectDTO {
   id: string;
   name: string;
+  /** Every repository connected to the project, primary first (TD-62). Empty for a project with none yet. */
+  repositories: ProjectRepoDTO[];
+  /** The fields below describe the PRIMARY repository (empty when there is none) — kept for older clients. */
   repoUrl: string;
   defaultBranch: string;
   codingEngine: string;
@@ -39,10 +73,11 @@ export interface ProjectDTO {
   updatedAt: string;
 }
 
-export function toProjectDTO(project: Project): ProjectDTO {
+export function toProjectDTO(project: Project, repositories: ProjectRepo[]): ProjectDTO {
   return {
     id: project.id,
     name: project.name,
+    repositories: repositories.map(toProjectRepoDTO),
     repoUrl: project.repoUrl,
     defaultBranch: project.defaultBranch,
     codingEngine: project.codingEngine,
@@ -98,6 +133,8 @@ export function toProjectContextDTO(manifest: ProjectContextManifest): ProjectCo
 export interface TaskDTO {
   id: string;
   projectId: string;
+  /** The project repository this task works in (TD-62). */
+  repositoryId: string | null;
   title: string;
   description: string;
   status: Task["status"];
@@ -212,6 +249,7 @@ export function toTaskDTO(task: Task, latestEvent: TaskEvent | undefined, depend
   return {
     id: task.id,
     projectId: task.projectId,
+    repositoryId: task.repositoryId ?? null,
     title: task.title,
     description: task.goal,
     status: task.status,

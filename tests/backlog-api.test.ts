@@ -356,13 +356,13 @@ test("DTOs expose only the public shape — no creator id, claim/lease columns, 
 
     const raw = await h.a.fetch(`/backlog/${item.id}`);
     const detail = await body<any>(raw);
-    assert.deepEqual(Object.keys(detail.item).sort(), ["createdAt", "description", "externalRef", "id", "projectId", "source", "status", "title", "updatedAt"]);
+    assert.deepEqual(Object.keys(detail.item).sort(), ["createdAt", "description", "externalRef", "id", "projectId", "repositoryId", "source", "status", "title", "updatedAt"]);
     const serialized = JSON.stringify(detail) + JSON.stringify(await body(await h.a.fetch(`/task-proposals/${proposalId}`)));
     for (const forbidden of ["analysis_claim", "analysisClaim", "lease", "reserved", "conversion_claim", "createdBy", "decidedBy", "status_before"]) {
       assert.ok(!serialized.includes(forbidden), `${forbidden} must not be exposed`);
     }
     const list = await body<{ items: Array<Record<string, unknown>> }>(await h.a.fetch(`/projects/${h.projectId}/backlog`));
-    assert.deepEqual(Object.keys(list.items[0]!).sort(), ["createdAt", "description", "externalRef", "id", "latestAnalysis", "projectId", "proposal", "review", "source", "status", "title", "updatedAt"]);
+    assert.deepEqual(Object.keys(list.items[0]!).sort(), ["createdAt", "description", "externalRef", "id", "latestAnalysis", "projectId", "proposal", "repositoryId", "review", "source", "status", "title", "updatedAt"]);
   });
 });
 

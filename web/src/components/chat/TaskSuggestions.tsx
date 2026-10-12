@@ -3,6 +3,8 @@ import { Link } from "react-router-dom";
 import { chatApi } from "../../api/index.js";
 import type { ChatSuggestionDTO } from "../../api/types.js";
 import { ErrorState } from "../common/ErrorState.js";
+import { ListChecksIcon } from "lucide-react";
+import { Button } from "@/components/ui/button";
 
 /**
  * Rendered under an assistant message that started a real bulk analysis run (see `bulkJobId` on
@@ -57,51 +59,70 @@ export function TaskSuggestions({ projectId, bulkJobId }: { projectId: string; b
 
   if (!suggestions && !loading) {
     return (
-      <button type="button" className="btn btn-secondary" onClick={load}>
+      <Button type="button" variant="outline" size="sm" className="mt-1 w-fit" onClick={load}>
+        <ListChecksIcon data-icon="inline-start" />
         Show suggestions
-      </button>
+      </Button>
     );
   }
 
   return (
-    <div className="chat-suggestions">
-      {loading && <p className="field-hint">Loading suggestions…</p>}
+    <div className="mt-1 w-full space-y-3 rounded-2xl border bg-card p-3">
+      {loading && <p className="text-sm text-muted-foreground">Loading suggestions…</p>}
       {error && <ErrorState message={error} onRetry={load} />}
       {suggestions && suggestions.length === 0 && (
-        <p className="field-hint">No suggestions yet — analysis may still be running. Try again in a moment.</p>
+        <p className="text-sm text-muted-foreground">No suggestions yet — analysis may still be running. Try again in a moment.</p>
       )}
       {suggestions && suggestions.length > 0 && !result && (
         <>
-          <ul className="chat-suggestion-list">
+          <ul className="divide-y">
             {suggestions.map((s) => (
-              <li key={s.itemId} className="chat-suggestion-row">
-                <label>
-                  <input type="checkbox" checked={selected.has(s.itemId)} onChange={() => toggle(s.itemId)} />
-                  {s.ref && <span className="backlog-ref">{s.ref}</span>} <span>{s.title}</span>
+              <li key={s.itemId} className="flex items-center justify-between gap-3 py-2 first:pt-0">
+                <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-2.5 text-sm">
+                  <input
+                    type="checkbox"
+                    className="size-4 shrink-0 accent-primary"
+                    checked={selected.has(s.itemId)}
+                    onChange={() => toggle(s.itemId)}
+                  />
+                  {s.ref && <span className="shrink-0 font-mono text-xs text-muted-foreground">{s.ref}</span>}{" "}
+                  <span className="truncate">{s.title}</span>
                 </label>
-                <Link className="btn-link chat-suggestion-view-link" to={`/projects/${projectId}/backlog/${s.itemId}`}>
+                <Link className="shrink-0 text-xs font-medium text-primary hover:underline" to={`/projects/${projectId}/backlog/${s.itemId}`}>
                   View
                 </Link>
               </li>
             ))}
           </ul>
-          <div className="chat-suggestion-actions">
-            <button type="button" className="btn btn-primary" disabled={creating || selected.size === 0} onClick={() => createSelected([...selected])}>
+          <div className="flex flex-wrap gap-2">
+            <Button type="button" size="sm" disabled={creating || selected.size === 0} onClick={() => createSelected([...selected])}>
               {creating ? "Creating…" : `Create selected tasks (${selected.size})`}
-            </button>{" "}
-            <button type="button" className="btn btn-secondary" disabled={creating} onClick={() => createSelected(suggestions.map((s) => s.itemId))}>
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={creating}
+              onClick={() => createSelected(suggestions.map((s) => s.itemId))}
+            >
               Create all
-            </button>
+            </Button>
           </div>
-          <p className="field-hint">Nothing is created until you choose one of the buttons above — new tasks land in Tasks → BACKLOG, not started.</p>
+          <p className="text-xs text-muted-foreground">
+            Nothing is created until you choose one of the buttons above — new tasks land in Tasks → BACKLOG, not started.
+          </p>
         </>
       )}
       {result && (
-        <p role="status" className="backlog-success">
+        <p role="status" className="text-sm text-tone-success">
           {result.createdTaskIds.length === 0
             ? "No tasks were created."
             : `${result.createdTaskIds.length} task${result.createdTaskIds.length === 1 ? "" : "s"} created in `}
-          {result.createdTaskIds.length > 0 && <Link to={`/projects/${projectId}/tasks`}>Tasks → BACKLOG</Link>}
+          {result.createdTaskIds.length > 0 && (
+            <Link className="font-medium underline underline-offset-4" to={`/projects/${projectId}/tasks`}>
+              Tasks → BACKLOG
+            </Link>
+          )}
           {result.createdTaskIds.length > 0 ? "." : ""}
         </p>
       )}

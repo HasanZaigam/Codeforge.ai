@@ -1,130 +1,150 @@
-import { useState } from "react";
-import { useNavigate, useOutletContext } from "react-router-dom";
+import { useEffect, useState } from "react";
+import { useLocation, useNavigate, useOutletContext } from "react-router-dom";
+import type { RepositorySetup } from "../components/projects/CreateProjectDialog.js";
 import type { ProjectOutletContext } from "./ProjectLayout.js";
-import { projectsApi, type ProjectCommands, type ProjectDTO } from "../api/index.js";
-import { Dialog } from "../components/common/Dialog.js";
+import { projectsApi, type ProjectDTO, type ProjectRepoDTO } from "../api/index.js";
+import { Dialog, DialogActions } from "../components/common/Dialog.js";
 import { ErrorState } from "../components/common/ErrorState.js";
 import { formatAbsolute } from "../lib/time.js";
-
-const COMMAND_FIELDS: Array<{ key: keyof ProjectCommands; label: string; placeholder: string }> = [
-  { key: "build", label: "Build", placeholder: "npm run build" },
-  { key: "typecheck", label: "Typecheck", placeholder: "npm run typecheck" },
-  { key: "lint", label: "Lint", placeholder: "npm run lint" },
-  { key: "test", label: "Test", placeholder: "npm test" },
-];
-
-function commandsEqual(a: ProjectCommands, b: ProjectCommands): boolean {
-  return COMMAND_FIELDS.every(({ key }) => (a[key] ?? "") === (b[key] ?? ""));
-}
+import { Button } from "@/components/ui/button";
+import { Section } from "../components/common/Section.js";
+import { CircleCheckIcon, FolderGit2Icon, PlusIcon, Trash2Icon } from "lucide-react";
+import { EmptyState } from "../components/common/EmptyState.js";
+import { RepositoryCard } from "../components/projects/RepositoryCard.js";
+import { ConnectRepositoryDialog } from "../components/projects/ConnectRepositoryDialog.js";
+import { ProjectTokenBudgetSection } from "../components/projects/ProjectTokenBudgetSection.js";
 
 /**
- * Project name/repo/coding-engine/default-branch stay read-only here — there is no backend "update
- * project" endpoint for them, so this deliberately doesn't present itself as an editor for those (no
- * invented capability). Build/test/lint/typecheck commands are the one exception: `PATCH
- * /projects/:projectId/commands` exists specifically because project creation's own `commands` input
- * has no frontend form at all, leaving a connected project with literally no automated validation on
- * any task (an undeclared check is skipped, not failed — see runValidation) unless set here.
+ * Project settings: the project's own facts, its REPOSITORIES (TD-62 — one for a monorepo, several for
+ * a codebase split across repositories; each with its own default branch and validation commands),
+ * and the Danger Zone. Name/coding engine stay read-only — there is no "update project" endpoint for
+ * them, so this doesn't pretend to be an editor for those.
  */
 export function ProjectSettingsPage() {
-  const { project } = useOutletContext<ProjectOutletContext>();
-  const baseline: ProjectCommands = {
-    build: project.commands?.build ?? "",
-    test: project.commands?.test ?? "",
-    lint: project.commands?.lint ?? "",
-    typecheck: project.commands?.typecheck ?? "",
-  };
+  const { project, refreshProject } = useOutletContext<ProjectOutletContext>();
+  const location = useLocation();
+  const navigate = useNavigate();
+  const [repositories, setRepositories] = useState<ProjectRepoDTO[]>(project.repositories ?? []);
+  // Guided setup right after "Create project": how many repositories the user said they have. Read once
+  // from the navigation state, then cleared below so a reload doesn't restart it.
+  const [guidedSetup, setGuidedSetup] = useState<RepositorySetup | undefined>(
+    () => (location.state as { repositorySetup?: RepositorySetup } | null)?.repositorySetup,
+  );
+  const [connecting, setConnecting] = useState(guidedSetup !== undefined && (project.repositories ?? []).length === 0);
 
-  const [savedBaseline, setSavedBaseline] = useState(baseline);
-  const [form, setForm] = useState(baseline);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string>();
-  const [savedAtIso, setSavedAtIso] = useState<string>();
+  useEffect(() => {
+    if (guidedSetup) navigate(location.pathname, { replace: true, state: null });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  const dirty = !commandsEqual(form, savedBaseline);
-
-  async function handleSave() {
-    setSaving(true);
-    setError(undefined);
-    try {
-      const commands: ProjectCommands = {};
-      for (const { key } of COMMAND_FIELDS) {
-        const value = form[key]?.trim();
-        if (value) commands[key] = value;
-      }
-      await projectsApi.updateCommands(project.id, commands);
-      const next: ProjectCommands = {
-        build: commands.build ?? "",
-        test: commands.test ?? "",
-        lint: commands.lint ?? "",
-        typecheck: commands.typecheck ?? "",
-      };
-      setSavedBaseline(next);
-      setForm(next);
-      setSavedAtIso(new Date().toISOString());
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not save these commands. Please try again.");
-    } finally {
-      setSaving(false);
-    }
+  function handleConnected(repository: ProjectRepoDTO) {
+    setConnecting(false);
+    afterRepositoryChange([...repositories, repository]);
+    // A single-repository project is ready as soon as its repository is connected.
+    if (guidedSetup === "single") navigate(`/projects/${project.id}`);
   }
 
+  // Every repository change is also reflected in the project header and the other tabs.
+  function afterRepositoryChange(next: ProjectRepoDTO[]) {
+    setRepositories(next);
+    void refreshProject().catch(() => {});
+  }
+
+  const facts: Array<[string, string]> = [
+    ["Project name", project.name],
+    ["Coding engine", project.codingEngine],
+    ["Repositories", repositories.length === 0 ? "None connected yet" : repositories.map((r) => r.name).join(", ")],
+    ["Created", formatAbsolute(project.createdAt)],
+    ["Updated", formatAbsolute(project.updatedAt)],
+  ];
+
   return (
-    <div className="stack" style={{ gap: 20 }}>
-      <div className="card card-padded stack" style={{ gap: 12 }}>
-        <p className="field-hint">Project settings are currently read-only from this screen.</p>
-        <dl className="info-callout" style={{ margin: 0 }}>
-          <dt>Project name</dt>
-          <dd>{project.name}</dd>
-          <dt>Repository</dt>
-          <dd>{project.repoUrl}</dd>
-          <dt>Source control</dt>
-          <dd>{project.sourceControlProvider}</dd>
-          <dt>Coding engine</dt>
-          <dd>{project.codingEngine}</dd>
-          <dt>Default branch</dt>
-          <dd>{project.defaultBranch}</dd>
-          <dt>Created</dt>
-          <dd>{formatAbsolute(project.createdAt)}</dd>
-          <dt>Updated</dt>
-          <dd>{formatAbsolute(project.updatedAt)}</dd>
+    <div className="flex max-w-3xl flex-col gap-5">
+      <Section title="Project details" description="Project settings are currently read-only from this screen.">
+        <dl className="info-callout divide-y rounded-2xl border text-sm">
+          {facts.map(([label, value]) => (
+            <div key={label} className="grid gap-1 px-4 py-2.5 sm:grid-cols-[160px_1fr] sm:gap-4">
+              <dt className="text-muted-foreground">{label}</dt>
+              <dd className="min-w-0 break-words">{value}</dd>
+            </div>
+          ))}
         </dl>
-      </div>
+      </Section>
 
-      <div className="card card-padded stack" style={{ gap: 12 }}>
-        <div>
-          <h3>Validation Commands</h3>
-          <p className="field-hint">
-            These commands actually run, for real, inside this project's workspace during every AI task — this is not guidance
-            like Project Context's own validation notes. A build/typecheck failure here drives the AI's self-fix loop. A field
-            left blank means that check is skipped entirely for this project, not failed.
-          </p>
-        </div>
-
-        {COMMAND_FIELDS.map(({ key, label, placeholder }) => (
-          <div className="field" key={key} style={{ marginBottom: 0 }}>
-            <label htmlFor={`project-command-${key}`}>{label}</label>
-            <input
-              id={`project-command-${key}`}
-              value={form[key] ?? ""}
-              placeholder={placeholder}
-              onChange={(e) => setForm((prev) => ({ ...prev, [key]: e.target.value }))}
-            />
+      <section className="flex flex-col gap-3" aria-labelledby="repositories-heading">
+        <div className="flex flex-wrap items-end justify-between gap-3">
+          <div className="space-y-1">
+            <h2 id="repositories-heading" className="text-lg font-semibold">
+              Repositories
+            </h2>
+            <p className="text-sm text-muted-foreground">
+              Connect one repository for a monorepo, or each repository the project is split across — frontend, backend,
+              admin… Every task works in exactly one of them.
+            </p>
           </div>
-        ))}
-
-        {error && <ErrorState message={error} onRetry={handleSave} />}
-
-        <div className="dialog-actions" style={{ justifyContent: "space-between" }}>
-          <span className="field-hint">
-            {dirty ? "Unsaved changes" : savedAtIso ? `Saved ${formatAbsolute(savedAtIso)}` : "No unsaved changes"}
-          </span>
-          <button type="button" className="btn btn-primary" disabled={!dirty || saving} onClick={handleSave}>
-            {saving ? "Saving…" : "Save Changes"}
-          </button>
+          <Button type="button" onClick={() => setConnecting(true)}>
+            <PlusIcon data-icon="inline-start" />
+            Connect repository
+          </Button>
         </div>
-      </div>
+
+        {guidedSetup === "multiple" && repositories.length > 0 && (
+          <div className="flex flex-col gap-3 rounded-2xl border border-primary/30 bg-primary/5 p-4 sm:flex-row sm:items-center" role="status">
+            <CircleCheckIcon className="size-5 shrink-0 text-primary" aria-hidden="true" />
+            <div className="flex-1 text-sm">
+              <p className="font-medium">
+                {repositories.length} repositor{repositories.length === 1 ? "y" : "ies"} connected: {repositories.map((r) => r.name).join(", ")}
+              </p>
+              <p className="text-muted-foreground">Connect each repository this project is split across, then you're ready to create tasks.</p>
+            </div>
+            <div className="flex shrink-0 gap-2">
+              <Button type="button" variant="outline" onClick={() => setConnecting(true)}>
+                <PlusIcon data-icon="inline-start" />
+                Connect another repository
+              </Button>
+              <Button
+                type="button"
+                onClick={() => {
+                  setGuidedSetup(undefined);
+                  navigate(`/projects/${project.id}`);
+                }}
+              >
+                Done
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {repositories.length === 0 ? (
+          <EmptyState
+            icon={<FolderGit2Icon />}
+            message="No repository connected yet. Connect one before creating tasks."
+            action={<Button onClick={() => setConnecting(true)}>Connect your first repository</Button>}
+          />
+        ) : (
+          repositories.map((repository) => (
+            <RepositoryCard
+              key={repository.id}
+              projectId={project.id}
+              repository={repository}
+              onChanged={(updated) => afterRepositoryChange(repositories.map((r) => (r.id === updated.id ? updated : r)))}
+              onRemoved={() => afterRepositoryChange(repositories.filter((r) => r.id !== repository.id))}
+            />
+          ))
+        )}
+      </section>
+
+      <ProjectTokenBudgetSection projectId={project.id} />
 
       <DangerZone project={project} />
+
+      {connecting && (
+        <ConnectRepositoryDialog
+          projectId={project.id}
+          onClose={() => setConnecting(false)}
+          onConnected={handleConnected}
+        />
+      )}
     </div>
   );
 }
@@ -156,37 +176,36 @@ function DangerZone({ project }: { project: ProjectDTO }) {
   }
 
   return (
-    <div className="card card-padded stack" style={{ gap: 12, borderColor: "var(--tone-danger-text)" }}>
-      <div>
-        <h3>Danger Zone</h3>
-        <p className="field-hint">
+    <section className="flex flex-col gap-4 rounded-3xl border border-destructive/30 p-5 sm:flex-row sm:items-center sm:justify-between">
+      <div className="space-y-1">
+        <h3 className="text-base font-semibold text-destructive">Danger Zone</h3>
+        <p className="text-sm text-muted-foreground">
           Permanently deletes this project and all of its tasks. This cannot be undone. Blocked while any task is still queued,
           executing, or awaiting review — cancel or finish those first.
         </p>
       </div>
-      <div>
-        <button type="button" className="btn btn-danger" onClick={() => setConfirming(true)}>
-          Delete project
-        </button>
-      </div>
+      <Button variant="destructive" type="button" className="shrink-0" onClick={() => setConfirming(true)}>
+        <Trash2Icon data-icon="inline-start" />
+        Delete project
+      </Button>
 
       {confirming && (
         <Dialog title={`Delete "${project.name}"?`} onClose={() => (deleting ? undefined : setConfirming(false))}>
-          <p style={{ marginBottom: 16 }}>
+          <p className="text-sm text-muted-foreground">
             This permanently deletes <strong>{project.name}</strong> and every one of its tasks — activity history, reports, and
             all. This cannot be undone. The repository on GitHub itself is not affected.
           </p>
           {error && <ErrorState message={error} />}
-          <div className="dialog-actions">
-            <button type="button" className="btn btn-secondary" onClick={() => setConfirming(false)} disabled={deleting}>
+          <DialogActions>
+            <Button variant="outline" type="button" onClick={() => setConfirming(false)} disabled={deleting}>
               Keep Project
-            </button>
-            <button type="button" className="btn btn-danger" onClick={handleConfirm} disabled={deleting}>
+            </Button>
+            <Button variant="destructive" type="button" onClick={handleConfirm} disabled={deleting}>
               {deleting ? "Deleting…" : "Delete Permanently"}
-            </button>
-          </div>
+            </Button>
+          </DialogActions>
         </Dialog>
       )}
-    </div>
+    </section>
   );
 }

@@ -8,6 +8,12 @@ import { buildAiContextPreview } from "../../lib/projectContextPreview.js";
 import { formatAbsolute } from "../../lib/time.js";
 import { CONTEXT_UPLOAD_ACCEPT, extractTextFromFile } from "../../lib/fileTextExtractor.js";
 import { textToListItems } from "../../lib/textToListItems.js";
+import { Button, buttonVariants } from "@/components/ui/button";
+import { TriangleAlertIcon, UploadIcon } from "lucide-react";
+import { cn } from "@/lib/utils";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 
 function arraysEqual(a: readonly string[], b: readonly string[]): boolean {
   return a.length === b.length && a.every((v, i) => v === b[i]);
@@ -134,50 +140,50 @@ export function ProjectContextPanel({ projectId }: { projectId: string }) {
   if (!baseline) return null;
 
   return (
-    <div className="stack project-context-panel" style={{ gap: 16 }}>
-      <div>
-        <h3>Project Context</h3>
-        <p className="field-hint">Persistent project-level guidance used by CodeForge AI tasks.</p>
+    <div className="flex flex-col gap-4">
+      <div className="space-y-1">
+        <h3 className="text-lg font-semibold">Project Context</h3>
+        <p className="text-sm text-muted-foreground">Persistent project-level guidance used by CodeForge AI tasks.</p>
       </div>
 
       {conflict && (
-        <div className="field-warning" role="alert">
-          <div>
-            <strong>Project Context Changed</strong>
+        <div className="flex flex-col gap-3 rounded-2xl border border-tone-attention/30 bg-tone-attention/10 p-4 text-sm sm:flex-row sm:items-center" role="alert">
+          <div className="flex-1 text-muted-foreground">
+            <strong className="text-tone-attention">Project Context Changed</strong>
             <p>
               This project context was updated elsewhere after you loaded it
               {conflict.currentRevision !== null ? ` (now at revision ${conflict.currentRevision})` : ""}. Your changes
               have not been overwritten.
             </p>
           </div>
-          <button type="button" className="btn btn-secondary" onClick={handleReloadLatest}>
+          <Button variant="outline" type="button" onClick={handleReloadLatest}>
             Reload Latest
-          </button>
+          </Button>
         </div>
       )}
 
       {locked && (
-        <div className="field-warning" role="alert">
-          <div>
-            <strong>Project Context is currently being updated</strong>
+        <div className="flex flex-col gap-3 rounded-2xl border border-tone-attention/30 bg-tone-attention/10 p-4 text-sm sm:flex-row sm:items-center" role="alert">
+          <div className="flex-1 text-muted-foreground">
+            <strong className="text-tone-attention">Project Context is currently being updated</strong>
             <p>Please try again.</p>
           </div>
-          <button type="button" className="btn btn-secondary" onClick={handleSave}>
+          <Button variant="outline" type="button" onClick={handleSave}>
             Retry
-          </button>
+          </Button>
         </div>
       )}
 
       {saveError && <ErrorState message={saveError} onRetry={handleSave} />}
 
-      <div className="card card-padded context-section">
-        <div className="field">
-          <label htmlFor="context-project-name">Project name</label>
-          <input id="context-project-name" value={name} onChange={(e) => setName(e.target.value)} maxLength={200} required />
+      <div className="context-section space-y-4 rounded-3xl bg-card p-5 text-card-foreground ring-1 ring-foreground/10">
+        <div className="flex flex-col gap-2">
+          <Label htmlFor="context-project-name">Project name</Label>
+          <Input id="context-project-name" value={name} onChange={(e) => setName(e.target.value)} maxLength={200} required />
         </div>
-        <div className="field" style={{ marginBottom: 0 }}>
-          <label htmlFor="context-project-description">Description</label>
-          <textarea id="context-project-description" value={description} onChange={(e) => setDescription(e.target.value)} rows={3} />
+        <div className="flex flex-col gap-2">
+          <Label htmlFor="context-project-description">Description</Label>
+          <Textarea id="context-project-description" value={description} onChange={(e) => setDescription(e.target.value)} rows={3} />
         </div>
       </div>
 
@@ -247,7 +253,7 @@ export function ProjectContextPanel({ projectId }: { projectId: string }) {
           addLabel="+ Add validation guidance"
           emptyHint="No validation guidance yet."
         />
-        <p className="field-hint">
+        <p className="text-sm text-muted-foreground">
           These commands provide project guidance to the AI. CodeForge's configured project validation commands remain
           authoritative.
         </p>
@@ -270,30 +276,39 @@ export function ProjectContextPanel({ projectId }: { projectId: string }) {
         />
       </ContextSection>
 
-      <div className="card card-padded context-section">
-        <div className="stack" style={{ gap: 2 }}>
-          <p className="text-muted">Revision: {baseline.revision}</p>
-          {baseline.updatedAt && <p className="text-muted">Last updated {formatAbsolute(baseline.updatedAt)}</p>}
+      <div className="context-section sticky bottom-4 z-10 flex flex-col gap-3 rounded-3xl bg-card/95 p-4 shadow-lg ring-1 ring-foreground/10 backdrop-blur sm:flex-row sm:items-center sm:justify-between">
+        <div className="text-sm text-muted-foreground">
+          <p>
+            <span className={dirty ? "font-medium text-tone-attention" : undefined}>{dirty ? "Unsaved changes" : "No unsaved changes"}</span>
+          </p>
+          <p className="text-xs">
+            <span>Revision: {baseline.revision}</span>
+            {baseline.updatedAt && <span> · Last updated {formatAbsolute(baseline.updatedAt)}</span>}
+          </p>
         </div>
-
-        <div className="dialog-actions" style={{ justifyContent: "space-between" }}>
-          <span className="field-hint">{dirty ? "Unsaved changes" : "No unsaved changes"}</span>
-          <button type="button" className="btn btn-primary" disabled={!dirty || saving || !name.trim()} onClick={handleSave}>
-            {saving ? "Saving…" : "Save Changes"}
-          </button>
-        </div>
+        <Button type="button" disabled={!dirty || saving || !name.trim()} onClick={handleSave}>
+          {saving ? "Saving…" : "Save Changes"}
+        </Button>
       </div>
 
-      <div className="card card-padded context-section ai-context-preview">
-        <h4>AI Context Preview</h4>
-        <p className="field-hint">
-          See how this context will be provided to the AI developer. This is bounded project-level guidance — it does not
-          override system, security, validation, or orchestration rules.
-        </p>
-        <button type="button" className="btn btn-secondary" onClick={() => setShowPreview((v) => !v)}>
-          {showPreview ? "Hide Preview" : "View Preview"}
-        </button>
-        {showPreview && <pre className="ai-context-preview-text">{buildAiContextPreview(baseline)}</pre>}
+      <div className="context-section space-y-3 rounded-3xl bg-card p-5 text-card-foreground ring-1 ring-foreground/10">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0 flex-1 space-y-1">
+            <h4 className="font-semibold">AI Context Preview</h4>
+            <p className="text-sm text-muted-foreground">
+              See how this context will be provided to the AI developer. This is bounded project-level guidance — it does not
+              override system, security, validation, or orchestration rules.
+            </p>
+          </div>
+          <Button variant="outline" type="button" onClick={() => setShowPreview((v) => !v)}>
+            {showPreview ? "Hide Preview" : "View Preview"}
+          </Button>
+        </div>
+        {showPreview && (
+          <pre className="max-h-96 overflow-auto rounded-2xl bg-muted p-4 font-mono text-xs leading-relaxed whitespace-pre-wrap">
+            {buildAiContextPreview(baseline)}
+          </pre>
+        )}
       </div>
     </div>
   );
@@ -347,14 +362,18 @@ function ContextSection({
   }
 
   return (
-    <div className="card card-padded context-section">
-      <div className="context-section-header">
-        <div>
-          <h4>{title}</h4>
-          <p className="field-hint">{description}</p>
+    <div className="context-section space-y-4 rounded-3xl bg-card p-5 text-card-foreground ring-1 ring-foreground/10">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0 flex-1 space-y-1">
+          <h4 className="font-semibold">{title}</h4>
+          <p className="text-sm text-muted-foreground">{description}</p>
         </div>
-        <label className="btn btn-secondary context-section-upload" htmlFor={inputId}>
-          {uploading ? "Reading…" : "⬆ Upload MD/PDF"}
+        <Label
+          className={cn(buttonVariants({ variant: "outline", size: "sm" }), "cursor-pointer has-[input:focus-visible]:ring-[3px] has-[input:focus-visible]:ring-ring/50")}
+          htmlFor={inputId}
+        >
+          <UploadIcon data-icon="inline-start" />
+          {uploading ? "Reading…" : "Upload MD/PDF"}
           <input
             id={inputId}
             className="sr-only"
@@ -363,11 +382,11 @@ function ContextSection({
             disabled={uploading}
             onChange={handleFileChange}
           />
-        </label>
+        </Label>
       </div>
       {uploadError && (
-        <p className="field-warning" role="alert">
-          <span aria-hidden="true">⚠</span>
+        <p className="flex items-start gap-2 rounded-xl bg-tone-attention/12 px-3 py-2 text-sm text-tone-attention" role="alert">
+          <TriangleAlertIcon className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
           <span>{uploadError}</span>
         </p>
       )}

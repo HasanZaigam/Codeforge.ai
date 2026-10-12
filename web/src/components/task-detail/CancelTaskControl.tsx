@@ -1,5 +1,8 @@
 import { useState } from "react";
-import { Dialog } from "../common/Dialog.js";
+import { Dialog, DialogActions } from "../common/Dialog.js";
+import { XIcon } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Spinner } from "@/components/ui/spinner";
 import { ErrorState } from "../common/ErrorState.js";
 import { tasksApi, type TaskDTO } from "../../api/index.js";
 
@@ -23,8 +26,8 @@ export function CancelTaskControl({ task, onCancelled }: { task: TaskDTO; onCanc
 
   if (task.cancelRequested) {
     return (
-      <span className="text-muted" style={{ fontSize: "0.85rem" }}>
-        Cancelling…
+      <span className="inline-flex items-center gap-1.5 px-2 text-xs text-muted-foreground">
+        <Spinner className="size-3" /> Cancelling…
       </span>
     );
   }
@@ -53,7 +56,7 @@ export function CancelTaskControl({ task, onCancelled }: { task: TaskDTO; onCanc
   if (confirming) {
     return (
       <Dialog title="Cancel this task?" onClose={() => (submitting ? undefined : setConfirming(false))}>
-        <p style={{ marginBottom: 16 }}>
+        <p className="text-sm text-muted-foreground">
           {isBacklog
             ? "This task will be removed from Backlog and never sent to the AI developer. It stays visible in Tasks as Cancelled, in case you need to refer back to it."
             : "The autonomous developer will stop working on this task. Any changes in its isolated workspace will be discarded " +
@@ -61,21 +64,22 @@ export function CancelTaskControl({ task, onCancelled }: { task: TaskDTO; onCanc
               "show what was done before cancelling."}
         </p>
         {error && <ErrorState message={error} />}
-        <div className="dialog-actions">
-          <button type="button" className="btn btn-secondary" onClick={() => setConfirming(false)} disabled={submitting}>
+        <DialogActions>
+          <Button type="button" variant="outline" onClick={() => setConfirming(false)} disabled={submitting}>
             {isBacklog ? "Keep Task" : "Keep Working"}
-          </button>
-          <button type="button" className="btn btn-danger" onClick={handleConfirm} disabled={submitting}>
+          </Button>
+          <Button type="button" variant="destructive" onClick={handleConfirm} disabled={submitting}>
             {submitting ? "Cancelling…" : "Confirm cancellation"}
-          </button>
-        </div>
+          </Button>
+        </DialogActions>
       </Dialog>
     );
   }
 
   return (
-    <button className="btn-link-muted" onClick={() => setConfirming(true)}>
+    <Button type="button" variant="ghost" size="xs" className="text-muted-foreground" onClick={() => setConfirming(true)}>
+      <XIcon data-icon="inline-start" />
       Cancel task
-    </button>
+    </Button>
   );
 }

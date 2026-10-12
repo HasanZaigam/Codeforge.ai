@@ -45,6 +45,13 @@ export interface ChatMessageRecord {
   attachment: { filename: string; mimeType: string; byteSize: number } | null;
   bulkJobId: string | null;
   createdAt: string;
+  /**
+   * Assistant replies only (TD-63): tokens this reply used — 0 when answered from CodeForge's own data
+   * with no model call; null when a model was called but nothing was reported or estimable. Optional on
+   * input so older call sites keep working (stored as null).
+   */
+  tokens?: number | null;
+  tokensEstimated?: boolean;
 }
 
 type Row = Record<string, unknown>;
@@ -72,6 +79,8 @@ const toMessage = (r: Row): ChatMessageRecord => ({
       : null,
   bulkJobId: (r.bulk_job_id as string | null) ?? null,
   createdAt: r.created_at as string,
+  tokens: (r.tokens as number | null) ?? null,
+  tokensEstimated: r.tokens_estimated === 1,
 });
 
 /**
@@ -128,8 +137,8 @@ export class ChatRepository {
     const id = randomUUID();
     this.db
       .prepare(
-        `INSERT INTO chat_messages (id, conversation_id, role, content, attachment_filename, attachment_mime_type, attachment_byte_size, bulk_job_id, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO chat_messages (id, conversation_id, role, content, attachment_filename, attachment_mime_type, attachment_byte_size, bulk_job_id, created_at, tokens, tokens_estimated)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
@@ -141,8 +150,10 @@ export class ChatRepository {
         input.attachment?.byteSize ?? null,
         input.bulkJobId,
         input.createdAt,
+        input.tokens ?? null,
+        input.tokensEstimated ? 1 : 0,
       );
-    return { id, ...input };
+    return { id, ...input, tokens: input.tokens ?? null, tokensEstimated: input.tokensEstimated ?? false };
   }
 
   listMessages(conversationId: string): ChatMessageRecord[] {

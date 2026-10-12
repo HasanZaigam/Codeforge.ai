@@ -57,7 +57,8 @@ export class ClaimVerificationExecutor {
       jobs.finish(claim, "FAILED", invalid, now());
       return;
     }
-    const project = this.deps.projects.findById(job.projectId)!;
+    // Checks run inside the item's OWN repository (TD-62), the one its analysis examined.
+    const project = this.deps.projects.findScoped(job.projectId, this.deps.items.findById(job.backlogItemId)?.repositoryId)!;
     const analysis = this.deps.analyses.findById(job.analysisId)!;
 
     const startedAt = now();
@@ -137,7 +138,7 @@ export class ClaimVerificationExecutor {
   /** Null if the job still binds; else why not. Nothing has been prepared or run at this point. */
   private validateBinding(job: ClaimVerificationJob): string | null {
     const item = this.deps.items.findById(job.backlogItemId);
-    const project = this.deps.projects.findById(job.projectId);
+    const project = item ? this.deps.projects.findScoped(job.projectId, item.repositoryId) : null;
     if (!item || !project || item.projectId !== project.id) return "The backlog item or project no longer exists.";
     if (project.ownerId !== job.requestedBy) return "The requester no longer has access to this project.";
     const analysis = this.deps.analyses.findById(job.analysisId);

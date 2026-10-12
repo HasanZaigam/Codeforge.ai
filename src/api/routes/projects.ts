@@ -1,7 +1,16 @@
 import { Router } from "express";
 import type { ApplicationServices } from "../../application/index.js";
-import { CreateProjectSchema, CreateTaskSchema, UpdateProjectCommandsSchema, VerifyGitHubRepositorySchema } from "../schemas.js";
-import { toProjectDTO, toProjectWorkspaceDTO, toProjectContextDTO, toTaskDTO } from "../dto.js";
+import {
+  AddRepositorySchema,
+  CreateProjectSchema,
+  CreateTaskSchema,
+  UpdateProjectCommandsSchema,
+  TokenBudgetSchema,
+  UpdateRepositorySchema,
+  VerifyGitHubRepositorySchema,
+} from "../schemas.js";
+import { toProjectDTO, toProjectRepoDTO, toProjectWorkspaceDTO, toProjectContextDTO, toTaskDTO } from "../dto.js";
+import type { Project } from "../../domain/types.js";
 import { asyncHandler } from "../async-handler.js";
 import { dependenciesFor, latestEventFor } from "./task-helpers.js";
 import type { TaskEventRepository } from "../../persistence/repositories/task-event-repository.js";
@@ -10,20 +19,23 @@ import type { TaskDependencyRepository } from "../../persistence/repositories/ta
 /** Mounted behind requireAuth (see app.ts) — every handler here can assume req.user is set. */
 export function projectsRouter(services: ApplicationServices, taskEvents: TaskEventRepository, taskDependencies: TaskDependencyRepository): Router {
   const router = Router();
+  const projectDTO = (project: Project, actorId: string) => toProjectDTO(project, services.projects.listRepositories(project.id, actorId));
 
   router.get(
     "/projects",
     asyncHandler(async (req, res) => {
-      res.json({ projects: services.projects.list(req.user!.id).map(toProjectDTO) });
+      res.json({ projects: services.projects.list(req.user!.id).map((p) => projectDTO(p, req.user!.id)) });
     }),
   );
 
+  // Creates a project — with no repository (connect them afterwards, TD-62), or with its first one in
+  // the same call (the original single-repository shape, still accepted).
   router.post(
     "/projects",
     asyncHandler(async (req, res) => {
       const input = CreateProjectSchema.parse(req.body);
       const project = await services.projects.create(input, req.user!.id);
-      res.status(201).json({ project: toProjectDTO(project) });
+      res.status(201).json({ project: projectDTO(project, req.user!.id) });
     }),
   );
 
@@ -45,7 +57,7 @@ export function projectsRouter(services: ApplicationServices, taskEvents: TaskEv
     "/projects/:projectId",
     asyncHandler(async (req, res) => {
       const project = services.projects.get(req.params.projectId!, req.user!.id);
-      res.json({ project: toProjectDTO(project) });
+      res.json({ project: projectDTO(project, req.user!.id) });
     }),
   );
 
@@ -58,7 +70,71 @@ export function projectsRouter(services: ApplicationServices, taskEvents: TaskEv
     asyncHandler(async (req, res) => {
       const input = UpdateProjectCommandsSchema.parse(req.body);
       const project = services.projects.updateCommands(req.params.projectId!, req.user!.id, input.commands);
-      res.json({ project: toProjectDTO(project) });
+      res.json({ project: projectDTO(project, req.user!.id) });
+    }),
+  );
+
+  // ---- Token usage this month + optional budget (TD-63) -----------------------------------------
+
+  router.get(
+    "/projects/:projectId/token-usage",
+    asyncHandler(async (req, res) => {
+      res.json({ usage: services.tokenUsage.projectUsage(req.params.projectId!, req.user!.id) });
+    }),
+  );
+
+  router.put(
+    "/projects/:projectId/token-budget",
+    asyncHandler(async (req, res) => {
+      const input = TokenBudgetSchema.parse(req.body);
+      res.json({ usage: services.tokenUsage.setProjectBudget(req.params.projectId!, req.user!.id, input.monthlyTokens) });
+    }),
+  );
+
+  // ---- Repositories of a project (TD-62) -------------------------------------------------------
+
+  router.get(
+    "/projects/:projectId/repositories",
+    asyncHandler(async (req, res) => {
+      res.json({ repositories: services.projects.listRepositories(req.params.projectId!, req.user!.id).map(toProjectRepoDTO) });
+    }),
+  );
+
+  // Connects another repository. A GitHub repository is verified with a real API call first.
+  router.post(
+    "/projects/:projectId/repositories",
+    asyncHandler(async (req, res) => {
+      const input = AddRepositorySchema.parse(req.body);
+      const repository = await services.projects.addRepository(req.params.projectId!, req.user!.id, input);
+      res.status(201).json({ repository: toProjectRepoDTO(repository) });
+    }),
+  );
+
+  router.patch(
+    "/projects/:projectId/repositories/:repositoryId",
+    asyncHandler(async (req, res) => {
+      const input = UpdateRepositorySchema.parse(req.body);
+      const repository = await services.projects.updateRepository(req.params.projectId!, req.params.repositoryId!, req.user!.id, input);
+      res.json({ repository: toProjectRepoDTO(repository) });
+    }),
+  );
+
+  // Full replacement of one repository's validation commands.
+  router.patch(
+    "/projects/:projectId/repositories/:repositoryId/commands",
+    asyncHandler(async (req, res) => {
+      const input = UpdateProjectCommandsSchema.parse(req.body);
+      const repository = services.projects.updateRepositoryCommands(req.params.projectId!, req.params.repositoryId!, req.user!.id, input.commands);
+      res.json({ repository: toProjectRepoDTO(repository) });
+    }),
+  );
+
+  // Disconnects a repository — 409 REPOSITORY_IN_USE while any task or backlog item targets it.
+  router.delete(
+    "/projects/:projectId/repositories/:repositoryId",
+    asyncHandler(async (req, res) => {
+      services.projects.removeRepository(req.params.projectId!, req.params.repositoryId!, req.user!.id);
+      res.status(204).end();
     }),
   );
 
@@ -117,7 +193,8 @@ export function projectsRouter(services: ApplicationServices, taskEvents: TaskEv
   router.get(
     "/projects/:projectId/branches",
     asyncHandler(async (req, res) => {
-      const branches = await services.tasks.listBranches(req.params.projectId!, req.user!.id);
+      const repositoryId = typeof req.query.repositoryId === "string" && req.query.repositoryId ? req.query.repositoryId : undefined;
+      const branches = await services.tasks.listBranches(req.params.projectId!, req.user!.id, repositoryId);
       res.json({ branches });
     }),
   );

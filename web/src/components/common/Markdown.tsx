@@ -5,10 +5,10 @@ import { Fragment, type ReactNode } from "react";
  * output/task summaries actually use (headings, paragraphs, bullet/numbered
  * lists, bold/italic, inline code, fenced code blocks, links). Not a full
  * CommonMark implementation; see /docs/UI_ARCHITECTURE.md for why this is a
- * hand-written subset rather than a dependency (this app's only runtime
- * dependencies are react/react-dom/react-router-dom — see TD-17/TD-20/TD-31
- * for the established pattern of not reaching for a package when a small,
- * well-scoped implementation covers the actual need).
+ * hand-written subset rather than a dependency (see TD-17/TD-20/TD-31 for
+ * the established pattern of not reaching for a package when a small,
+ * well-scoped implementation covers the actual need — TD-61 added UI-chrome
+ * dependencies, not a Markdown one).
  *
  * Renders to real React elements (never `dangerouslySetInnerHTML`), so all
  * text content is escaped by React itself — this is inherently safe against

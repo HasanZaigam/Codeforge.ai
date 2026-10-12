@@ -1,6 +1,8 @@
 import { defineConfig } from "vitest/config";
 import { loadEnv } from "vite";
 import react from "@vitejs/plugin-react";
+import tailwindcss from "@tailwindcss/vite";
+import path from "node:path";
 
 /**
  * Dev-only proxy: forwards /api/* to the backend (npm run api, port 3000 by
@@ -18,7 +20,10 @@ import react from "@vitejs/plugin-react";
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "");
   return {
-    plugins: [react()],
+    plugins: [react(), tailwindcss()],
+    resolve: {
+      alias: { "@": path.resolve(__dirname, "./src") },
+    },
     server: {
       proxy: {
         "/api": {

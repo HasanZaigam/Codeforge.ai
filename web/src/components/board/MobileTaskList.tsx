@@ -1,8 +1,11 @@
 import { useState } from "react";
-import type { TaskDTO, TaskStatus } from "../../api/index.js";
+import { ListTodoIcon } from "lucide-react";
+import type { ProjectRepoDTO, TaskDTO, TaskStatus } from "../../api/index.js";
 import { BOARD_COLUMNS, CONDITIONAL_BOARD_COLUMNS, STATUS_META } from "../../lib/statusMeta.js";
+import { TONE_DOT } from "../../lib/tone.js";
 import { TaskCard } from "./TaskCard.js";
 import { EmptyState } from "../common/EmptyState.js";
+import { cn } from "@/lib/utils";
 
 /**
  * The mobile-native counterpart to KanbanBoard (see /docs/UI_ARCHITECTURE.md "Responsive
@@ -14,10 +17,13 @@ import { EmptyState } from "../common/EmptyState.js";
 export function MobileTaskList({
   tasks,
   defaultBranch,
+  repositories,
   onTaskChanged,
 }: {
   tasks: TaskDTO[];
   defaultBranch: string;
+  /** The project's repositories — passed through to each card (repository badge + Edit dialog). */
+  repositories?: ProjectRepoDTO[];
   onTaskChanged?: (task: TaskDTO) => void;
 }) {
   const byStatus = new Map<TaskStatus, TaskDTO[]>();
@@ -30,22 +36,18 @@ export function MobileTaskList({
   const [selected, setSelected] = useState<"ALL" | TaskStatus>("ALL");
 
   if (tasks.length === 0) {
-    return <EmptyState icon="🗂️" message="No tasks yet. Create one to get started." />;
+    return <EmptyState icon={<ListTodoIcon />} message="No tasks yet. Create one to get started." />;
   }
 
   const visible = selected === "ALL" ? tasks : (byStatus.get(selected) ?? []);
+  const chipClass =
+    "inline-flex shrink-0 items-center gap-1.5 rounded-full border px-3 py-1.5 text-sm transition-colors aria-selected:border-primary aria-selected:bg-primary aria-selected:text-primary-foreground";
 
   return (
-    <div className="mobile-task-list">
-      <div className="status-chip-row" role="tablist" aria-label="Filter tasks by status">
-        <button
-          type="button"
-          role="tab"
-          aria-selected={selected === "ALL"}
-          className={`status-chip${selected === "ALL" ? " active" : ""}`}
-          onClick={() => setSelected("ALL")}
-        >
-          All <span className="status-chip-count">{tasks.length}</span>
+    <div className="space-y-4">
+      <div className="-mx-4 flex gap-2 overflow-x-auto px-4 pb-1" role="tablist" aria-label="Filter tasks by status">
+        <button type="button" role="tab" aria-selected={selected === "ALL"} className={chipClass} onClick={() => setSelected("ALL")}>
+          All <span className="text-xs opacity-70 tabular-nums">{tasks.length}</span>
         </button>
         {statuses.map((status) => (
           <button
@@ -53,22 +55,21 @@ export function MobileTaskList({
             type="button"
             role="tab"
             aria-selected={selected === status}
-            className={`status-chip tone-${STATUS_META[status].tone}${selected === status ? " active" : ""}`}
+            className={chipClass}
             onClick={() => setSelected(status)}
           >
-            {STATUS_META[status].label} <span className="status-chip-count">{byStatus.get(status)?.length ?? 0}</span>
+            <span className={cn("size-1.5 rounded-full", TONE_DOT[STATUS_META[status].tone])} aria-hidden="true" />
+            {STATUS_META[status].label} <span className="text-xs opacity-70 tabular-nums">{byStatus.get(status)?.length ?? 0}</span>
           </button>
         ))}
       </div>
 
       {visible.length === 0 ? (
-        <p className="text-muted" style={{ padding: "12px 0" }}>
-          No tasks with this status.
-        </p>
+        <p className="py-3 text-sm text-muted-foreground">No tasks with this status.</p>
       ) : (
-        <div className="mobile-task-list-items">
+        <div className="flex flex-col gap-2">
           {visible.map((task) => (
-            <TaskCard key={task.id} task={task} defaultBranch={defaultBranch} allTasks={tasks} onChanged={onTaskChanged} />
+            <TaskCard key={task.id} task={task} defaultBranch={defaultBranch} repositories={repositories} allTasks={tasks} onChanged={onTaskChanged} />
           ))}
         </div>
       )}

@@ -13,6 +13,7 @@ import { ContextLayerService } from "./context-layer.js";
 import { ActionLayerService } from "./action-layer.js";
 import { loadEncryptionKey } from "../auth/credential-encryption.js";
 import type { ModelGatewayService } from "./model-gateway-service.js";
+import { TokenUsageService } from "./token-usage-service.js";
 
 export interface ApplicationServices {
   auth: AuthService;
@@ -31,6 +32,7 @@ export interface ApplicationServices {
   chat: ChatService;
   /** Model Gateway — see application/model-gateway-service.ts. The SAME instance the Orchestrator/BacklogAnalyzer already resolve every AI execution through (platform.modelGateway) — never a second instance/config. */
   modelGateway: ModelGatewayService;
+  tokenUsage: TokenUsageService;
 }
 
 /** The only place application services are constructed from a Platform's repositories. */
@@ -72,13 +74,13 @@ export function buildApplicationServices(platform: Platform): ApplicationService
       claimVerifications: platform.claimVerifications,
       backlog,
     });
-  const projects = new ProjectService(platform.projects, platform.projectWorkspaces, platform.projectWorkspaceFs, platform.projectContext, github, platform.tasks);
+  const projects = new ProjectService(platform.projects, platform.projectWorkspaces, platform.projectWorkspaceFs, platform.projectContext, github, platform.tasks, platform.projectRepos);
   // Phase 4D — the Context Layer is a thin, read-only adapter over TaskService/ProjectService — never a
   // second task database. See docs/CHAT.md "Context Layer".
   const contextLayer = new ContextLayerService({ projects: platform.projects, tasks, projectService: projects, bulkService: bulk });
   // Phase 4D.2 — the Action Layer is the ONLY way Chat may mutate state; it delegates every mutation to
   // this SAME `tasks` (TaskService) instance the Tasks UI/API use — never a second task-creation/state path.
-  const actionLayer = new ActionLayerService({ tasks, taskEvents: platform.taskEvents });
+  const actionLayer = new ActionLayerService({ tasks, taskEvents: platform.taskEvents, projects: platform.projects });
   return {
     auth: new AuthService(platform.users, platform.sessions),
     github,
@@ -118,6 +120,7 @@ export function buildApplicationServices(platform: Platform): ApplicationService
     // Model Gateway — the SAME instance already wired into the Orchestrator/BacklogAnalyzer at
     // platform-build time (see platform.ts), never a second one constructed here.
     modelGateway: platform.modelGateway,
+    tokenUsage: new TokenUsageService(platform.projects, platform.tokenUsage),
   };
 }
 

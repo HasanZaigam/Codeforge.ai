@@ -5,6 +5,7 @@ import { nextBacklogStatus, resolveAbortTarget, statusesAllowing, type BacklogTr
 interface BacklogItemRow {
   id: string;
   project_id: string;
+  repository_id: string | null;
   external_ref: string | null;
   title: string;
   description: string;
@@ -23,6 +24,7 @@ function rowToItem(row: BacklogItemRow): BacklogItem {
   return {
     id: row.id,
     projectId: row.project_id,
+    repositoryId: row.repository_id,
     externalRef: row.external_ref,
     title: row.title,
     description: row.description,
@@ -65,10 +67,10 @@ export class BacklogItemRepository {
   insert(item: BacklogItem): void {
     this.db
       .prepare(
-        `INSERT INTO backlog_items (id, project_id, external_ref, title, description, source, status, created_by, created_at, updated_at, import_id, source_row, metadata_json)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO backlog_items (id, project_id, repository_id, external_ref, title, description, source, status, created_by, created_at, updated_at, import_id, source_row, metadata_json)
+         VALUES (?, ?, COALESCE(?, (SELECT id FROM project_repos WHERE project_id = ? ORDER BY created_at, rowid LIMIT 1)), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(item.id, item.projectId, item.externalRef, item.title, item.description, item.source, item.status, item.createdBy, item.createdAt, item.updatedAt, item.importId ?? null, item.sourceRow ?? null, item.metadata ? JSON.stringify(item.metadata) : null);
+      .run(item.id, item.projectId, item.repositoryId ?? null, item.projectId, item.externalRef, item.title, item.description, item.source, item.status, item.createdBy, item.createdAt, item.updatedAt, item.importId ?? null, item.sourceRow ?? null, item.metadata ? JSON.stringify(item.metadata) : null);
   }
 
   findById(id: string): BacklogItem | null {
@@ -119,16 +121,16 @@ export class BacklogItemRepository {
    * was in a status that forbids editing at the moment of the write (a racing analysis claim, a
    * proposal, a terminal state). Throws (propagates) the UNIQUE violation for a duplicate reference.
    */
-  updateContent(id: string, content: { title: string; description: string; externalRef: string | null }, now: string): boolean {
+  updateContent(id: string, content: { title: string; description: string; externalRef: string | null; repositoryId?: string | null }, now: string): boolean {
     const from = statusesAllowing("content_edited");
     const result = this.db
       .prepare(
         `UPDATE backlog_items
-         SET title = ?, description = ?, external_ref = ?, status = 'NEW',
+         SET title = ?, description = ?, external_ref = ?, repository_id = COALESCE(?, repository_id), status = 'NEW',
              status_before_analysis = NULL, updated_at = ?
          WHERE id = ? AND status IN (${placeholders(from.length)})`,
       )
-      .run(content.title, content.description, content.externalRef, now, id, ...from);
+      .run(content.title, content.description, content.externalRef, content.repositoryId ?? null, now, id, ...from);
     return result.changes > 0;
   }
 

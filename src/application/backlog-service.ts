@@ -27,18 +27,23 @@ import { isActiveJobViolation, type BacklogAnalysisJobRepository } from "../pers
 import type { TaskService } from "./task-service.js";
 import { assertBacklogItemAccess, assertProjectAccess, assertTaskProposalAccess } from "./authorization.js";
 import { ConversionInProgressError, DuplicateBacklogReferenceError, InvalidOperationError } from "./errors.js";
+import { resolveRepositoryFor } from "./repository-resolution.js";
 
 export interface CreateBacklogItemInput {
   title: string;
   description: string;
   /** Optional caller-supplied reference (e.g. "BUG-002"). Trimmed; empty means none. */
   externalRef?: string | null;
+  /** Which project repository this item concerns (TD-62). Absent: the project's primary repository. */
+  repositoryId?: string | null;
 }
 
 export interface UpdateBacklogItemInput {
   title?: string;
   description?: string;
   externalRef?: string | null;
+  /** Moving the item to another repository is a real change: it resets the item to NEW for re-analysis. */
+  repositoryId?: string;
 }
 
 export interface BacklogItemSummary {
@@ -152,10 +157,12 @@ export class BacklogService {
     if (externalRef !== null && this.deps.items.findByProjectAndRef(project.id, externalRef)) {
       throw new DuplicateBacklogReferenceError(externalRef);
     }
+    if (input.repositoryId) resolveRepositoryFor(this.deps.projects.listRepos(project.id), input.repositoryId); // must belong to this project
     const ts = now();
     const item: BacklogItem = {
       id: randomUUID(),
       projectId: project.id,
+      repositoryId: input.repositoryId ?? null,
       externalRef,
       title: input.title.trim(),
       description: input.description.trim(),
@@ -173,7 +180,7 @@ export class BacklogService {
       throw err;
     }
     this.deps.events.append(project.id, item.id, "BACKLOG_ITEM_CREATED", { source: item.source, externalRef }, ts);
-    return item;
+    return this.deps.items.findById(item.id)!; // read back: the repository may have defaulted to the primary one
   }
 
   listItems(projectId: string, actorId: string): BacklogItemSummary[] {
@@ -181,9 +188,10 @@ export class BacklogService {
     return this.deps.items.listByProject(projectId, this.listLimit).map((item) => {
       const analysis = this.deps.analyses.findLatestForItem(item.id);
       const proposal = this.deps.proposals.findLatestForItem(item.id);
+      const scoped = this.deps.projects.findScoped(item.projectId, item.repositoryId) ?? project; // its own repository's checks
       return {
         item,
-        review: deriveReview(item, this.readable(this.deps.analyses.findLatestSucceededForItem(item.id), project)),
+        review: deriveReview(item, this.readable(this.deps.analyses.findLatestSucceededForItem(item.id), scoped)),
         latestAnalysis: analysis ? { id: analysis.id, status: analysis.status, completedAt: analysis.completedAt } : null,
         proposal: proposal ? { id: proposal.id, status: proposal.status, taskId: proposal.taskId } : null,
       };
@@ -198,7 +206,7 @@ export class BacklogService {
 
   getItem(itemId: string, actorId: string): BacklogItemDetail {
     const item = assertBacklogItemAccess(this.deps.items, this.deps.projects, itemId, actorId);
-    const project = this.deps.projects.findById(item.projectId);
+    const project = this.deps.projects.findScoped(item.projectId, item.repositoryId);
     const latest = this.deps.analyses.findLatestForItem(item.id);
     return {
       item,
@@ -226,8 +234,16 @@ export class BacklogService {
       title: patch.title !== undefined ? patch.title.trim() : current.title,
       description: patch.description !== undefined ? patch.description.trim() : current.description,
       externalRef: patch.externalRef !== undefined ? normalizeRef(patch.externalRef) : current.externalRef,
+      repositoryId: patch.repositoryId !== undefined ? resolveRepositoryFor(this.deps.projects.listRepos(current.projectId), patch.repositoryId).id : (current.repositoryId ?? null),
     };
-    if (next.title === current.title && next.description === current.description && next.externalRef === current.externalRef) return current;
+    if (
+      next.title === current.title &&
+      next.description === current.description &&
+      next.externalRef === current.externalRef &&
+      next.repositoryId === (current.repositoryId ?? null)
+    ) {
+      return current;
+    }
 
     if (next.externalRef !== null && next.externalRef.toLowerCase() !== (current.externalRef ?? "").toLowerCase()) {
       const clash = this.deps.items.findByProjectAndRef(current.projectId, next.externalRef);
@@ -393,7 +409,7 @@ export class BacklogService {
       throw new InvalidOperationError(`A task proposal can only be generated for an ANALYZED backlog item — this one is ${fresh.status}.`);
     }
     const analysis = this.deps.analyses.findLatestSucceededForItem(item.id);
-    const project = this.deps.projects.findById(item.projectId);
+    const project = this.deps.projects.findScoped(item.projectId, item.repositoryId);
     if (!analysis) throw new InvalidOperationError("This backlog item has no successful analysis to build a proposal from.");
 
     const content = buildTaskProposalContent({
@@ -505,7 +521,15 @@ export class BacklogService {
       let task = this.deps.tasks.findById(taskId);
       if (!task) {
         task = await this.deps.taskService.create(
-          { projectId: proposal.projectId, title: content.title, description: content.goal, id: taskId, origin: { backlogItemId: proposal.backlogItemId, taskProposalId: proposal.id } },
+          {
+            projectId: proposal.projectId,
+            // The task works in the same repository the backlog item (and its analysis) concerned (TD-62).
+            repositoryId: this.deps.items.findById(proposal.backlogItemId)?.repositoryId ?? null,
+            title: content.title,
+            description: content.goal,
+            id: taskId,
+            origin: { backlogItemId: proposal.backlogItemId, taskProposalId: proposal.id },
+          },
           actorId,
         );
       }

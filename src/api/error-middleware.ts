@@ -17,6 +17,9 @@ import {
   LocalGitProjectsDisabledError,
   NotFoundError,
   ProjectHasActiveTasksError,
+  RepositoryInUseError,
+  DuplicateRepositoryNameError,
+  RepositoryRequiredError,
   SelfDependencyError,
   TaskNotEditableError,
 } from "../application/errors.js";
@@ -101,6 +104,18 @@ export function errorMiddleware(err: unknown, _req: Request, res: Response, _nex
   }
   if (err instanceof ProjectHasActiveTasksError) {
     respond(res, 409, "PROJECT_HAS_ACTIVE_TASKS", err.message);
+    return;
+  }
+  if (err instanceof RepositoryInUseError) {
+    respond(res, 409, "REPOSITORY_IN_USE", err.message);
+    return;
+  }
+  if (err instanceof DuplicateRepositoryNameError) {
+    respond(res, 409, "DUPLICATE_REPOSITORY_NAME", err.message);
+    return;
+  }
+  if (err instanceof RepositoryRequiredError) {
+    respond(res, 400, "REPOSITORY_REQUIRED", err.message, { available: err.available });
     return;
   }
   // Client-caused (an invalid PUT body) — never the stored-manifest-is-corrupt case

@@ -1,3 +1,8 @@
+import { XIcon } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+
 /**
  * A plain add/edit/remove list editor for a string[] field — used by ProjectContextPanel for
  * instructions/architecture/conventions/validation guidance/constraints. Deliberately simple: no
@@ -26,15 +31,15 @@ export function ListEditor({
   hideLabel?: boolean;
 }) {
   return (
-    <div className="field">
-      <label htmlFor={id} className={hideLabel ? "sr-only" : undefined}>
+    <div className="space-y-2">
+      <Label htmlFor={id} className={hideLabel ? "sr-only" : undefined}>
         {label}
-      </label>
-      {items.length === 0 && emptyHint && <p className="field-hint">{emptyHint}</p>}
-      <div id={id} className="list-editor" role="group" aria-label={label}>
+      </Label>
+      {items.length === 0 && emptyHint && <p className="text-sm text-muted-foreground">{emptyHint}</p>}
+      <div id={id} className="space-y-2" role="group" aria-label={label}>
         {items.map((item, index) => (
-          <div className="list-editor-row" key={index}>
-            <input
+          <div className="flex items-center gap-2" key={index}>
+            <Input
               value={item}
               placeholder={itemPlaceholder}
               aria-label={`${label} item ${index + 1}`}
@@ -44,18 +49,21 @@ export function ListEditor({
                 onChange(next);
               }}
             />
-            <button
+            <Button
               type="button"
-              className="btn btn-secondary"
+              variant="ghost"
+              size="icon"
+              aria-label="Remove"
+              title="Remove"
               onClick={() => onChange(items.filter((_, i) => i !== index))}
             >
-              Remove
-            </button>
+              <XIcon />
+            </Button>
           </div>
         ))}
-        <button type="button" className="btn btn-secondary" onClick={() => onChange([...items, ""])}>
+        <Button type="button" variant="outline" size="sm" onClick={() => onChange([...items, ""])}>
           {addLabel}
-        </button>
+        </Button>
       </div>
     </div>
   );

@@ -94,7 +94,7 @@ export class BacklogAnalysisExecutor {
     }
 
     const item = this.deps.items.findById(job.backlogItemId);
-    const project = item ? this.deps.projects.findById(item.projectId) : null;
+    const project = item ? this.deps.projects.findScoped(item.projectId, item.repositoryId) : null;
     if (!item || !project || item.status !== "ANALYZING") {
       // Should be unreachable (an item is only edited/rejected/converted when it has no live job), but a
       // job must never be left RUNNING against an item that can no longer accept its result.
@@ -230,7 +230,7 @@ export class BacklogAnalysisExecutor {
   settleExhausted(job: BacklogAnalysisJob): void {
     const claim = claimOf(job);
     const item = this.deps.items.findById(job.backlogItemId);
-    const project = item ? this.deps.projects.findById(item.projectId) : null;
+    const project = item ? this.deps.projects.findScoped(item.projectId, item.repositoryId) : null;
     if (!item || !project) {
       this.failWithoutResult(job, claim, "interrupted", "Analysis was interrupted more times than allowed.");
       return;
@@ -452,7 +452,7 @@ export class BacklogAnalysisExecutor {
   private settleCancelled(job: BacklogAnalysisJob, claim: JobClaim, project?: Project, item?: BacklogItem): void {
     const at = now();
     const loadedItem = item ?? this.deps.items.findById(job.backlogItemId);
-    const loadedProject = project ?? (loadedItem ? this.deps.projects.findById(loadedItem.projectId) : null);
+    const loadedProject = project ?? (loadedItem ? this.deps.projects.findScoped(loadedItem.projectId, loadedItem.repositoryId) : null);
     if (
       !this.settle(() => {
         this.deps.items.abortAnalysis(job.backlogItemId, at); // false only if the item already left ANALYZING — fine

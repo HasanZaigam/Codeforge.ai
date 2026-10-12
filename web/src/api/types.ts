@@ -34,9 +34,28 @@ export interface ProjectCommands {
   typecheck?: string;
 }
 
+/** One repository connected to a project. A monorepo project has one; a split codebase has several. */
+export interface ProjectRepoDTO {
+  id: string;
+  projectId: string;
+  /** Short label, unique within the project ("frontend", "backend"). */
+  name: string;
+  repoUrl: string;
+  defaultBranch: string;
+  sourceControlProvider: string;
+  owner: string | null;
+  repo: string | null;
+  commands: ProjectCommands | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface ProjectDTO {
   id: string;
   name: string;
+  /** Every connected repository, primary first. Empty until the first one is connected. */
+  repositories: ProjectRepoDTO[];
+  /** The fields below describe the PRIMARY repository (empty strings when there is none). */
   repoUrl: string;
   defaultBranch: string;
   codingEngine: string;
@@ -53,6 +72,10 @@ export interface ProjectDTO {
 export interface TaskDTO {
   id: string;
   projectId: string;
+  /** The project repository this task works in. */
+  repositoryId?: string | null;
+  /** Its name — only on GET /tasks/:id (the detail screen), where no project list is loaded. */
+  repositoryName?: string | null;
   title: string;
   description: string;
   status: TaskStatus;
@@ -234,6 +257,8 @@ export interface TaskUsageRollup {
   runsCounted: number;
   runsWithUsage: number;
   totals: UsageNumbers;
+  /** Input + output + reasoning over the runs that reported usage; null when none did. Absent on an older backend. */
+  totalTokens?: number | null;
   providerReportedEstimate: ProviderReportedEstimateTotal | null;
   codeforgeCalculatedCost: null;
   byPhase: Record<"implementation" | "fix" | "review" | "verification", { runs: number; totals: UsageNumbers; providerReportedEstimate: ProviderReportedEstimateTotal | null }>;
@@ -305,7 +330,17 @@ export interface CreateLocalGitProjectInput extends CreateProjectCommon {
   repoUrl: string;
 }
 
-export type CreateProjectInput = CreateGitHubProjectInput | CreateLocalGitProjectInput;
+/** A project with no repository yet — repositories are connected afterwards in Project Settings. */
+export interface CreateEmptyProjectInput {
+  name: string;
+}
+
+export type CreateProjectInput = CreateGitHubProjectInput | CreateLocalGitProjectInput | CreateEmptyProjectInput;
+
+/** POST /projects/:id/repositories. `name` defaults to the repository's own name. */
+export type AddRepositoryInput =
+  | { sourceControlProvider: "github"; name?: string; owner: string; repo: string; defaultBranch?: string }
+  | { sourceControlProvider: "local-git"; name?: string; repoUrl: string; defaultBranch?: string };
 
 /** POST /projects/verify-github-repo response — see ProjectService.verifyGitHubRepositoryUrl. */
 export interface VerifyGitHubRepositoryResult {
@@ -320,6 +355,8 @@ export interface VerifyGitHubRepositoryResult {
 export type BranchMode = "new" | "existing";
 
 export interface CreateTaskInput {
+  /** Required when the project has several repositories; optional with exactly one. */
+  repositoryId?: string;
   title: string;
   description: string;
   branchMode?: BranchMode;
@@ -427,6 +464,8 @@ export type BacklogEventType =
 export interface BacklogItemDTO {
   id: string;
   projectId: string;
+  /** The project repository this item concerns. */
+  repositoryId?: string | null;
   externalRef: string | null;
   title: string;
   description: string;
@@ -632,6 +671,11 @@ export interface EvidenceAssessment {
 }
 
 /** Each field is null when the engine did not report it — never 0 for "unknown". */
+export interface BacklogAnalysisTokenFields {
+  /** Tokens this analysis used — reported, or estimated (`estimated: true`); null if neither. */
+  tokenCount?: TokenCountDTO | null;
+}
+
 export interface BacklogAnalysisUsageDTO {
   inputTokens: number | null;
   outputTokens: number | null;
@@ -697,7 +741,7 @@ export interface PlatformChecks {
   assessment?: EvidenceAssessment;
 }
 
-export interface BacklogAnalysisDTO {
+export interface BacklogAnalysisDTO extends BacklogAnalysisTokenFields {
   id: string;
   backlogItemId: string;
   status: AnalysisStatus;
@@ -829,6 +873,8 @@ export interface UpdateBacklogItemInput {
   description?: string;
   /** null clears the reference. */
   externalRef?: string | null;
+  /** Moves the item to another repository of the project — resets it to New for re-analysis. */
+  repositoryId?: string;
 }
 
 export interface ConvertProposalResult {
@@ -1098,6 +1144,44 @@ export interface ChatMessageDTO {
   attachment: { filename: string; mimeType: string; byteSize: number } | null;
   bulkJobId: string | null;
   createdAt: string;
+  /** Assistant replies: tokens used — 0 when answered from CodeForge data with no model call, null when unknown. */
+  tokens?: number | null;
+  /** True when `tokens` is a ~4-characters-per-token estimate rather than engine-reported. */
+  tokensEstimated?: boolean;
+}
+
+/** A token count and whether it was reported by the engine or estimated by CodeForge. */
+export interface TokenCountDTO {
+  tokens: number;
+  estimated: boolean;
+}
+
+/** Tokens for one kind of operation this month. */
+export interface UsageBucketDTO {
+  tokens: number;
+  estimatedTokens: number;
+  unreported: number;
+  operations: number;
+}
+
+/** Monthly (calendar month, UTC) token meter against an optional budget. */
+export interface TokenMeterDTO {
+  periodStart: string;
+  used: number;
+  estimatedTokens: number;
+  unreportedOperations: number;
+  budget: number | null;
+  remaining: number | null;
+  percentUsed: number | null;
+}
+
+export interface ProjectTokenUsageDTO extends TokenMeterDTO {
+  projectId: string;
+  breakdown: { tasks: UsageBucketDTO; analyses: UsageBucketDTO; chat: UsageBucketDTO };
+}
+
+export interface AccountTokenUsageDTO extends TokenMeterDTO {
+  projects: Array<{ projectId: string; name: string; used: number; estimatedTokens: number; budget: number | null }>;
 }
 
 export interface ChatAttachmentDTO {

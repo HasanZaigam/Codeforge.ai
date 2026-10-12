@@ -51,7 +51,11 @@ export function tasksRouter(services: ApplicationServices, taskEvents: TaskEvent
     "/tasks/:taskId",
     asyncHandler(async (req, res) => {
       const task = services.tasks.get(req.params.taskId!, req.user!.id);
-      res.json({ task: toTaskDTO(task, latestEventFor(taskEvents, task.id), dependenciesFor(taskDependencies, task.id)) });
+      // The task detail screen has no project loaded, so it gets its repository's name here (TD-62).
+      const repository = services.projects.listRepositories(task.projectId, req.user!.id).find((r) => r.id === task.repositoryId);
+      res.json({
+        task: { ...toTaskDTO(task, latestEventFor(taskEvents, task.id), dependenciesFor(taskDependencies, task.id)), repositoryName: repository?.name ?? null },
+      });
     }),
   );
 

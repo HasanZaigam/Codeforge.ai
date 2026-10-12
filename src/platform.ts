@@ -6,6 +6,8 @@ import { TaskRepository } from "./persistence/repositories/task-repository.js";
 import { TaskDependencyRepository } from "./persistence/repositories/task-dependency-repository.js";
 import { TaskEventRepository } from "./persistence/repositories/task-event-repository.js";
 import { ProjectRepository } from "./persistence/repositories/project-repository.js";
+import { ProjectRepoRepository } from "./persistence/repositories/project-repo-repository.js";
+import { TokenUsageRepository } from "./persistence/repositories/token-usage-repository.js";
 import { ProjectWorkspaceRepository } from "./persistence/repositories/project-workspace-repository.js";
 import { ProjectWorkspaceFsManager } from "./project-workspace/project-workspace-fs-manager.js";
 import { ProjectContextService } from "./project-workspace/project-context-service.js";
@@ -66,6 +68,8 @@ export interface Platform {
   taskDependencies: TaskDependencyRepository;
   taskEvents: TaskEventRepository;
   projects: ProjectRepository;
+  /** The repositories connected to each project (TD-62). */
+  projectRepos: ProjectRepoRepository;
   projectWorkspaces: ProjectWorkspaceRepository;
   projectWorkspaceFs: ProjectWorkspaceFsManager;
   projectContext: ProjectContextService;
@@ -105,6 +109,8 @@ export interface Platform {
   backlogContextBuilder: BacklogContextBuilder;
   /** Phase 4C — project-aware Chat (see /docs/CHAT.md). Reuses this same engine/model registry via backlogAnalyzer; never a second call path to a model. */
   chatMessages: ChatRepository;
+  /** Token usage reads + monthly budgets (TD-63). */
+  tokenUsage: TokenUsageRepository;
   /** Phase 4A.1 — executes one claimed analysis job. Used ONLY by the runner below (worker process); the API process never touches it. */
   backlogExecutor: BacklogAnalysisExecutor;
   /**
@@ -178,6 +184,7 @@ export function buildPlatform(options: BuildPlatformOptions): Platform {
   const taskDependencies = new TaskDependencyRepository(db);
   const taskEvents = new TaskEventRepository(db);
   const projects = new ProjectRepository(db);
+  const projectRepos = new ProjectRepoRepository(db);
   const projectWorkspaces = new ProjectWorkspaceRepository(db);
   const projectWorkspaceFs = new ProjectWorkspaceFsManager(
     options.projectWorkspacesRoot ?? join(dirname(options.workspacesRoot), "project-workspaces"),
@@ -222,6 +229,7 @@ export function buildPlatform(options: BuildPlatformOptions): Platform {
   // reuses the SAME project-context loader.
   const backlogItems = new BacklogItemRepository(db);
   const chatMessages = new ChatRepository(db);
+  const tokenUsage = new TokenUsageRepository(db);
   const backlogAnalyses = new BacklogAnalysisRepository(db);
   const backlogRelationships = new BacklogRelationshipRepository(db);
   const taskProposals = new TaskProposalRepository(db);
@@ -328,6 +336,7 @@ export function buildPlatform(options: BuildPlatformOptions): Platform {
     taskDependencies,
     taskEvents,
     projects,
+    projectRepos,
     projectWorkspaces,
     projectWorkspaceFs,
     projectContext,
@@ -346,6 +355,7 @@ export function buildPlatform(options: BuildPlatformOptions): Platform {
     modelGateway,
     backlogItems,
     chatMessages,
+    tokenUsage,
     backlogAnalyses,
     backlogRelationships,
     taskProposals,

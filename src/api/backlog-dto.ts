@@ -26,6 +26,7 @@ import type {
 } from "../backlog/backlog-types.js";
 import type { CostMetadata, EstimatedCost } from "../domain/types.js";
 import type { BacklogItemDetail, BacklogItemSummary, RelationshipView } from "../application/backlog-service.js";
+import { tokenCountFor, type TokenCount } from "../usage/token-usage.js";
 
 /**
  * Phase 4A read models. Same rule as dto.ts: the web UI depends only on these, never on a raw row
@@ -36,6 +37,8 @@ import type { BacklogItemDetail, BacklogItemSummary, RelationshipView } from "..
 export interface BacklogItemDTO {
   id: string;
   projectId: string;
+  /** The project repository this item concerns (TD-62). */
+  repositoryId: string | null;
   externalRef: string | null;
   title: string;
   description: string;
@@ -49,6 +52,7 @@ export function toBacklogItemDTO(item: BacklogItem): BacklogItemDTO {
   return {
     id: item.id,
     projectId: item.projectId,
+    repositoryId: item.repositoryId ?? null,
     externalRef: item.externalRef,
     title: item.title,
     description: item.description,
@@ -137,6 +141,11 @@ export interface BacklogAnalysisDTO {
    * Provider-agnostic: the adapter normalizes its own format before it gets here.
    */
   usage: BacklogAnalysisUsageDTO | null;
+  /**
+   * Tokens this analysis used (TD-63): reported when the engine said so, else a ~4-chars-per-token estimate
+   * over the prompt and result the platform actually exchanged (`estimated: true`); null if neither.
+   */
+  tokenCount: TokenCount | null;
   /** A monetary estimate, SEPARATE from usage — present only when the engine supplied one (see EstimatedCost); `null` otherwise. Never `0` for "unknown". */
   estimatedCost: EstimatedCost | null;
   startedAt: string;
@@ -183,6 +192,11 @@ export function toBacklogAnalysisDTO(a: BacklogAnalysis): BacklogAnalysisDTO {
     fallbackIndex: a.fallbackIndex,
     routingReason: a.routingReason,
     ...toUsageDTO(a.cost),
+    tokenCount: tokenCountFor(
+      a.cost,
+      ((a.platformChecks?.context ?? (a.diagnostics?.context as { promptChars?: number } | undefined))?.promptChars ?? 0) +
+        (a.result ? JSON.stringify(a.result).length : 0),
+    ),
     startedAt: a.startedAt,
     completedAt: a.completedAt,
     durationMs: a.durationMs,

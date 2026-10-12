@@ -78,7 +78,8 @@ describe("ProjectLayout", () => {
     renderApp("/projects/p1/backlog");
     await waitFor(() => expect(screen.getByRole("heading", { name: "OTT" })).toBeInTheDocument());
     expect(screen.getByText("https://github.com/example/ott.git")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Overview" })).toHaveClass("active");
+    // The <Navigate> redirect lands a render after the project header first appears.
+    await waitFor(() => expect(screen.getByRole("link", { name: "Overview" })).toHaveClass("active"));
   });
 
   it("the breadcrumb returns to the Projects list", async () => {
@@ -86,7 +87,7 @@ describe("ProjectLayout", () => {
     renderApp("/projects/p1");
     await waitFor(() => expect(screen.getByRole("heading", { name: "OTT" })).toBeInTheDocument());
 
-    await userEvent.click(screen.getByText("← Projects"));
+    await userEvent.click(screen.getByRole("link", { name: "Projects" }));
     await waitFor(() => expect(screen.getByRole("heading", { name: "Projects" })).toBeInTheDocument());
   });
 

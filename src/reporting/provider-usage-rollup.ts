@@ -1,4 +1,5 @@
 import type { CostMetadata } from "../domain/types.js";
+import { reportedTokens } from "../usage/token-usage.js";
 
 export interface ProviderUsageTotals {
   providerId: string;
@@ -20,17 +21,20 @@ export interface ProviderUsageTotals {
  * rather than silently dropped.
  */
 export function buildProviderUsageRollup(rows: Array<{ providerId: string | null; modelId: string | null; cost: CostMetadata | null }>): ProviderUsageTotals[] {
-  const byProvider = new Map<string, { runsWithUsage: number; runsTotal: number; input: number | null; output: number | null }>();
+  const byProvider = new Map<string, { runsWithUsage: number; runsTotal: number; input: number | null; output: number | null; total: number | null }>();
 
   for (const row of rows) {
     const providerId = row.providerId ?? "unknown";
-    const entry = byProvider.get(providerId) ?? { runsWithUsage: 0, runsTotal: 0, input: null, output: null };
+    const entry = byProvider.get(providerId) ?? { runsWithUsage: 0, runsTotal: 0, input: null, output: null, total: null };
     entry.runsTotal++;
     const input = row.cost?.inputTokens;
     const output = row.cost?.outputTokens;
     if (typeof input === "number" || typeof output === "number") entry.runsWithUsage++;
     if (typeof input === "number") entry.input = (entry.input ?? 0) + input;
     if (typeof output === "number") entry.output = (entry.output ?? 0) + output;
+    // Same "tokens used" formula as every other meter (input + output + reasoning — TD-63).
+    const runTotal = reportedTokens(row.cost);
+    if (runTotal !== null) entry.total = (entry.total ?? 0) + runTotal;
     byProvider.set(providerId, entry);
   }
 
@@ -41,7 +45,7 @@ export function buildProviderUsageRollup(rows: Array<{ providerId: string | null
       runsTotal: e.runsTotal,
       inputTokens: e.input,
       outputTokens: e.output,
-      totalTokens: e.input !== null || e.output !== null ? (e.input ?? 0) + (e.output ?? 0) : null,
+      totalTokens: e.total,
     }))
     .sort((a, b) => a.providerId.localeCompare(b.providerId));
 }

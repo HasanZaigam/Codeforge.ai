@@ -12,6 +12,7 @@ import type {
   HumanInputRequestDTO,
   ProjectContextDTO,
   ProjectDTO,
+  ProjectRepoDTO,
   ProjectWorkspaceDTO,
   TaskDTO,
   TaskEventDTO,
@@ -19,7 +20,7 @@ import type {
 } from "../api/index.js";
 
 export function makeProject(overrides: Partial<ProjectDTO> = {}): ProjectDTO {
-  return {
+  const base = {
     id: "project-1",
     name: "OTT",
     repoUrl: "https://github.com/example/ott.git",
@@ -29,7 +30,39 @@ export function makeProject(overrides: Partial<ProjectDTO> = {}): ProjectDTO {
     owner: "example",
     repo: "ott",
     commandsDeclared: ["test"],
-    commands: { test: "npm test" },
+    commands: { test: "npm test" } as ProjectDTO["commands"],
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+    ...overrides,
+  };
+  // By default a single-repository project whose one repository IS the primary fields above.
+  const repositories = overrides.repositories ?? [
+    makeRepository({
+      id: `${base.id}-repo`,
+      projectId: base.id,
+      name: base.repo ?? "repository",
+      repoUrl: base.repoUrl,
+      defaultBranch: base.defaultBranch,
+      sourceControlProvider: base.sourceControlProvider,
+      owner: base.owner,
+      repo: base.repo,
+      commands: base.commands,
+    }),
+  ];
+  return { ...base, repositories };
+}
+
+export function makeRepository(overrides: Partial<ProjectRepoDTO> = {}): ProjectRepoDTO {
+  return {
+    id: "repo-1",
+    projectId: "project-1",
+    name: "ott",
+    repoUrl: "https://github.com/example/ott.git",
+    defaultBranch: "main",
+    sourceControlProvider: "github",
+    owner: "example",
+    repo: "ott",
+    commands: null,
     createdAt: "2026-01-01T00:00:00.000Z",
     updatedAt: "2026-01-01T00:00:00.000Z",
     ...overrides,

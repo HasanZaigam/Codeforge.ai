@@ -166,7 +166,54 @@ const BranchNameSchema = z
       "Branch name may only contain letters, numbers, '.', '_', '-', '/' — no leading '-', no '..', no trailing '/' or '.lock'.",
   });
 
-export const CreateProjectSchema = z.discriminatedUnion("sourceControlProvider", [
+/** Connecting one repository to an existing project (TD-62) — same provider rules as creating a project with one. */
+export const AddRepositorySchema = z.discriminatedUnion("sourceControlProvider", [
+  z.object({
+    sourceControlProvider: z.literal("github"),
+    name: z.string().trim().min(1).max(60).optional(),
+    owner: z.string().trim().regex(GITHUB_OWNER, "Not a valid GitHub owner/organization name"),
+    repo: z.string().trim().regex(GITHUB_REPO, "Not a valid GitHub repository name"),
+    defaultBranch: z.string().trim().min(1).max(200).optional(),
+  }),
+  z.object({
+    sourceControlProvider: z.literal("local-git"),
+    name: z.string().trim().min(1).max(60).optional(),
+    repoUrl: z
+      .string()
+      .trim()
+      .min(1)
+      .max(2000)
+      .refine((v) => !isGitHubLookingUrl(v), {
+        message: "A local-git repository URL cannot point at github.com — use the \"GitHub repository\" option instead.",
+      }),
+    defaultBranch: z.string().trim().min(1).max(200).optional(),
+  }),
+]);
+
+/** PUT …/token-budget — a monthly token budget, or null to remove it (TD-63). */
+export const TokenBudgetSchema = z
+  .object({
+    monthlyTokens: z.number().int().positive().max(1_000_000_000_000).nullable(),
+  })
+  .strict();
+
+export const UpdateRepositorySchema = z
+  .object({
+    name: z.string().trim().min(1).max(60).optional(),
+    defaultBranch: z.string().trim().min(1).max(200).optional(),
+  })
+  .strict()
+  .refine((v) => v.name !== undefined || v.defaultBranch !== undefined, { message: "Provide name and/or defaultBranch" });
+
+/** POST /projects with no repository — repositories are connected afterwards (TD-62). */
+const CreateEmptyProjectSchema = z
+  .object({
+    name: z.string().trim().min(1).max(200),
+    codingEngine: z.string().trim().min(1).max(100).optional(),
+  })
+  .strict();
+
+const CreateProjectWithRepositorySchema = z.discriminatedUnion("sourceControlProvider", [
   z.object({
     sourceControlProvider: z.literal("github"),
     name: z.string().trim().min(1).max(200),
@@ -196,6 +243,8 @@ export const CreateProjectSchema = z.discriminatedUnion("sourceControlProvider",
   }),
 ]);
 
+export const CreateProjectSchema = z.union([CreateProjectWithRepositorySchema, CreateEmptyProjectSchema]);
+
 export const ConnectGitHubSchema = z.object({
   token: z.string().trim().min(1).max(4000),
 });
@@ -215,6 +264,8 @@ export const VerifyGitHubRepositorySchema = z.object({
  */
 export const CreateTaskSchema = z
   .object({
+    /** Which project repository the task works in (TD-62) — optional when the project has exactly one. */
+    repositoryId: z.string().trim().min(1).max(100).optional(),
     title: z.string().trim().min(1).max(300),
     description: z.string().trim().min(1).max(10_000),
     branchMode: z.enum(["new", "existing"]).optional(),
@@ -290,6 +341,7 @@ export const CreateBacklogItemSchema = z
     title: z.string().trim().min(1).max(300),
     description: z.string().trim().min(1).max(10_000),
     externalRef: BacklogExternalRefSchema.nullish(),
+    repositoryId: z.string().trim().min(1).max(100).nullish(),
   })
   .strict();
 
@@ -298,10 +350,11 @@ export const UpdateBacklogItemSchema = z
     title: z.string().trim().min(1).max(300).optional(),
     description: z.string().trim().min(1).max(10_000).optional(),
     externalRef: BacklogExternalRefSchema.nullable().optional(),
+    repositoryId: z.string().trim().min(1).max(100).optional(),
   })
   .strict()
-  .refine((v) => v.title !== undefined || v.description !== undefined || v.externalRef !== undefined, {
-    message: "Provide at least one of title, description, externalRef",
+  .refine((v) => v.title !== undefined || v.description !== undefined || v.externalRef !== undefined || v.repositoryId !== undefined, {
+    message: "Provide at least one of title, description, externalRef, repositoryId",
   });
 
 /** For action endpoints (analyze / reject / approve / convert): no body content is meaningful, and none is accepted. */
@@ -319,6 +372,7 @@ export const ImportBodySchema = z
     csv: z.string().min(1).max(600_000),
     sourceName: z.string().trim().min(1).max(100),
     mapping: z.record(z.enum(CanonicalFieldKeys), z.string().trim().min(1).max(60)).optional(),
+    repositoryId: z.string().trim().min(1).max(100).nullish(),
   })
   .strict();
 
@@ -429,6 +483,12 @@ export const AiProviderIdSchema = z.enum(["google", "anthropic", "openai"]);
 export const ConnectAiProviderSchema = z
   .object({
     apiKey: z.string().trim().min(1).max(4000),
+    model: z.string().trim().min(1).max(200),
+  })
+  .strict();
+
+export const ChangeAiProviderModelSchema = z
+  .object({
     model: z.string().trim().min(1).max(200),
   })
   .strict();

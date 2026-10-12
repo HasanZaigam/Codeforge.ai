@@ -8,6 +8,8 @@ import { MobileTaskList } from "../components/board/MobileTaskList.js";
 import { CreateTaskDialog } from "../components/board/CreateTaskDialog.js";
 import { LoadingState } from "../components/common/LoadingState.js";
 import { ErrorState } from "../components/common/ErrorState.js";
+import { PlusIcon } from "lucide-react";
+import { Button } from "@/components/ui/button";
 
 /** The dedicated "what work is being executed?" screen — see /docs/UI_ARCHITECTURE.md. Same task
  *  data/lifecycle as before (useProjectTasks, unchanged); only the surrounding page changed. */
@@ -19,14 +21,15 @@ export function ProjectTasksPage() {
 
   return (
     <div>
-      <div className="page-header">
-        <div>
-          <h2>Tasks</h2>
-          <p className="page-subtitle">Plain-language work items for this project.</p>
+      <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+        <div className="space-y-1">
+          <h2 className="text-xl font-semibold">Tasks</h2>
+          <p className="text-sm text-muted-foreground">Plain-language work items for this project.</p>
         </div>
-        <button className="btn btn-primary" onClick={() => setCreating(true)}>
-          + Create Task
-        </button>
+        <Button onClick={() => setCreating(true)}>
+          <PlusIcon data-icon="inline-start" />
+          Create Task
+        </Button>
       </div>
 
       {loading && <LoadingState label="Loading tasks…" />}
@@ -34,15 +37,16 @@ export function ProjectTasksPage() {
       {!loading &&
         !error &&
         (isMobile ? (
-          <MobileTaskList tasks={tasks ?? []} defaultBranch={project.defaultBranch} onTaskChanged={replaceTask} />
+          <MobileTaskList tasks={tasks ?? []} defaultBranch={project.defaultBranch} repositories={project.repositories} onTaskChanged={replaceTask} />
         ) : (
-          <KanbanBoard tasks={tasks ?? []} defaultBranch={project.defaultBranch} onTaskChanged={replaceTask} />
+          <KanbanBoard tasks={tasks ?? []} defaultBranch={project.defaultBranch} repositories={project.repositories} onTaskChanged={replaceTask} />
         ))}
 
       {creating && (
         <CreateTaskDialog
           projectId={project.id}
           defaultBranch={project.defaultBranch}
+          repositories={project.repositories}
           allTasks={tasks ?? []}
           onClose={() => setCreating(false)}
           onCreated={(task) => {

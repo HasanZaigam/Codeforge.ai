@@ -122,6 +122,39 @@ export class ModelGatewayService {
     return result;
   }
 
+  /**
+   * The model list for an ALREADY-connected provider, fetched with its stored (decrypted, never
+   * returned) key — so changing the model from "Manage" never requires re-pasting the API key.
+   */
+  async listModelsForConnection(userId: string, provider: AiProviderId): Promise<{ models: string[]; error: string | null }> {
+    const record = this.connections.findByUserAndProvider(userId, provider);
+    if (!record) throw new NotFoundError("ProviderConnection", provider);
+    return this.adapters[provider].listModels(decryptSecret(record.secret, this.encryptionKey()));
+  }
+
+  /**
+   * Switches an existing connection to another model, keeping its stored key. The new model is
+   * validated with a REAL provider call first, exactly like connectProvider — nothing changes if it
+   * fails. Execution always reads the model off the connection itself (resolveModelSelection), so
+   * this takes effect for the next Chat message/task; a Fixed brain's display copy is kept in sync.
+   */
+  async changeConnectionModel(userId: string, provider: AiProviderId, model: string): Promise<ProviderConnectionDTO> {
+    const record = this.connections.findByUserAndProvider(userId, provider);
+    if (!record) throw new NotFoundError("ProviderConnection", provider);
+    const apiKey = decryptSecret(record.secret, this.encryptionKey());
+    const result = await this.adapters[provider].validateCredentials(apiKey, model);
+    if (!result.valid) throw new InvalidRequestError(result.error ?? `${labelProvider(provider)} rejected this model.`);
+
+    const now = new Date().toISOString();
+    this.connections.upsert({ ...record, model, status: "connected", lastVerifiedAt: now, lastError: null, updatedAt: now });
+
+    const config = this.configs.getByUser(userId);
+    if (config?.mode === "fixed" && config.fixedProvider === provider) {
+      this.configs.upsert({ ...config, fixedModel: model, updatedAt: now });
+    }
+    return toDTO(this.connections.findByUserAndProvider(userId, provider), provider);
+  }
+
   disconnectProvider(userId: string, provider: AiProviderId): void {
     this.connections.deleteByUserAndProvider(userId, provider);
     // A Fixed selection pointing at a provider that was just disconnected must never keep silently

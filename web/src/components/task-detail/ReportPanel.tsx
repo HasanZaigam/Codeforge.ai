@@ -1,10 +1,16 @@
+import { CircleCheckIcon, CircleXIcon, CoinsIcon, ExternalLinkIcon, GitPullRequestIcon } from "lucide-react";
+import { tokenLabel } from "../../lib/tokens.js";
 import type { TaskDTO, TaskReport } from "../../api/index.js";
 import { EmptyState } from "../common/EmptyState.js";
 import { Markdown } from "../common/Markdown.js";
+import { Callout } from "../common/Callout.js";
+import { Section } from "../common/Section.js";
 import { formatAbsolute } from "../../lib/time.js";
 import { DurationStats } from "./DurationStats.js";
 import { AgentRunHistory } from "./AgentRunHistory.js";
 import { UsageSummary } from "./UsageSummary.js";
+import { FindingList } from "./FindingList.js";
+import { cn } from "@/lib/utils";
 
 /**
  * Shows only evidence the backend actually reports — never fabricated
@@ -18,196 +24,245 @@ export function ReportPanel({ task, report }: { task: TaskDTO; report: TaskRepor
     return <EmptyState message="No report yet." />;
   }
 
+  const tokens = <TaskTokenLine usage={report.usage} />;
   const isDone = task.status === "DONE";
   const isReview = task.status === "REVIEW";
   const isCancelled = task.status === "CANCELLED";
   const isFailed = task.status === "FAILED";
 
   return (
-    <div className="stack">
+    <div className="flex flex-col gap-4">
       {isDone && (
-        <div className="card card-padded" style={{ borderColor: "var(--tone-success-text)" }}>
-          <h2 style={{ color: "var(--tone-success-text)", marginBottom: 8 }}>✓ Completed</h2>
-          <p className="text-muted">This task's changes were accepted.</p>
-        </div>
+        <Callout tone="success" title="Completed">
+          <p className="text-muted-foreground">This task's changes were accepted.</p>
+          {tokens}
+        </Callout>
       )}
       {isReview && (
-        <div className="card card-padded" style={{ borderColor: "var(--tone-info-text)" }}>
-          <h2 style={{ color: "var(--tone-info-text)", marginBottom: 8 }}>Awaiting your review</h2>
-          <p className="text-muted">
+        <Callout tone="info" title="Awaiting your review">
+          <p className="text-muted-foreground">
             The implementation passed automated execution and validation. This is not a guarantee it's perfect — review the
             evidence below before treating it as final.
           </p>
-        </div>
+          {tokens}
+        </Callout>
       )}
       {isCancelled && (
-        <div className="card card-padded" style={{ borderColor: "var(--tone-cancelled-text)" }}>
-          <h2 style={{ color: "var(--tone-cancelled-text)", marginBottom: 8 }}>Cancelled</h2>
-          <p className="text-muted">
+        <Callout tone="cancelled" title="Cancelled">
+          <p className="text-muted-foreground">
             {task.cancelledBy ? "Cancelled by developer request. " : ""}
             {task.completedAt && `Stopped ${formatAbsolute(task.completedAt)}. `}
             The activity log below shows what had happened up to that point.
           </p>
-        </div>
+          {tokens}
+        </Callout>
       )}
       {isFailed && (
-        <div className="card card-padded" style={{ borderColor: "var(--tone-danger-text)" }}>
-          <h2 style={{ color: "var(--tone-danger-text)", marginBottom: 8 }}>Failed</h2>
+        <Callout tone="danger" title="Failed">
           {report.failureContext && (
-            <p className="text-muted" style={{ marginBottom: 8 }}>
-              Failed at: <strong>{report.failureContext.stage}</strong>
+            <p className="text-muted-foreground">
+              Failed at: <strong className="text-foreground">{report.failureContext.stage}</strong>
               {report.failureContext.failedRole && (
                 <>
                   {" "}
-                  — <span style={{ textTransform: "capitalize" }}>{report.failureContext.failedRole}</span>
+                  — <span className="capitalize">{report.failureContext.failedRole}</span>
                   {report.failureContext.attemptNumber && `, attempt ${report.failureContext.attemptNumber}`}
                 </>
               )}
             </p>
           )}
           {report.failureCategory && (
-            <p className="text-muted" style={{ marginBottom: 8 }}>
-              Category: <strong>{report.failureCategory.replace(/_/g, " ")}</strong>
-              {report.failureCategory !== "task_failure" && report.failureCategory !== "unknown_failure" && " — an infrastructure problem, not a problem with the requested change."}
+            <p className="text-muted-foreground">
+              Category: <strong className="text-foreground">{report.failureCategory.replace(/_/g, " ")}</strong>
+              {report.failureCategory !== "task_failure" &&
+                report.failureCategory !== "unknown_failure" &&
+                " — an infrastructure problem, not a problem with the requested change."}
             </p>
           )}
           {report.failureReason ? (
             <Markdown text={report.failureReason} />
           ) : (
-            <p className="text-muted">No failure reason was recorded.</p>
+            <p className="text-muted-foreground">No failure reason was recorded.</p>
           )}
-        </div>
+          {tokens}
+        </Callout>
       )}
 
       {report.recoveredFromCrash && (
-        <div className="card card-padded" style={{ borderColor: "var(--tone-attention-text)" }}>
-          <h2 style={{ color: "var(--tone-attention-text)", marginBottom: 8, fontSize: "0.95rem" }}>Recovered from a crash</h2>
-          <p className="text-muted">
+        <Callout tone="attention" title="Recovered from a crash">
+          <p className="text-muted-foreground">
             Execution was interrupted at least once (e.g. a worker process restart) and automatically resumed — see "Agent runs"
             below for exactly which attempt was interrupted and which one resumed it. No work was lost or duplicated.
           </p>
-        </div>
+        </Callout>
       )}
 
       {report.infrastructureFailures && report.infrastructureFailures.length > 0 && (
-        <div className="card card-padded" style={{ borderColor: "var(--tone-attention-text)" }}>
-          <h2 style={{ color: "var(--tone-attention-text)", marginBottom: 8, fontSize: "0.95rem" }}>Infrastructure retries</h2>
-          <ul style={{ margin: 0, paddingLeft: 18 }}>
+        <Callout tone="attention" title="Infrastructure retries">
+          <ul className="list-disc space-y-1 pl-5 text-muted-foreground">
             {report.infrastructureFailures.map((f, i) => (
-              <li key={i} className="text-muted">
-                Attempt {f.attempt}: <strong>{f.category.replace(/_/g, " ")}</strong>
+              <li key={i}>
+                Attempt {f.attempt}: <strong className="text-foreground">{f.category.replace(/_/g, " ")}</strong>
                 {f.retryable ? " (retryable)" : " (not retryable)"} — {f.reason}
               </li>
             ))}
           </ul>
-        </div>
-      )}
-
-      {report.bugFixVerification && (
-        <div className="section">
-          <h2>Bug-fix verification</h2>
-          <p className="text-muted">Platform-captured evidence (check <code>{report.bugFixVerification.contract.checkId}</code>), not an AI claim.</p>
-          <p>Reproduction: <strong>{report.bugFixVerification.reproduction?.status.replace(/_/g, " ") ?? "not run yet"}</strong></p>
-          <p>Fix verification: <strong>{report.bugFixVerification.fixVerification?.status.replace(/_/g, " ") ?? "not run yet"}</strong></p>
-        </div>
+        </Callout>
       )}
 
       <DurationStats durations={report.durations} />
 
-      <div className="section">
-        <h2>What changed</h2>
+      {report.bugFixVerification && (
+        <Section
+          title="Bug-fix verification"
+          description={
+            <>
+              Platform-captured evidence (check <code className="font-mono">{report.bugFixVerification.contract.checkId}</code>), not
+              an AI claim.
+            </>
+          }
+        >
+          <dl className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-sm">
+            <dt className="text-muted-foreground">Reproduction</dt>
+            <dd className="font-medium">{report.bugFixVerification.reproduction?.status.replace(/_/g, " ") ?? "not run yet"}</dd>
+            <dt className="text-muted-foreground">Fix verification</dt>
+            <dd className="font-medium">{report.bugFixVerification.fixVerification?.status.replace(/_/g, " ") ?? "not run yet"}</dd>
+          </dl>
+        </Section>
+      )}
+
+      <Section
+        title="What changed"
+        actions={
+          <span className="text-xs text-muted-foreground">
+            {report.filesChanged} file{report.filesChanged === 1 ? "" : "s"} changed
+            {report.commitSha && ` · commit ${report.commitSha.slice(0, 7)}`}
+          </span>
+        }
+      >
         <Markdown text={report.whatChanged} />
-        <p className="text-muted" style={{ marginTop: 8 }}>
-          {report.filesChanged} file{report.filesChanged === 1 ? "" : "s"} changed
-          {report.commitSha && ` · commit ${report.commitSha.slice(0, 7)}`}
-        </p>
-      </div>
+      </Section>
 
       {report.pullRequest && (
-        <div className="section">
-          <h2>Pull Request</h2>
-          <p>
+        <Section title="Pull Request">
+          <div className="flex flex-wrap items-center gap-2 text-sm">
+            <GitPullRequestIcon className="size-4 text-muted-foreground" aria-hidden="true" />
             {report.pullRequest.url ? (
-              <a href={report.pullRequest.url} target="_blank" rel="noreferrer">
+              <a
+                className="inline-flex items-center gap-1 font-medium text-primary hover:underline"
+                href={report.pullRequest.url}
+                target="_blank"
+                rel="noreferrer"
+              >
                 {report.pullRequest.number ? `#${report.pullRequest.number}` : "View Pull Request"}
+                <ExternalLinkIcon className="size-3.5" aria-hidden="true" />
               </a>
             ) : (
               "A Pull Request was opened."
             )}
             {report.pullRequest.branch && (
-              <span className="text-muted">
+              <span className="text-muted-foreground">
                 {" "}
-                — <code>{report.pullRequest.branch}</code> → <code>{report.pullRequest.baseBranch}</code>
+                — <code className="font-mono text-xs">{report.pullRequest.branch}</code> →{" "}
+                <code className="font-mono text-xs">{report.pullRequest.baseBranch}</code>
               </span>
             )}
-          </p>
-          <p className="text-muted" style={{ marginTop: 4 }}>
+          </div>
+          <p className="mt-2 text-sm text-muted-foreground">
             A human review and merge decision on GitHub is still required — this platform never auto-merges.
           </p>
-        </div>
+        </Section>
       )}
 
-      <div className="section">
-        <h2>Checks</h2>
+      <Section title="Checks">
         {report.checks.length === 0 ? (
-          <p className="text-muted">No checks have run yet.</p>
+          <p className="text-sm text-muted-foreground">No checks have run yet.</p>
         ) : (
-          <div className="checks-list">
+          <ul className="divide-y rounded-2xl border">
             {report.checks.map((check) => (
-              <div className={`check-row ${check.passed ? "passed" : "failed"}`} key={check.name}>
-                <span>{check.passed ? "✓" : "✗"}</span>
-                <span style={{ textTransform: "capitalize" }}>{check.name}</span>
-                <span className="text-muted">{check.passed ? "passed" : "failed"}</span>
-              </div>
+              <li className="flex items-center gap-3 px-4 py-2.5 text-sm" key={check.name}>
+                {check.passed ? (
+                  <CircleCheckIcon className="size-4 text-tone-success" aria-hidden="true" />
+                ) : (
+                  <CircleXIcon className="size-4 text-tone-danger" aria-hidden="true" />
+                )}
+                <span className="flex-1 font-medium capitalize">{check.name}</span>
+                <span className={cn("text-xs", check.passed ? "text-tone-success" : "text-tone-danger")}>
+                  {check.passed ? "passed" : "failed"}
+                </span>
+              </li>
             ))}
-          </div>
+          </ul>
         )}
-      </div>
+      </Section>
 
-      <div className="section">
-        <h2>Independent review</h2>
-        {report.confidence && (
-          <p className="text-muted" style={{ marginBottom: 8 }}>
-            Confidence: <strong style={{ textTransform: "capitalize" }}>{report.confidence}</strong>
-          </p>
-        )}
+      <Section
+        title="Independent review"
+        actions={
+          report.confidence && (
+            <span className="text-xs text-muted-foreground">
+              Confidence: <strong className="text-foreground capitalize">{report.confidence}</strong>
+            </span>
+          )
+        }
+      >
         {report.reviewFindings.length === 0 ? (
           report.reviewSummary ? (
             <Markdown text={report.reviewSummary} />
           ) : (
-            <p className="text-muted">No concerns raised.</p>
+            <p className="text-sm text-muted-foreground">No concerns raised.</p>
           )
         ) : (
-          <div className="findings-list">
-            {report.reviewFindings.map((finding, i) => (
-              <div className="finding-row" key={i}>
-                <span style={{ textTransform: "capitalize" }}>{finding.severity}</span>
-                <span>—</span>
-                <span>{finding.summary}</span>
-              </div>
-            ))}
-          </div>
+          <FindingList findings={report.reviewFindings} />
         )}
-      </div>
+      </Section>
 
       <UsageSummary usage={report.usage} />
 
-      <div className="section">
-        <details className="execution-details" open={report.agentRuns.length > 0 && report.agentRuns.length <= 3}>
-          <summary>
-            <h2 style={{ display: "inline" }}>Execution details</h2>
-          </summary>
-          <div className="execution-details-body">
-            {task.branchName && (
-              <p className="text-muted" style={{ fontSize: "0.85rem" }}>
-                Branch: <code>{task.branchName}</code>
-              </p>
-            )}
-            <h3 style={{ fontSize: "0.85rem", marginTop: 12, marginBottom: 8 }}>Agent runs</h3>
-            <AgentRunHistory runs={report.agentRuns} />
-          </div>
-        </details>
-      </div>
+      <details
+        className="group rounded-3xl bg-card text-card-foreground ring-1 ring-foreground/10"
+        open={report.agentRuns.length > 0 && report.agentRuns.length <= 3}
+      >
+        <summary className="flex cursor-pointer list-none items-center justify-between gap-3 p-5 [&::-webkit-details-marker]:hidden">
+          <h2 className="text-base font-semibold">Execution details</h2>
+          <span className="text-xs text-muted-foreground group-open:hidden">Show</span>
+          <span className="hidden text-xs text-muted-foreground group-open:inline">Hide</span>
+        </summary>
+        <div className="space-y-3 px-5 pb-5">
+          {task.branchName && (
+            <p className="text-sm text-muted-foreground">
+              Branch: <code className="font-mono text-xs">{task.branchName}</code>
+            </p>
+          )}
+          <h3 className="text-sm font-medium">Agent runs</h3>
+          <AgentRunHistory runs={report.agentRuns} />
+        </div>
+      </details>
     </div>
   );
 }
+
+/**
+ * "This task used N tokens" for the outcome callout (TD-63). Agent-run prompts aren't stored, so runs that
+ * reported nothing can't be estimated — that's said plainly instead of guessing.
+ */
+function TaskTokenLine({ usage }: { usage: TaskReport["usage"] }) {
+  if (!usage || usage.runsCounted === 0) return null;
+  const total = usage.totalTokens ?? null;
+  const missing = usage.runsCounted - usage.runsWithUsage;
+  return (
+    <p className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
+      <CoinsIcon className="size-3.5" aria-hidden="true" />
+      {total === null ? (
+        <span>The coding engine didn't report token usage for this task's {usage.runsCounted} AI run{usage.runsCounted === 1 ? "" : "s"}.</span>
+      ) : (
+        <span>
+          Used <strong className="font-medium text-foreground">{tokenLabel(total, false)}</strong> across {usage.runsCounted} AI run
+          {usage.runsCounted === 1 ? "" : "s"}
+          {missing > 0 ? ` — ${missing} run${missing === 1 ? "" : "s"} reported no usage, so the real total is higher` : ""}.
+        </span>
+      )}
+    </p>
+  );
+}
+

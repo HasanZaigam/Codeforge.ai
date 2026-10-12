@@ -2,6 +2,9 @@ import { useState, type FormEvent } from "react";
 import { Dialog } from "../common/Dialog.js";
 import { ErrorState } from "../common/ErrorState.js";
 import { githubIntegrationApi, type GitHubConnectionDTO } from "../../api/index.js";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 
 /**
  * Deliberately simple: a personal access token pasted into a form, verified
@@ -48,9 +51,9 @@ export function GitHubConnectDialog({
       onClose={onClose}
     >
       <form onSubmit={handleSubmit}>
-        <div className="field">
-          <label htmlFor="github-token">Personal access token</label>
-          <input
+        <div className="mb-4 flex flex-col gap-2">
+          <Label htmlFor="github-token">Personal access token</Label>
+          <Input
             id="github-token"
             type="password"
             value={token}
@@ -60,20 +63,20 @@ export function GitHubConnectDialog({
             maxLength={4000}
             autoComplete="off"
           />
-          <p className="field-hint">
+          <p className="text-sm text-muted-foreground">
             Needs <code>repo</code> scope so the platform can commit, push, and open Pull Requests on your behalf. The token is
             encrypted at rest and never shown again, sent to the AI developer, or logged — this platform cannot show you back a
             token you already connected, only replace it with a new one.
           </p>
         </div>
         {error && <ErrorState message={error} />}
-        <div className="dialog-actions">
-          <button type="button" className="btn btn-secondary" onClick={onClose} disabled={submitting}>
+        <div className="flex flex-col-reverse gap-2 pt-2 sm:flex-row sm:justify-end">
+          <Button variant="outline" type="button" onClick={onClose} disabled={submitting}>
             Cancel
-          </button>
-          <button type="submit" className="btn btn-primary" disabled={submitting || !token.trim()}>
+          </Button>
+          <Button type="submit" disabled={submitting || !token.trim()}>
             {submitting ? "Connecting…" : isReplace ? "Save new token" : "Connect account"}
-          </button>
+          </Button>
         </div>
       </form>
     </Dialog>

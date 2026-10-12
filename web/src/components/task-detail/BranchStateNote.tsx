@@ -1,13 +1,15 @@
 import type { BranchStateDTO, TaskDTO } from "../../api/index.js";
+import { ToneBadge } from "../common/ToneBadge.js";
+import type { Tone } from "../../lib/tone.js";
 
 /**
- * Reuses the exact same `.status-badge.tone-*` visual language TaskStatus
- * already uses (see StatusBadge/statusMeta.ts) — no new visual language
+ * Reuses the exact same tone-badge visual language TaskStatus already uses
+ * (see StatusBadge/statusMeta.ts/tone.ts) — no new visual language
  * introduced. Detection only (see /docs/TASK_LIFECYCLE.md "Stale/behind
  * detection" and "Merge/conflict state"): this never offers a rebase/merge
  * action, only informs.
  */
-const MERGE_STATE_META: Record<BranchStateDTO["mergeState"], { label: string; tone: string } | null> = {
+const MERGE_STATE_META: Record<BranchStateDTO["mergeState"], { label: string; tone: Tone } | null> = {
   READY: null, // nothing worth calling out — avoid noise for the common case
   BEHIND: null, // already surfaced via the more specific `behindLabel` below ("N commits behind…") — avoid a redundant second badge
   CONFLICT: { label: "Merge conflict", tone: "danger" },
@@ -30,9 +32,9 @@ export function BranchStateNote({ task, branchState }: { task: TaskDTO; branchSt
   if (!behindLabel && !mergeMeta) return null;
 
   return (
-    <div className="branch-state-note" style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 8 }}>
-      {behindLabel && <span className="status-badge tone-attention">{behindLabel}</span>}
-      {mergeMeta && <span className={`status-badge tone-${mergeMeta.tone}`}>{mergeMeta.label}</span>}
+    <div className="flex flex-wrap gap-2">
+      {behindLabel && <ToneBadge tone="attention">{behindLabel}</ToneBadge>}
+      {mergeMeta && <ToneBadge tone={mergeMeta.tone}>{mergeMeta.label}</ToneBadge>}
     </div>
   );
 }

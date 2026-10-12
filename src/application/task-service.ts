@@ -26,7 +26,8 @@ import {
   type TaskDependencyRepository,
 } from "../persistence/repositories/task-dependency-repository.js";
 import { deriveBranchState, type BranchStateSummary } from "../reporting/branch-state.js";
-import type { Project } from "../domain/types.js";
+import { scopeProjectToRepo, type Project } from "../domain/types.js";
+import { resolveRepositoryFor } from "./repository-resolution.js";
 
 /**
  * True iff adding the edge `taskId -> dependsOnTaskId` (task depends on dependsOnTaskId) would
@@ -60,6 +61,11 @@ export function wouldCreateCycle(taskId: string, dependsOnTaskId: string, existi
 
 export interface CreateTaskInput {
   projectId: string;
+  /**
+   * Which of the project's repositories this task works in (TD-62). Optional when the project has
+   * exactly one; required (RepositoryRequiredError) when it has several — never guessed.
+   */
+  repositoryId?: string | null;
   title: string;
   /** Plain-language description — the API never requires a technical prompt. See PRODUCT_REQUIREMENTS.md FR-3. */
   description: string;
@@ -159,7 +165,12 @@ export class TaskService {
    * isolated copy).
    */
   async create(input: CreateTaskInput, actorId: string): Promise<Task> {
-    const project = assertProjectAccess(this.projects, input.projectId, actorId);
+    // The project as seen from the task's repository: branch validation, default branch and later
+    // execution all happen against that one repository.
+    const project = scopeProjectToRepo(
+      assertProjectAccess(this.projects, input.projectId, actorId),
+      resolveRepositoryFor(this.projects.listRepos(input.projectId), input.repositoryId),
+    );
     const branchMode: BranchMode = input.branchMode ?? "new";
 
     try {
@@ -167,6 +178,7 @@ export class TaskService {
       const task = createTask(this.tasks, this.taskEvents, {
         tenantId: project.tenantId,
         projectId: project.id,
+        repositoryId: project.repositoryId,
         title: input.title,
         goal: input.description,
         createdBy: actorId,
@@ -196,7 +208,7 @@ export class TaskService {
       // user-facing BranchInUseError the pre-check throws for the non-racing case, never a raw
       // SQLite error. See TaskRepository.isActiveExistingBranchConstraintViolation.
       if (branchMode === "existing" && isActiveExistingBranchConstraintViolation(err)) {
-        const winner = this.tasks.listActiveUsingExistingBranch(project.id, input.existingBranch!)[0];
+        const winner = this.tasks.listActiveUsingExistingBranch(project.id, input.existingBranch!, project.repositoryId ?? null)[0];
         throw new BranchInUseError(input.existingBranch!, winner?.title ?? "another task");
       }
       throw err;
@@ -218,7 +230,11 @@ export class TaskService {
     if (task.status !== "BACKLOG") {
       throw new TaskNotEditableError(task.status);
     }
-    const project = this.projects.findById(task.projectId)!; // known-accessible via assertTaskAccess above
+    // A BACKLOG task may be moved to another repository of the same project; otherwise it keeps its own.
+    const project = scopeProjectToRepo(
+      this.projects.findById(task.projectId)!, // known-accessible via assertTaskAccess above
+      resolveRepositoryFor(this.projects.listRepos(task.projectId), input.repositoryId ?? task.repositoryId),
+    );
     const branchMode: BranchMode = input.branchMode ?? "new";
 
     try {
@@ -226,7 +242,7 @@ export class TaskService {
       const now = new Date().toISOString();
       const updated = this.tasks.updateBacklogConfig(
         taskId,
-        { title: input.title, goal: input.description, branchMode, workingBranch, baseBranch },
+        { title: input.title, goal: input.description, branchMode, workingBranch, baseBranch, repositoryId: project.repositoryId ?? null },
         now,
       );
       if (!updated) {
@@ -239,7 +255,7 @@ export class TaskService {
       return this.tasks.findById(taskId)!;
     } catch (err) {
       if (branchMode === "existing" && isActiveExistingBranchConstraintViolation(err)) {
-        const winner = this.tasks.listActiveUsingExistingBranch(project.id, input.existingBranch!).find((t) => t.id !== taskId);
+        const winner = this.tasks.listActiveUsingExistingBranch(project.id, input.existingBranch!, project.repositoryId ?? null).find((t) => t.id !== taskId);
         throw new BranchInUseError(input.existingBranch!, winner?.title ?? "another task");
       }
       throw err;
@@ -269,7 +285,7 @@ export class TaskService {
   ): Promise<{ workingBranch: string | null; baseBranch: string | null }> {
     if (branchMode === "existing") {
       const branch = input.existingBranch!; // guaranteed present by CreateTaskSchema/EditTaskSchema's refine
-      const conflicting = this.tasks.listActiveUsingExistingBranch(project.id, branch).find((t) => t.id !== excludeTaskId);
+      const conflicting = this.tasks.listActiveUsingExistingBranch(project.id, branch, project.repositoryId ?? null).find((t) => t.id !== excludeTaskId);
       if (conflicting) {
         throw new BranchInUseError(branch, conflicting.title);
       }
@@ -299,8 +315,11 @@ export class TaskService {
   }
 
   /** See SourceControlProvider.listBranches's own doc comment — advisory UI data for the "existing branch" picker. */
-  async listBranches(projectId: string, actorId: string): Promise<string[]> {
-    const project = assertProjectAccess(this.projects, projectId, actorId);
+  async listBranches(projectId: string, actorId: string, repositoryId?: string | null): Promise<string[]> {
+    const project = scopeProjectToRepo(
+      assertProjectAccess(this.projects, projectId, actorId),
+      resolveRepositoryFor(this.projects.listRepos(projectId), repositoryId),
+    );
     const scProvider = this.sourceControlProviders.resolve(project.sourceControlProvider);
     const controller = new AbortController();
     return scProvider.listBranches(project, controller.signal);
@@ -316,7 +335,7 @@ export class TaskService {
    */
   async getBranchState(taskId: string, actorId: string): Promise<BranchStateSummary> {
     const task = assertTaskAccess(this.tasks, this.projects, taskId, actorId);
-    const project = this.projects.findById(task.projectId); // already known-accessible via assertTaskAccess above
+    const project = this.projects.findScoped(task.projectId, task.repositoryId); // already known-accessible via assertTaskAccess above
     const branch = task.taskRecord.branchName ?? task.workingBranch;
     if (!project || !branch) {
       return deriveBranchState(null, null, null);
@@ -356,7 +375,7 @@ export class TaskService {
     if (!pr) {
       return { hasPullRequest: false, available: true, number: null, url: null, provider: null, state: null, error: null };
     }
-    const project = this.projects.findById(task.projectId); // already known-accessible via assertTaskAccess above
+    const project = this.projects.findScoped(task.projectId, task.repositoryId); // already known-accessible via assertTaskAccess above
     if (!project) {
       return { hasPullRequest: true, available: false, number: pr.number, url: pr.url, provider: pr.provider, state: null, error: "This project could no longer be found." };
     }
@@ -394,7 +413,7 @@ export class TaskService {
 
   getReport(taskId: string, actorId: string): TaskReport {
     const task = assertTaskAccess(this.tasks, this.projects, taskId, actorId);
-    const project = this.projects.findById(task.projectId); // already known-accessible via assertTaskAccess above
+    const project = this.projects.findScoped(task.projectId, task.repositoryId); // already known-accessible via assertTaskAccess above
     const runs = this.agentRuns.listForTask(taskId);
     const events = this.taskEvents.listForTask(taskId);
     // Mirrors Orchestrator.runWorkingEpisode's own `pullRequestBaseBranch` derivation: "existing"

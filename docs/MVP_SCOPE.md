@@ -9,7 +9,7 @@ Goal of the MVP, stated precisely: prove that **one developer can create a plain
 - Basic session/token auth. No SSO.
 
 **Projects**
-- One or more projects can be connected, each to exactly one GitHub repository.
+- One or more projects can be created. A project holds one repository (a monorepo) or several (e.g. frontend, backend, admin), connected after the project is created; each repository has its own default branch and validation commands. Every task and backlog item targets exactly one of the project's repositories — see [TECHNICAL_DECISIONS.md](./TECHNICAL_DECISIONS.md) TD-62. *(Originally "each to exactly one GitHub repository"; widened at the user's request.)*
 - Project config (build/test/lint commands, coding-engine choice) is declarable; if undeclared, discovered once by the Implementer and cached (see [CONTEXT_ARCHITECTURE.md](./CONTEXT_ARCHITECTURE.md)).
 
 **UI**
@@ -50,7 +50,7 @@ Goal of the MVP, stated precisely: prove that **one developer can create a plain
 - **Dedicated observability/tracing stack** — the audit event log suffices for v1 debugging.
 - **Native mobile app.**
 - **Backlog import, project chat, "Start All"/dependency scheduling, cross-task dependency enforcement** — Phases 4B–4E. Phase 4A ([BACKLOG_INTELLIGENCE.md](./BACKLOG_INTELLIGENCE.md)) ships only the backlog/analysis/proposal foundation; it executes nothing.
-- **Cross-project/cross-repository planning** (a task always targets one project).
+- **Cross-project/cross-repository tasks** — a task always targets one project and one of its repositories. Work spanning repositories is split into one task per repository, linked with the existing "Depends on" dependencies (TD-62); there is no single task that changes several repositories at once.
 
 ## Explicit assumptions made to keep this list decisive
 

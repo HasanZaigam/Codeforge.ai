@@ -3,7 +3,8 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { CreateTaskDialog } from "./CreateTaskDialog.js";
 import { projectsApi, tasksApi, type TaskDTO } from "../../api/index.js";
-import { makeTask } from "../../test/fixtures.js";
+import { makeRepository, makeTask } from "../../test/fixtures.js";
+import { MemoryRouter } from "react-router-dom";
 
 vi.mock("../../api/projects.js", () => ({
   projectsApi: { list: vi.fn(), get: vi.fn(), create: vi.fn(), verifyGitHubRepo: vi.fn(), listTasks: vi.fn(), createTask: vi.fn(), listBranches: vi.fn() },
@@ -309,5 +310,71 @@ describe("CreateTaskDialog dependencies", () => {
 
     expect(screen.getByText(/dependencies can no longer be changed/i)).toBeInTheDocument();
     expect(screen.getByRole("checkbox", { name: "Dependency task" })).toBeDisabled();
+  });
+});
+
+describe("CreateTaskDialog repositories (multi-repository projects)", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  const FRONTEND = makeRepository({ id: "fe", name: "frontend", defaultBranch: "main" });
+  const BACKEND = makeRepository({ id: "be", name: "backend", defaultBranch: "develop" });
+
+  function renderWith(repositories: ReturnType<typeof makeRepository>[], onCreated = vi.fn()) {
+    render(
+      <MemoryRouter>
+        <CreateTaskDialog projectId="p1" defaultBranch="main" repositories={repositories} allTasks={[]} onClose={vi.fn()} onCreated={onCreated} />
+      </MemoryRouter>,
+    );
+    return { onCreated };
+  }
+
+  async function fill() {
+    await userEvent.type(screen.getByLabelText(/title/i), "Fix login");
+    await userEvent.type(screen.getByLabelText(/description/i), "Login fails");
+  }
+
+  test("with several repositories the user must choose one — nothing is guessed", async () => {
+    renderWith([FRONTEND, BACKEND]);
+    await fill();
+    expect(screen.getByLabelText("Repository")).toHaveValue("");
+    expect(screen.getByRole("button", { name: /^create task$/i })).toBeDisabled();
+
+    await userEvent.selectOptions(screen.getByLabelText("Repository"), "be");
+    expect(screen.getByLabelText("Base branch")).toHaveValue("develop");
+    expect(screen.getByRole("button", { name: /^create task$/i })).toBeEnabled();
+  });
+
+  test("the chosen repository is sent, and existing-branch mode lists THAT repository's branches", async () => {
+    mockedProjectsApi.listBranches.mockResolvedValue(["develop", "release"]);
+    mockedProjectsApi.createTask.mockResolvedValue(makeTask({ id: "t1", repositoryId: "be" }));
+    const { onCreated } = renderWith([FRONTEND, BACKEND]);
+    await fill();
+    await userEvent.selectOptions(screen.getByLabelText("Repository"), "be");
+    await userEvent.selectOptions(screen.getByLabelText("Branch"), "existing");
+    await waitFor(() => expect(mockedProjectsApi.listBranches).toHaveBeenCalledWith("p1", "be"));
+    await userEvent.selectOptions(await screen.findByLabelText("Existing branch"), "release");
+    await userEvent.click(screen.getByRole("button", { name: /^create task$/i }));
+
+    await waitFor(() => expect(onCreated).toHaveBeenCalled());
+    expect(mockedProjectsApi.createTask).toHaveBeenCalledWith("p1", expect.objectContaining({ repositoryId: "be", branchMode: "existing", existingBranch: "release" }));
+  });
+
+  test("a single repository is chosen automatically and no picker is shown", async () => {
+    mockedProjectsApi.createTask.mockResolvedValue(makeTask({ id: "t1" }));
+    renderWith([BACKEND]);
+    await fill();
+    expect(screen.queryByLabelText("Repository")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Base branch")).toHaveValue("develop");
+    await userEvent.click(screen.getByRole("button", { name: /^create task$/i }));
+    await waitFor(() => expect(mockedProjectsApi.createTask).toHaveBeenCalledWith("p1", expect.objectContaining({ repositoryId: "be" })));
+  });
+
+  test("a project with no repository can't create tasks and points to Settings", async () => {
+    renderWith([]);
+    await fill();
+    expect(screen.getByRole("link", { name: "Connect one in Settings" })).toHaveAttribute("href", "/projects/p1/settings");
+    expect(screen.getByRole("button", { name: /^create task$/i })).toBeDisabled();
   });
 });

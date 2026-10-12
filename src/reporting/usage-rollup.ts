@@ -85,6 +85,12 @@ export interface TaskUsageRollup {
   /** Runs that reported at least one token field. */
   runsWithUsage: number;
   totals: UsageNumbers;
+  /**
+   * Input + output + reasoning tokens over the runs that reported usage — the one "tokens used" number
+   * shown on task completion/failure (TD-63, same formula as the project meter). Null when no run
+   * reported any. A lower bound whenever `runsWithUsage < runsCounted`.
+   */
+  totalTokens: number | null;
   /** How many runs reported each field (a total over 2 of 5 runs is a partial total). */
   runsReporting: Record<UsageField, number>;
   providerReportedEstimate: ProviderReportedEstimateTotal | null;
@@ -185,6 +191,10 @@ export function rollupUsage(agentRuns: AgentRun[]): TaskUsageRollup {
     runsCounted: runs.length,
     runsWithUsage: runs.filter((r) => r.usage !== null).length,
     totals,
+    totalTokens:
+      totals.inputTokens === null && totals.outputTokens === null && totals.reasoningTokens === null
+        ? null
+        : (totals.inputTokens ?? 0) + (totals.outputTokens ?? 0) + (totals.reasoningTokens ?? 0),
     runsReporting: reporting,
     providerReportedEstimate: sumEstimates(runs),
     codeforgeCalculatedCost: null,

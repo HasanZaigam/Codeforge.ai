@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { screen, waitFor } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderApp } from "../test/render.js";
 import { makeAgentRunHistoryItem, makeEvent, makeInputRequest, makeReport, makeTask } from "../test/fixtures.js";
@@ -142,7 +142,7 @@ describe("TaskDetailPage", () => {
 
     renderApp("/tasks/task-1");
 
-    await waitFor(() => expect(screen.getByText("✓ Completed")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Completed" })).toBeInTheDocument());
     expect(screen.getByText("Updated session timeout handling.")).toBeInTheDocument();
     expect(screen.getByText("5 files changed")).toBeInTheDocument();
     expect(screen.getByText("build")).toBeInTheDocument();
@@ -180,7 +180,7 @@ describe("TaskDetailPage", () => {
     expect(screen.getAllByText(/Completed — PR #42 merged/).length).toBeGreaterThan(0);
     // The merge transition itself shows in the activity timeline, via the existing event-label convention.
     expect(screen.getByText("Pull Request merged on GitHub — task completed")).toBeInTheDocument();
-    expect(screen.getByText("✓ Completed")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Completed" })).toBeInTheDocument();
   });
 
   it("shows a clean failure reason (e.g. an exhausted review/fix cycle) when a task is FAILED", async () => {
@@ -213,7 +213,8 @@ describe("TaskDetailPage", () => {
 
     await waitFor(() => expect(screen.getByText("development instructions")).toBeInTheDocument());
     expect(screen.getByText("README.md").tagName).toBe("CODE");
-    expect(screen.getAllByRole("listitem")).toHaveLength(2);
+    const whatChanged = screen.getByRole("heading", { name: "What changed" }).closest("section") as HTMLElement;
+    expect(within(whatChanged).getAllByRole("listitem")).toHaveLength(2);
   });
 
   it("never renders raw agent execution event JSON as the task summary, even if it somehow reached the report", async () => {
@@ -413,7 +414,7 @@ describe("TaskDetailPage", () => {
 
     renderApp("/tasks/task-1");
 
-    await waitFor(() => expect(screen.getByText("✓ Completed")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Completed" })).toBeInTheDocument());
     expect(screen.getByText("Updated session timeout handling.")).toBeInTheDocument();
     expect(screen.getByText("5 files changed")).toBeInTheDocument();
   });

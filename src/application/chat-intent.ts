@@ -948,7 +948,7 @@ async function formatOne(
     case "TASK_EXECUTION": {
       const detail = ctx.getTaskDetail(projectId, intent.taskId, actorId);
       const exec = ctx.getLatestExecution(projectId, intent.taskId, actorId);
-      const parts = [`"${detail.title}" is currently ${statusLabel(detail.status)}.`];
+      const parts = [`"${detail.title}"${detail.repositoryName ? ` (repository: ${detail.repositoryName})` : ""} is currently ${statusLabel(detail.status)}.`];
       if (exec) {
         parts.push(`The last execution (${exec.role}, model ${exec.modelId ?? "unrecorded"}) ${exec.status === "completed" ? "completed" : exec.status}${exec.summary ? `: ${exec.summary}` : "."}`);
         if (exec.validationOutcome) parts.push(`Validation: ${exec.validationOutcome}.`);
@@ -1138,7 +1138,7 @@ async function executeAction(
   let createdTaskId: string | undefined;
   switch (intent.type) {
     case "ACTION_CREATE_TASK": {
-      const r = await actions.createTask(projectId, actorId, { title: intent.title, description: intent.description });
+      const r = await actions.createTask(projectId, actorId, { title: intent.title, description: intent.description, repositoryHint: intent.clause });
       result = r;
       createdTaskId = r.taskId;
       break;

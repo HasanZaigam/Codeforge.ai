@@ -413,7 +413,7 @@ test("E2E with a REAL revision: analysis is run against a real git repository, t
   try {
     h.platform.projects.updateCommands(h.project.id, { claimChecks: [THROTTLE] }, new Date().toISOString());
     // Point the project at the real repository so the platform can prepare the workspace itself.
-    h.platform.db.prepare("UPDATE projects SET repo_url = ? WHERE id = ?").run(repo.dir, h.project.id);
+    h.platform.db.prepare("UPDATE project_repos SET repo_url = ? WHERE project_id = ?").run(repo.dir, h.project.id);
     const item = h.item("No limit on OTP attempts", "BUG-073", "There is no limit on OTP attempts during login.");
     await h.analyze(item.id);
     assert.equal(h.platform.backlogAnalyses.findLatestForItem(item.id)!.platformChecks!.assessment!.reconciliation!.revision, repo.sha);
@@ -493,7 +493,7 @@ test("ClaimVerifier refuses politely: no analysis, an analysis that did not reco
     assert.throws(() => h.services.claimVerifier.request(item.id, h.owner.id), /no successful analysis/);
 
     // No approved checks ⇒ nothing bound ⇒ returns a note; a bogus repo URL proves no workspace was even attempted.
-    h.platform.db.prepare("UPDATE projects SET repo_url = ? WHERE id = ?").run("/definitely/not/a/repo", h.project.id);
+    h.platform.db.prepare("UPDATE project_repos SET repo_url = ? WHERE project_id = ?").run("/definitely/not/a/repo", h.project.id);
     await h.analyze(item.id);
     const none = h.services.claimVerifier.request(item.id, h.owner.id);
     assert.deepEqual(none.jobs, []);

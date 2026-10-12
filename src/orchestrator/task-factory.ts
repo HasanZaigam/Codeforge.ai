@@ -35,6 +35,8 @@ export interface CreateTaskInput {
    * reachable from the HTTP API (CreateTaskSchema has no such field).
    */
   id?: string;
+  /** The project repository this task works in (TD-62). Absent: the project's primary repository (see TaskRepository.insert). */
+  repositoryId?: string | null;
   /** Phase 4A — provenance recorded on the TASK_CREATED event (which backlog item / approved proposal this task came from). Informational only; nothing reads it to make a decision. */
   origin?: { backlogItemId: string; taskProposalId: string };
 }
@@ -68,6 +70,7 @@ export function createTask(taskRepo: TaskRepository, eventRepo: TaskEventReposit
     id: input.id ?? randomUUID(),
     tenantId: input.tenantId,
     projectId: input.projectId,
+    repositoryId: input.repositoryId ?? null,
     title: input.title,
     goal: input.goal,
     // Always set explicitly, never relying on the `tasks.status` column's SQL DEFAULT

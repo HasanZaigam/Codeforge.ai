@@ -27,6 +27,8 @@ export type BacklogSource = "manual" | "import";
 export interface BacklogItem {
   id: string;
   projectId: string;
+  /** The project repository this item concerns (TD-62) — analysis runs against it and a converted task inherits it. Falls back to the primary repository on insert. */
+  repositoryId?: string | null;
   /** Optional caller-supplied reference (e.g. "BUG-002"), unique per project when present. */
   externalRef: string | null;
   title: string;

@@ -26,7 +26,7 @@ export function backlogBulkRouter(services: ApplicationServices): Router {
     "/projects/:projectId/backlog/imports",
     asyncHandler(async (req, res) => {
       const b = ImportBodySchema.parse(req.body);
-      res.status(201).json(bulk.confirmImport(req.params.projectId!, b.csv, { sourceName: b.sourceName, mapping: b.mapping }, req.user!.id));
+      res.status(201).json(bulk.confirmImport(req.params.projectId!, b.csv, { sourceName: b.sourceName, mapping: b.mapping, repositoryId: b.repositoryId }, req.user!.id));
     }),
   );
 

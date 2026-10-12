@@ -177,6 +177,13 @@ export interface Task {
   id: string;
   tenantId: string;
   projectId: string;
+  /**
+   * The ONE repository of the project this task works in (see ProjectRepo / TD-62). Workspace,
+   * branch, Pull Request and validation commands all come from this repository. Optional on input
+   * only for backward compatibility: TaskRepository.insert falls back to the project's primary
+   * repository, so every persisted task of a project that has a repository carries one.
+   */
+  repositoryId?: string | null;
   title: string;
   /**
    * Original plain-language description. Editable only while the task is still BACKLOG (see
@@ -433,12 +440,42 @@ export interface ProjectCommands {
   claimChecks?: ApprovedClaimCheck[];
 }
 
+/**
+ * One repository connected to a project (TD-62). A monorepo project has exactly one; a project split
+ * across repositories (frontend / backend / admin …) has several. Holds everything that used to live
+ * directly on Project and is genuinely per-repository: identity, default branch, source-control
+ * provider, and the validation commands that run inside it.
+ */
+export interface ProjectRepo {
+  id: string;
+  projectId: string;
+  /** Short label, unique within the project ("frontend", "backend") — how tasks, Chat and the UI name it. */
+  name: string;
+  repoUrl: string;
+  defaultBranch: string;
+  sourceControlProvider: string;
+  owner: string | null;
+  repo: string | null;
+  commands: ProjectCommands | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface Project {
   id: string;
   tenantId: string;
   /** The user who connected this project — the MVP access model is User -> owns -> Project. See /docs/AUTHENTICATION.md. */
   ownerId: string;
   name: string;
+  /**
+   * Repository fields below (repoUrl/defaultBranch/sourceControlProvider/owner/repo/commands) describe
+   * ONE repository of this project — never the project as a whole. ProjectRepository.findById fills
+   * them from the project's PRIMARY (earliest-connected) repository, or leaves them empty when the
+   * project has none yet. Anything that executes against a repository (a task, a backlog analysis)
+   * must use the project scoped to ITS repository instead — see scopeProjectToRepo / TD-62.
+   * `repositoryId` names which repository the fields came from (null/absent: none connected yet).
+   */
+  repositoryId?: string | null;
   repoUrl: string;
   defaultBranch: string;
   codingEngine: string; // e.g. "claude-code" — provider key, not a hardcoded type
@@ -1198,4 +1235,18 @@ export interface ReviewResult {
    * cycle. See VerificationEvidence's own doc comment.
    */
   verification: VerificationEvidence | null;
+}
+
+/** The project as seen from one of its repositories — the shape every repository-bound code path (workspace, source control, validation, analysis) consumes. */
+export function scopeProjectToRepo(project: Project, repo: ProjectRepo): Project {
+  return {
+    ...project,
+    repositoryId: repo.id,
+    repoUrl: repo.repoUrl,
+    defaultBranch: repo.defaultBranch,
+    sourceControlProvider: repo.sourceControlProvider,
+    owner: repo.owner,
+    repo: repo.repo,
+    commands: repo.commands,
+  };
 }

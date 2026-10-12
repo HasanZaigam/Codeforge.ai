@@ -1,6 +1,7 @@
 import { Link, useOutletContext } from "react-router-dom";
 import type { ProjectOutletContext } from "./ProjectLayout.js";
 import { AdjudicationPanel } from "../components/backlog/AdjudicationPanel.js";
+import { ChevronLeftIcon } from "lucide-react";
 
 /**
  * Internal-only route (not in primary project navigation, linked from Settings → Advanced). Holds the
@@ -12,13 +13,14 @@ export function ProjectEvaluationPage() {
   const { project } = useOutletContext<ProjectOutletContext>();
   return (
     <div>
-      <Link to={`/projects/${project.id}/settings`} className="breadcrumb">
-        ← Back to settings
+      <Link to={`/projects/${project.id}/settings`} className="mb-3 inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
+        <ChevronLeftIcon className="size-4" />
+        Back to settings
       </Link>
-      <div className="page-header">
+      <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h2>Evaluation</h2>
-          <p className="page-subtitle">
+          <h2 className="text-xl font-semibold">Evaluation</h2>
+          <p className="mt-1 text-sm text-muted-foreground">
             Internal ground-truth review and baseline measurement for CodeForge's own duplicate detection, clarification, and
             proposal-readiness analysis. For development/QA use — not part of the normal Issues &amp; Requests workflow.
           </p>

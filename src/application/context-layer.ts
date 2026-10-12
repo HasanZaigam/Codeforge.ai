@@ -28,6 +28,8 @@ const MAX_HISTORY_EVENTS = 20;
 
 export interface ProjectSummary {
   name: string;
+  /** Every repository of the project (TD-62); the single-repository fields below describe the primary one. */
+  repositories: Array<{ name: string; repoUrl: string; defaultBranch: string; sourceControlProvider: string }>;
   repoUrl: string;
   defaultBranch: string;
   sourceControlProvider: string;
@@ -52,6 +54,8 @@ export interface TaskDetail {
   title: string;
   description: string;
   status: TaskStatus;
+  /** The task's repository name — only set for a project with SEVERAL repositories, where it's worth saying. */
+  repositoryName?: string | null;
   branchMode: "new" | "existing";
   workingBranch: string | null;
   baseBranch: string | null;
@@ -214,6 +218,9 @@ export class ContextLayerService {
     }
     return {
       name: project.name,
+      repositories: this.d.projects
+        .listRepos(projectId)
+        .map((r) => ({ name: r.name, repoUrl: r.repoUrl, defaultBranch: r.defaultBranch, sourceControlProvider: r.sourceControlProvider })),
       repoUrl: project.repoUrl,
       defaultBranch: project.defaultBranch,
       sourceControlProvider: project.sourceControlProvider,
@@ -263,7 +270,10 @@ export class ContextLayerService {
   }
 
   getTaskDetail(projectId: string, taskId: string, actorId: string): TaskDetail {
-    return toTaskDetail(this.requireTaskInProject(projectId, taskId, actorId));
+    const task = this.requireTaskInProject(projectId, taskId, actorId);
+    const repos = this.d.projects.listRepos(projectId);
+    const repositoryName = repos.length > 1 ? (repos.find((r) => r.id === task.repositoryId)?.name ?? null) : null;
+    return { ...toTaskDetail(task), repositoryName };
   }
 
   getTaskHistory(projectId: string, taskId: string, actorId: string, limit = MAX_HISTORY_EVENTS): TaskHistoryEvent[] {

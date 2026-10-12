@@ -2,6 +2,9 @@ import type { Task } from "../domain/types.js";
 import type { TaskService } from "./task-service.js";
 import type { TaskEventRepository } from "../persistence/repositories/task-event-repository.js";
 import { NotFoundError } from "./errors.js";
+import type { ProjectRepository } from "../persistence/repositories/project-repository.js";
+import { RepositoryRequiredError } from "./errors.js";
+import { repositoryNamedIn } from "./repository-resolution.js";
 
 /**
  * Phase 4D.2 — the Action Layer: the ONLY way Chat may mutate CodeForge state. Every method here
@@ -47,6 +50,8 @@ export class ActionLayerService {
     private readonly d: {
       tasks: TaskService;
       taskEvents: TaskEventRepository;
+      /** For resolving a repository named in a Chat message (multi-repository projects). Optional: without it, no name matching. */
+      projects?: ProjectRepository;
     },
   ) {}
 
@@ -56,12 +61,25 @@ export class ActionLayerService {
   }
 
   /** A) Create a task — the SAME `TaskService.create` the API/UI use. Always lands in BACKLOG; never started. */
-  async createTask(projectId: string, actorId: string, input: { title: string; description: string }): Promise<ActionResult & { taskId?: string }> {
+  async createTask(
+    projectId: string,
+    actorId: string,
+    input: { title: string; description: string; repositoryId?: string | null; repositoryHint?: string },
+  ): Promise<ActionResult & { taskId?: string }> {
     let task: Task;
     try {
-      task = await this.d.tasks.create({ projectId, title: input.title, description: input.description }, actorId);
+      // A repository named in the Chat message ("… in backend"); otherwise TaskService uses the only one or asks.
+      const repositoryId =
+        input.repositoryId ?? (input.repositoryHint ? (repositoryNamedIn(this.d.projects?.listRepos(projectId) ?? [], input.repositoryHint)?.id ?? null) : null);
+      task = await this.d.tasks.create({ projectId, title: input.title, description: input.description, repositoryId }, actorId);
     } catch (err) {
-      return { ...failed("CREATE_TASK", null, null, err instanceof Error ? err.message : "Task creation failed."), taskId: undefined };
+      const message =
+        err instanceof RepositoryRequiredError && err.available.length > 1
+          ? `${err.message} Mention it by name — for example: "create a task in ${err.available[0]} to …".`
+          : err instanceof Error
+            ? err.message
+            : "Task creation failed.";
+      return { ...failed("CREATE_TASK", null, null, message), taskId: undefined };
     }
     // Read back — the create() call already returned the persisted row, but re-reading confirms it is
     // actually retrievable via the same authorized path every other read uses (not just trusting the echo).

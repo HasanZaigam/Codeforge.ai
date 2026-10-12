@@ -1,11 +1,14 @@
 import type { ReactNode } from "react";
+import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia } from "@/components/ui/empty";
 
-export function EmptyState({ icon, message, action }: { icon?: string; message: string; action?: ReactNode }) {
+export function EmptyState({ icon, message, action }: { icon?: ReactNode; message: string; action?: ReactNode }) {
   return (
-    <div className="state-block">
-      {icon && <div className="icon">{icon}</div>}
-      <p>{message}</p>
-      {action}
-    </div>
+    <Empty className="border border-dashed">
+      <EmptyHeader>
+        {icon && <EmptyMedia variant="icon">{icon}</EmptyMedia>}
+        <EmptyDescription>{message}</EmptyDescription>
+      </EmptyHeader>
+      {action && <EmptyContent>{action}</EmptyContent>}
+    </Empty>
   );
 }

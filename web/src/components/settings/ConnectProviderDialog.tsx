@@ -3,6 +3,10 @@ import { Dialog } from "../common/Dialog.js";
 import { ErrorState } from "../common/ErrorState.js";
 import { modelGatewayApi } from "../../api/index.js";
 import type { AiProviderId, ProviderConnectionDTO } from "../../api/types.js";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { ModelSelect } from "./ModelSelect.js";
 
 const PROVIDER_LABEL: Record<AiProviderId, string> = { google: "Google", anthropic: "Anthropic", openai: "OpenAI" };
 
@@ -19,10 +23,13 @@ const PROVIDER_LABEL: Record<AiProviderId, string> = { google: "Google", anthrop
  */
 export function ConnectProviderDialog({
   provider,
+  replacing = false,
   onClose,
   onConnected,
 }: {
   provider: AiProviderId;
+  /** Opened from Manage → "Replace API key" on an existing connection: same flow, clearer wording. */
+  replacing?: boolean;
   onClose: () => void;
   onConnected: (connection: ProviderConnectionDTO) => void;
 }) {
@@ -74,12 +81,20 @@ export function ConnectProviderDialog({
   }
 
   return (
-    <Dialog title={`Connect ${PROVIDER_LABEL[provider]}`} description="The key is verified against the provider's own API before it's stored." onClose={onClose}>
+    <Dialog
+      title={replacing ? `Replace ${PROVIDER_LABEL[provider]} API key` : `Connect ${PROVIDER_LABEL[provider]}`}
+      description={
+        replacing
+          ? "The new key is verified against the provider's own API, then replaces the stored one."
+          : "The key is verified against the provider's own API before it's stored."
+      }
+      onClose={onClose}
+    >
       <form onSubmit={handleSubmit}>
-        <div className="field">
-          <label htmlFor="provider-api-key">API key</label>
-          <div style={{ display: "flex", gap: 8 }}>
-            <input
+        <div className="mb-4 flex flex-col gap-2">
+          <Label htmlFor="provider-api-key">API key</Label>
+          <div className="flex gap-2">
+            <Input
               id="provider-api-key"
               type="password"
               value={apiKey}
@@ -91,42 +106,36 @@ export function ConnectProviderDialog({
               required
               maxLength={4000}
               autoComplete="off"
-              style={{ flex: 1 }}
+              className="flex-1"
             />
-            <button type="button" className="btn btn-secondary btn-sm" onClick={() => void handleLoadModels()} disabled={!apiKey.trim() || loadingModels}>
+            <Button variant="outline" type="button" onClick={() => void handleLoadModels()} disabled={!apiKey.trim() || loadingModels}>
               {loadingModels ? "Loading…" : "Load models"}
-            </button>
+            </Button>
           </div>
-          <p className="field-hint">Encrypted at rest and never shown again, sent to the AI developer, or logged.</p>
+          <p className="text-sm text-muted-foreground">Encrypted at rest and never shown again, sent to the AI developer, or logged.</p>
         </div>
 
-        <div className="field">
-          <label htmlFor="provider-model">Model</label>
+        <div className="mb-4 flex flex-col gap-2">
+          <Label htmlFor="provider-model">Model</Label>
           {availableModels && !useManualModel ? (
             <>
-              <select id="provider-model" value={model} onChange={(e) => setModel(e.target.value)} required>
-                {availableModels.map((m) => (
-                  <option key={m} value={m}>
-                    {m}
-                  </option>
-                ))}
-              </select>
-              <p className="field-hint">
-                {availableModels.length} model{availableModels.length === 1 ? "" : "s"} this key can use, loaded just now from {PROVIDER_LABEL[provider]}.{" "}
-                <button type="button" className="btn-link" onClick={() => setUseManualModel(true)}>
+              <ModelSelect id="provider-model" models={availableModels} value={model} onChange={setModel} />
+              <p className="text-sm text-muted-foreground">
+                {availableModels.length} chat model{availableModels.length === 1 ? "" : "s"} this key can use, newest first, loaded just now from {PROVIDER_LABEL[provider]}.{" "}
+                <Button variant="link" type="button" className="h-auto p-0" onClick={() => setUseManualModel(true)}>
                   Type it manually instead
-                </button>
+                </Button>
               </p>
             </>
           ) : (
             <>
-              <input id="provider-model" value={model} onChange={(e) => setModel(e.target.value)} placeholder="exact model id" required maxLength={200} />
-              <p className="field-hint">
+              <Input id="provider-model" value={model} onChange={(e) => setModel(e.target.value)} placeholder="exact model id" required maxLength={200} />
+              <p className="text-sm text-muted-foreground">
                 {modelsError ? `${modelsError} ` : "Not sure of the exact id? "}
                 {!modelsError && apiKey.trim() ? (
-                  <button type="button" className="btn-link" onClick={() => void handleLoadModels()}>
+                  <Button variant="link" type="button" className="h-auto p-0" onClick={() => void handleLoadModels()}>
                     Load this key's available models
-                  </button>
+                  </Button>
                 ) : (
                   "Paste the API key above, then \"Load models\"."
                 )}
@@ -136,13 +145,13 @@ export function ConnectProviderDialog({
         </div>
 
         {error && <ErrorState message={error} />}
-        <div className="dialog-actions">
-          <button type="button" className="btn btn-secondary" onClick={onClose} disabled={submitting}>
+        <div className="flex flex-col-reverse gap-2 pt-2 sm:flex-row sm:justify-end">
+          <Button variant="outline" type="button" onClick={onClose} disabled={submitting}>
             Cancel
-          </button>
-          <button type="submit" className="btn btn-primary" disabled={submitting || !apiKey.trim() || !model.trim()}>
+          </Button>
+          <Button type="submit" disabled={submitting || !apiKey.trim() || !model.trim()}>
             {submitting ? "Connecting…" : "Test & Connect"}
-          </button>
+          </Button>
         </div>
       </form>
     </Dialog>

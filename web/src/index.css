@@ -1,1965 +1,219 @@
-/* Design tokens — one small stylesheet, no CSS framework (see TECHNICAL_DECISIONS.md). */
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@import "@fontsource-variable/inter";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+    --font-heading: var(--font-sans);
+    --font-sans: 'Inter Variable', sans-serif;
+    --color-sidebar-ring: var(--sidebar-ring);
+    --color-sidebar-border: var(--sidebar-border);
+    --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+    --color-sidebar-accent: var(--sidebar-accent);
+    --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+    --color-sidebar-primary: var(--sidebar-primary);
+    --color-sidebar-foreground: var(--sidebar-foreground);
+    --color-sidebar: var(--sidebar);
+    --color-chart-5: var(--chart-5);
+    --color-chart-4: var(--chart-4);
+    --color-chart-3: var(--chart-3);
+    --color-chart-2: var(--chart-2);
+    --color-chart-1: var(--chart-1);
+    --color-ring: var(--ring);
+    --color-input: var(--input);
+    --color-border: var(--border);
+    --color-destructive: var(--destructive);
+    --color-accent-foreground: var(--accent-foreground);
+    --color-accent: var(--accent);
+    --color-muted-foreground: var(--muted-foreground);
+    --color-muted: var(--muted);
+    --color-secondary-foreground: var(--secondary-foreground);
+    --color-secondary: var(--secondary);
+    --color-primary-foreground: var(--primary-foreground);
+    --color-primary: var(--primary);
+    --color-popover-foreground: var(--popover-foreground);
+    --color-popover: var(--popover);
+    --color-card-foreground: var(--card-foreground);
+    --color-card: var(--card);
+    --color-foreground: var(--foreground);
+    --color-background: var(--background);
+    --color-tone-neutral: var(--tone-neutral);
+    --color-tone-active: var(--tone-active);
+    --color-tone-attention: var(--tone-attention);
+    --color-tone-info: var(--tone-info);
+    --color-tone-success: var(--tone-success);
+    --color-tone-danger: var(--tone-danger);
+    --color-tone-cancelled: var(--tone-cancelled);
+    --radius-sm: calc(var(--radius) * 0.6);
+    --radius-md: calc(var(--radius) * 0.8);
+    --radius-lg: var(--radius);
+    --radius-xl: calc(var(--radius) * 1.4);
+    --radius-2xl: calc(var(--radius) * 1.8);
+    --radius-3xl: calc(var(--radius) * 2.2);
+    --radius-4xl: calc(var(--radius) * 2.6);
+}
+
 :root {
-  --color-bg: #f6f7f9;
-  --color-surface: #ffffff;
-  --color-border: #e2e5ea;
-  --color-text: #17181c;
-  --color-text-muted: #6b7280;
-  --color-primary: #2f5fff;
-  --color-primary-contrast: #ffffff;
-
-  --tone-neutral-bg: #eef0f3;
-  --tone-neutral-text: #4b5160;
-  --tone-active-bg: #e7edff;
-  --tone-active-text: #2547c9;
-  --tone-attention-bg: #fff3e0;
-  --tone-attention-text: #9a5b00;
-  --tone-info-bg: #e9f6ff;
-  --tone-info-text: #0a6fa8;
-  --tone-success-bg: #e7f8ee;
-  --tone-success-text: #1f7a44;
-  --tone-danger-bg: #fdecec;
-  --tone-danger-text: #b3261e;
-  --tone-cancelled-bg: #eef0f3;
-  --tone-cancelled-text: #5b6270;
-
-  --radius-md: 10px;
-  --radius-lg: 14px;
-  --shadow-card: 0 1px 2px rgba(16, 24, 40, 0.06), 0 1px 3px rgba(16, 24, 40, 0.08);
-  --space-1: 4px;
-  --space-2: 8px;
-  --space-3: 12px;
-  --space-4: 16px;
-  --space-5: 24px;
-  --space-6: 32px;
-  --max-content-width: 1200px;
+    --background: oklch(1 0 0);
+    --foreground: oklch(0.145 0 0);
+    --card: oklch(1 0 0);
+    --card-foreground: oklch(0.145 0 0);
+    --popover: oklch(1 0 0);
+    --popover-foreground: oklch(0.145 0 0);
+    --primary: oklch(0.488 0.243 264.376);
+    --primary-foreground: oklch(0.97 0.014 254.604);
+    --secondary: oklch(0.967 0.001 286.375);
+    --secondary-foreground: oklch(0.21 0.006 285.885);
+    --muted: oklch(0.97 0 0);
+    --muted-foreground: oklch(0.556 0 0);
+    --accent: oklch(0.97 0 0);
+    --accent-foreground: oklch(0.205 0 0);
+    --destructive: oklch(0.577 0.245 27.325);
+    --border: oklch(0.922 0 0);
+    --input: oklch(0.922 0 0);
+    --ring: oklch(0.708 0 0);
+    --chart-1: oklch(0.809 0.105 251.813);
+    --chart-2: oklch(0.623 0.214 259.815);
+    --chart-3: oklch(0.546 0.245 262.881);
+    --chart-4: oklch(0.488 0.243 264.376);
+    --chart-5: oklch(0.424 0.199 265.638);
+    --radius: 0.625rem;
+    --sidebar: oklch(0.985 0 0);
+    --sidebar-foreground: oklch(0.145 0 0);
+    --sidebar-primary: oklch(0.546 0.245 262.881);
+    --sidebar-primary-foreground: oklch(0.97 0.014 254.604);
+    --sidebar-accent: oklch(0.97 0 0);
+    --sidebar-accent-foreground: oklch(0.205 0 0);
+    --sidebar-border: oklch(0.922 0 0);
+    --sidebar-ring: oklch(0.708 0 0);
+    /* Task-status tones (see lib/statusMeta.ts) — one hue per tone, used as text + tinted surface. */
+    --tone-neutral: oklch(0.5 0.02 264);
+    --tone-active: oklch(0.52 0.22 264);
+    --tone-attention: oklch(0.6 0.16 60);
+    --tone-info: oklch(0.55 0.13 230);
+    --tone-success: oklch(0.55 0.14 155);
+    --tone-danger: oklch(0.56 0.21 27);
+    --tone-cancelled: oklch(0.55 0.01 264);
 }
 
-* {
-  box-sizing: border-box;
+.dark {
+    --background: oklch(0.145 0 0);
+    --foreground: oklch(0.985 0 0);
+    --card: oklch(0.205 0 0);
+    --card-foreground: oklch(0.985 0 0);
+    --popover: oklch(0.205 0 0);
+    --popover-foreground: oklch(0.985 0 0);
+    --primary: oklch(0.546 0.245 262.881); /* preset ships 0.424 — too dim for primary-colored text on the dark surface */
+    --primary-foreground: oklch(0.97 0.014 254.604);
+    --secondary: oklch(0.274 0.006 286.033);
+    --secondary-foreground: oklch(0.985 0 0);
+    --muted: oklch(0.269 0 0);
+    --muted-foreground: oklch(0.708 0 0);
+    --accent: oklch(0.269 0 0);
+    --accent-foreground: oklch(0.985 0 0);
+    --destructive: oklch(0.704 0.191 22.216);
+    --border: oklch(1 0 0 / 10%);
+    --input: oklch(1 0 0 / 15%);
+    --ring: oklch(0.556 0 0);
+    --chart-1: oklch(0.809 0.105 251.813);
+    --chart-2: oklch(0.623 0.214 259.815);
+    --chart-3: oklch(0.546 0.245 262.881);
+    --chart-4: oklch(0.488 0.243 264.376);
+    --chart-5: oklch(0.424 0.199 265.638);
+    --sidebar: oklch(0.205 0 0);
+    --sidebar-foreground: oklch(0.985 0 0);
+    --sidebar-primary: oklch(0.623 0.214 259.815);
+    --sidebar-primary-foreground: oklch(0.97 0.014 254.604);
+    --sidebar-accent: oklch(0.269 0 0);
+    --sidebar-accent-foreground: oklch(0.985 0 0);
+    --sidebar-border: oklch(1 0 0 / 10%);
+    --sidebar-ring: oklch(0.556 0 0);
+    --tone-neutral: oklch(0.75 0.02 264);
+    --tone-active: oklch(0.72 0.16 264);
+    --tone-attention: oklch(0.8 0.14 70);
+    --tone-info: oklch(0.76 0.11 230);
+    --tone-success: oklch(0.76 0.14 155);
+    --tone-danger: oklch(0.72 0.17 25);
+    --tone-cancelled: oklch(0.68 0.01 264);
 }
 
-html,
-body,
-#root {
-  height: 100%;
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+    }
+  body {
+    @apply bg-background text-foreground;
+    }
+  html {
+    @apply font-sans;
+    }
 }
 
-body {
-  margin: 0;
-  font-family:
-    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-  background: var(--color-bg);
-  color: var(--color-text);
-  -webkit-font-smoothing: antialiased;
-}
-
-h1,
-h2,
-h3,
-h4,
-p {
-  margin: 0;
-}
-
-button,
-input,
-textarea {
-  font: inherit;
-  color: inherit;
-}
-
-a {
-  color: var(--color-primary);
-}
-
-/* Auth */
-
-.auth-page {
-  min-height: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: var(--space-4);
-}
-
-.auth-card {
-  width: 100%;
-  max-width: 380px;
-}
-
-.user-indicator {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  font-size: 0.85rem;
-  color: var(--color-text-muted);
-}
-
-.user-indicator-identity {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  min-width: 0;
-  flex: 1;
-}
-
-.user-avatar {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 30px;
-  height: 30px;
-  flex: 0 0 auto;
-  border-radius: 50%;
-  background: var(--tone-active-bg);
-  color: var(--color-primary);
-  font-weight: 700;
-  font-size: 0.78rem;
-}
-
-.user-indicator-info {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-}
-
-.user-indicator-email {
-  display: none;
-}
-
-/* Layout — one <header> (AppShell.tsx), restyled by these rules alone between a mobile top bar
-   (default, <768px) and a desktop persistent left sidebar (>=768px). Never two separate DOM trees
-   for the two layouts — see AppShell.tsx's own doc comment. */
-
-.app-shell {
-  min-height: 100%;
-  display: flex;
-  flex-direction: column;
-}
-
-.app-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-4);
-  padding: var(--space-3) var(--space-4);
-  background: var(--color-surface);
-  border-bottom: 1px solid var(--color-border);
-  position: sticky;
-  top: 0;
-  z-index: 10;
-  flex-wrap: wrap;
-  row-gap: var(--space-2);
-}
-
-.app-brand {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  font-weight: 700;
-  font-size: 1.05rem;
-  text-decoration: none;
-  color: var(--color-text);
-  white-space: nowrap;
-}
-
-.app-brand-mark {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 26px;
-  height: 26px;
-  border-radius: var(--radius-md);
-  background: var(--tone-active-bg);
-  color: var(--color-primary);
-  font-size: 0.85rem;
-  font-weight: 700;
-}
-
-.app-nav {
-  display: flex;
-  gap: var(--space-4);
-  order: 3;
-  width: 100%;
-  overflow-x: auto;
-}
-
-.app-nav a {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  color: var(--color-text-muted);
-  text-decoration: none;
-  font-size: 0.92rem;
-  padding: var(--space-2) 0;
-  white-space: nowrap;
-}
-
-.app-nav-icon {
-  display: none;
-}
-
-.app-nav a.active,
-.app-nav a:hover {
-  color: var(--color-text);
-}
-
-.app-brand:focus-visible,
-.app-nav a:focus-visible,
-.btn-link-muted:focus-visible {
-  outline: 2px solid var(--color-primary);
-  outline-offset: 2px;
-  border-radius: var(--radius-md);
-}
-
-.user-indicator-name {
-  color: var(--color-text);
-  font-weight: 600;
-  font-size: 0.85rem;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 140px;
-}
-
-.user-indicator-logout {
-  flex: 0 0 auto;
-  white-space: nowrap;
-}
-
-.app-main {
-  flex: 1;
-  min-width: 0;
-  width: 100%;
-  max-width: var(--max-content-width);
-  margin: 0 auto;
-  padding: var(--space-4);
-}
-
-@media (min-width: 768px) {
-  /* Desktop: the same header becomes a persistent left sidebar instead of a top bar. */
-  .app-shell {
-    flex-direction: row;
+@layer base {
+  html,
+  body,
+  #root {
+    @apply min-h-full;
   }
-  .app-header {
-    flex-direction: column;
-    align-items: stretch;
-    justify-content: flex-start;
-    width: 240px;
-    flex: 0 0 240px;
-    height: 100vh;
-    position: sticky;
-    top: 0;
-    border-bottom: none;
-    border-right: 1px solid var(--color-border);
-    padding: var(--space-5) var(--space-4);
-    gap: var(--space-5);
+  body {
+    @apply antialiased;
   }
-  .app-nav {
-    flex-direction: column;
-    order: initial;
-    width: auto;
-    gap: 2px;
-    overflow-x: visible;
-  }
-  .app-nav a {
-    padding: 9px var(--space-3);
-    border-radius: var(--radius-md);
-    font-weight: 500;
-  }
-  .app-nav-icon {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 18px;
-    font-size: 0.95rem;
-    opacity: 0.85;
-  }
-  .app-nav a.active {
-    background: var(--tone-active-bg);
-    color: var(--color-primary);
-    font-weight: 600;
-  }
-  .app-nav a.active .app-nav-icon {
-    opacity: 1;
-  }
-  .app-nav a:hover {
-    background: var(--color-bg);
-  }
-  .user-indicator {
-    margin-top: auto;
-    padding-top: var(--space-4);
-    border-top: 1px solid var(--color-border);
-    flex-direction: column;
-    align-items: stretch;
-    gap: var(--space-3);
-  }
-  .user-indicator-name,
-  .user-indicator-email {
-    max-width: none;
-  }
-  .user-indicator-email {
-    display: block;
-    font-size: 0.76rem;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-  .user-indicator-logout {
-    align-self: flex-start;
-  }
-  .app-main {
-    padding: var(--space-6);
-    max-width: none;
-    margin: 0;
+  h1,
+  h2,
+  h3,
+  h4 {
+    @apply font-heading tracking-tight;
   }
 }
 
-@media (min-width: 1024px) {
-  .app-main {
-    padding: var(--space-6) var(--space-6) var(--space-6) var(--space-6);
+@layer components {
+  /* Inline code anywhere in the app (branch names, file paths, ids) — block code lives in <pre>. */
+  :where(code):not(pre code) {
+    @apply rounded-md bg-muted px-1.5 py-0.5 font-mono text-[0.85em];
   }
-}
 
-.page-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-3);
-  margin-bottom: var(--space-5);
-  flex-wrap: wrap;
-}
-
-.page-header h1 {
-  font-size: 1.4rem;
-}
-
-.page-subtitle {
-  color: var(--color-text-muted);
-  font-size: 0.9rem;
-  margin-top: var(--space-1);
-}
-
-.breadcrumb {
-  color: var(--color-text-muted);
-  font-size: 0.85rem;
-  text-decoration: none;
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  margin-bottom: var(--space-3);
-}
-
-/* Buttons */
-
-.btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-2);
-  border-radius: var(--radius-md);
-  border: 1px solid transparent;
-  padding: 9px 16px;
-  font-size: 0.92rem;
-  font-weight: 600;
-  cursor: pointer;
-  background: var(--color-surface);
-  transition: background-color 0.12s ease;
-}
-
-.btn:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-}
-
-.btn-primary {
-  background: var(--color-primary);
-  color: var(--color-primary-contrast);
-}
-
-.btn-primary:not(:disabled):hover {
-  background: #2450e0;
-}
-
-.btn-danger {
-  background: var(--tone-danger-text);
-  color: #fff;
-}
-
-.btn-danger:not(:disabled):hover {
-  background: #96201a;
-}
-
-.btn-link-muted {
-  background: transparent;
-  border: none;
-  color: var(--color-text-muted);
-  font-size: 0.85rem;
-  text-decoration: underline;
-  padding: 4px 0;
-}
-
-.btn-link {
-  background: transparent;
-  border: none;
-  color: var(--color-primary);
-  font-size: 0.85rem;
-  font-weight: 600;
-  text-decoration: underline;
-  padding: 4px 0;
-  cursor: pointer;
-}
-
-.btn-link:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-}
-
-.btn-secondary {
-  border-color: var(--color-border);
-  color: var(--color-text);
-}
-
-.btn-secondary:not(:disabled):hover {
-  background: var(--color-bg);
-}
-
-.btn-block {
-  width: 100%;
-}
-
-/* Cards */
-
-.card {
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-card);
-}
-
-.card-padded {
-  padding: var(--space-5);
-}
-
-/* Grid of project cards */
-
-.project-grid {
-  display: grid;
-  /* auto-fit (not auto-fill): with few projects, unused tracks collapse to 0 instead of sitting
-     there as invisible empty columns — that reserved-but-empty space was what made 1-2 project
-     cards look stranded in a huge blank area. Capped at 320px so a lone card still reads as a
-     card, not a full-width stretched banner. */
-  grid-template-columns: repeat(auto-fit, minmax(260px, 320px));
-  gap: var(--space-4);
-}
-
-.project-card {
-  padding: var(--space-4);
-  text-decoration: none;
-  color: inherit;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  /* Grid items default to min-width: auto (content-based), which silently defeats the repo URL's
-     text-overflow: ellipsis below by letting the card grow to fit the whole unbroken URL. */
-  min-width: 0;
-}
-
-.project-card:hover {
-  border-color: var(--color-primary);
-}
-
-.project-card-top {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-}
-
-.project-card-avatar {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 32px;
-  height: 32px;
-  flex: 0 0 auto;
-  border-radius: var(--radius-md);
-  background: var(--tone-active-bg);
-  color: var(--color-primary);
-  font-weight: 700;
-  font-size: 0.95rem;
-}
-
-.project-card h3 {
-  font-size: 1.05rem;
-}
-
-.project-card .repo {
-  color: var(--color-text-muted);
-  font-size: 0.85rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.project-card .meta {
-  color: var(--color-text-muted);
-  font-size: 0.82rem;
-}
-
-/* Status badges */
-
-.status-badge {
-  display: inline-flex;
-  align-items: center;
-  padding: 3px 10px;
-  border-radius: 999px;
-  font-size: 0.76rem;
-  font-weight: 700;
-  letter-spacing: 0.02em;
-  text-transform: uppercase;
-  white-space: nowrap;
-}
-
-.status-badge.tone-neutral {
-  background: var(--tone-neutral-bg);
-  color: var(--tone-neutral-text);
-}
-.status-badge.tone-active {
-  background: var(--tone-active-bg);
-  color: var(--tone-active-text);
-}
-.status-badge.tone-attention {
-  background: var(--tone-attention-bg);
-  color: var(--tone-attention-text);
-}
-.status-badge.tone-info {
-  background: var(--tone-info-bg);
-  color: var(--tone-info-text);
-}
-.status-badge.tone-success {
-  background: var(--tone-success-bg);
-  color: var(--tone-success-text);
-}
-.status-badge.tone-danger {
-  background: var(--tone-danger-bg);
-  color: var(--tone-danger-text);
-}
-.status-badge.tone-cancelled {
-  background: var(--tone-cancelled-bg);
-  color: var(--tone-cancelled-text);
-}
-
-/* Kanban board */
-
-.board {
-  /* A horizontally-scrolling flex row, not a wrapping grid: each column keeps a fixed, readable
-     width regardless of how many columns exist (5 in the common case, up to 7 with
-     FAILED/CANCELLED) and the board scrolls sideways for the overflow — see
-     TECHNICAL_DECISIONS.md TD-23 (revised) and UI_ARCHITECTURE.md "Responsive strategy". The
-     previous `auto-fit` grid shrank columns until they no longer fit their content and wrapped
-     to a second row instead — every column now stays on one row, exactly like a normal Kanban
-     board (Trello/Jira-style), and narrow viewports get a horizontal scrollbar instead of a
-     second row of columns. */
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-4);
-  overflow-x: auto;
-  padding-bottom: var(--space-3);
-  /* Mobile: swipe one column at a time instead of landing mid-column — see the 480px breakpoint
-     below, where each column widens to fill most of the screen. */
-  scroll-snap-type: x proximity;
-  -webkit-overflow-scrolling: touch;
-}
-
-.board-column {
-  flex: 0 0 260px;
-  width: 260px;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-  background: var(--color-surface-sunken, #f4f5f7);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-lg, 10px);
-  padding: var(--space-3);
-  scroll-snap-align: start;
-}
-
-/* Border tinted to match the column's own tone (same tokens as the header accent above). */
-.board-column.tone-neutral { border-color: var(--tone-neutral-text); }
-.board-column.tone-active { border-color: var(--tone-active-text); }
-.board-column.tone-attention { border-color: var(--tone-attention-text); }
-.board-column.tone-info { border-color: var(--tone-info-text); }
-.board-column.tone-success { border-color: var(--tone-success-text); }
-.board-column.tone-danger { border-color: var(--tone-danger-text); }
-.board-column.tone-cancelled { border-color: var(--tone-cancelled-text); }
-
-.board-column-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: var(--space-2) var(--space-2);
-  margin: calc(var(--space-3) * -1) calc(var(--space-3) * -1) 0;
-  border-top-left-radius: var(--radius-lg, 10px);
-  border-top-right-radius: var(--radius-lg, 10px);
-  border-bottom: 3px solid transparent;
-}
-
-/* Each column is tinted by its status's existing tone tokens (the same ones StatusBadge already
-   uses) — a colored header + accent bar per column, matching a conventional Kanban board's
-   color-coded columns without introducing a second, parallel color system. */
-.board-column-header.tone-neutral { background: var(--tone-neutral-bg); border-bottom-color: var(--tone-neutral-text); }
-.board-column-header.tone-active { background: var(--tone-active-bg); border-bottom-color: var(--tone-active-text); }
-.board-column-header.tone-attention { background: var(--tone-attention-bg); border-bottom-color: var(--tone-attention-text); }
-.board-column-header.tone-info { background: var(--tone-info-bg); border-bottom-color: var(--tone-info-text); }
-.board-column-header.tone-success { background: var(--tone-success-bg); border-bottom-color: var(--tone-success-text); }
-.board-column-header.tone-danger { background: var(--tone-danger-bg); border-bottom-color: var(--tone-danger-text); }
-.board-column-header.tone-cancelled { background: var(--tone-cancelled-bg); border-bottom-color: var(--tone-cancelled-text); }
-
-.board-column-title {
-  font-size: 0.82rem;
-  font-weight: 700;
-  color: var(--color-text);
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
-}
-
-.board-column-count {
-  font-size: 0.78rem;
-  font-weight: 600;
-  color: var(--color-text-muted);
-  background: var(--color-surface);
-  border-radius: 999px;
-  padding: 1px 8px;
-}
-
-.board-column-body {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-  min-height: 60px;
-  /* Each column scrolls its own tasks once it fills up, instead of growing the whole page taller
-     — a column with 50 tasks no longer forces the entire board (and every other, shorter column)
-     to scroll down with it. Capped relative to the viewport so it still works on short screens. */
-  max-height: min(65vh, 620px);
-  overflow-y: auto;
-  overflow-x: hidden;
-  padding-right: 2px; /* keeps the scrollbar from overlapping card content */
-}
-
-.board-column .task-card {
-  background: var(--color-surface);
-}
-
-@media (max-width: 720px) {
-  .board-column {
-    flex-basis: 240px;
-    width: 240px;
+  /* Markdown renderer output (components/common/Markdown.tsx) — styled by element, since its
+     content is agent/model output whose structure isn't known ahead of time. */
+  .markdown {
+    @apply space-y-3 text-sm leading-relaxed break-words;
   }
-  .board-column-body {
-    max-height: min(55vh, 480px);
+  .markdown h3 {
+    @apply text-base font-semibold;
   }
-}
-
-@media (max-width: 480px) {
-  /* Below phone width, one column fills nearly the full screen (a sliver of the next column
-     peeks in as an affordance to swipe) rather than several cramped narrow columns. */
-  .board-column {
-    flex-basis: 86vw;
-    width: 86vw;
+  .markdown h4,
+  .markdown h5,
+  .markdown h6 {
+    @apply text-sm font-semibold;
   }
-}
-
-/* Task cards */
-
-.task-card {
-  padding: var(--space-4);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-}
-
-.task-card:hover {
-  border-color: var(--color-primary);
-}
-
-/* The card's own clickable area (title/description/activity) — a BACKLOG card additionally renders
-   a StartTaskControl as a sibling of this link, so clicking "Start Task" never also navigates. */
-.task-card-link {
-  text-decoration: none;
-  color: inherit;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  cursor: pointer;
-}
-
-.task-card h4 {
-  font-size: 0.95rem;
-  line-height: 1.3;
-  overflow-wrap: break-word;
-}
-
-.task-card .description {
-  color: var(--color-text-muted);
-  font-size: 0.85rem;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-  overflow-wrap: break-word;
-}
-
-.task-card .activity {
-  font-size: 0.8rem;
-  color: var(--color-text-muted);
-  display: flex;
-  align-items: center;
-  gap: var(--space-1);
-}
-
-.task-card .activity.active::before {
-  content: "";
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--tone-active-text);
-  flex: 0 0 auto;
-}
-
-/* A BACKLOG card's "Start Task" / "Edit" / "Cancel task" row — siblings of the card's own Link so neither
-   click also navigates to Task Details (see TaskCard.tsx). */
-.task-card-actions {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-3);
-  padding-top: var(--space-1);
-  border-top: 1px solid var(--color-border);
-  margin-top: var(--space-1);
-}
-
-/* Forms */
-
-.field {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  margin-bottom: var(--space-4);
-}
-
-.field label {
-  font-size: 0.85rem;
-  font-weight: 600;
-}
-
-.field input,
-.field textarea {
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  padding: 10px 12px;
-  font-size: 0.92rem;
-  background: var(--color-surface);
-}
-
-.field input:focus,
-.field textarea:focus {
-  outline: 2px solid var(--color-primary);
-  outline-offset: 1px;
-}
-
-.field-hint {
-  color: var(--color-text-muted);
-  font-size: 0.8rem;
-}
-
-.field-required {
-  color: var(--tone-danger-text);
-}
-
-.field-warning {
-  display: flex;
-  gap: var(--space-2);
-  align-items: flex-start;
-  background: var(--tone-attention-bg);
-  color: var(--tone-attention-text);
-  border-radius: var(--radius-md);
-  padding: var(--space-2) var(--space-3);
-  font-size: 0.8rem;
-}
-
-.list-editor {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-}
-
-.list-editor-row {
-  display: flex;
-  gap: var(--space-2);
-}
-
-.list-editor-row input {
-  flex: 1;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  padding: 10px 12px;
-  font-size: 0.92rem;
-  background: var(--color-surface);
-}
-
-.ai-context-preview-text {
-  white-space: pre-wrap;
-  background: var(--color-bg);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  padding: var(--space-3);
-  font-size: 0.8rem;
-  font-family: var(--font-mono, monospace);
-  margin-top: var(--space-2);
-}
-
-.info-callout {
-  background: var(--tone-info-bg);
-  color: var(--tone-info-text);
-  border-radius: var(--radius-md);
-  padding: var(--space-3) var(--space-4);
-  font-size: 0.8rem;
-  margin-bottom: var(--space-4);
-}
-
-.info-callout-title {
-  font-weight: 600;
-  margin-bottom: var(--space-2);
-}
-
-.info-callout dl {
-  display: grid;
-  grid-template-columns: auto 1fr;
-  gap: var(--space-1) var(--space-2);
-  margin: 0;
-}
-
-.info-callout dt {
-  color: var(--color-text-muted);
-}
-
-.info-callout dd {
-  margin: 0;
-  font-family: var(--font-mono, monospace);
-  word-break: break-all;
-}
-
-/* Dialog */
-
-.dialog-backdrop {
-  position: fixed;
-  inset: 0;
-  background: rgba(15, 18, 26, 0.4);
-  display: flex;
-  align-items: flex-end;
-  justify-content: center;
-  z-index: 100;
-  padding: 0;
-}
-
-.dialog {
-  background: var(--color-surface);
-  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
-  width: 100%;
-  max-width: 480px;
-  max-height: 90vh;
-  overflow-y: auto;
-  padding: var(--space-5);
-}
-
-@media (min-width: 640px) {
-  .dialog-backdrop {
-    align-items: center;
+  .markdown ul {
+    @apply list-disc space-y-1 pl-5;
   }
-  .dialog {
-    border-radius: var(--radius-lg);
+  .markdown ol {
+    @apply list-decimal space-y-1 pl-5;
   }
-}
-
-.dialog-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: var(--space-4);
-}
-
-.dialog-description {
-  color: var(--color-text-muted);
-  font-size: 0.88rem;
-  margin: calc(var(--space-4) * -1) 0 var(--space-4);
-}
-
-.dialog-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: var(--space-3);
-  margin-top: var(--space-5);
-}
-
-/* Task detail */
-
-.task-detail-header {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  margin-bottom: var(--space-5);
-}
-
-.task-detail-header .title-row {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  flex-wrap: wrap;
-}
-
-.task-detail-header h1 {
-  font-size: 1.3rem;
-}
-
-.section {
-  margin-bottom: var(--space-6);
-}
-
-.section h2 {
-  font-size: 0.95rem;
-  margin-bottom: var(--space-3);
-}
-
-.timeline {
-  display: flex;
-  flex-direction: column;
-  gap: 0;
-}
-
-.timeline-item {
-  display: flex;
-  gap: var(--space-3);
-  padding: var(--space-2) 0;
-  position: relative;
-}
-
-.timeline-item .dot {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  background: var(--tone-success-text);
-  margin-top: 5px;
-  flex: 0 0 auto;
-}
-
-.timeline-item.latest .dot {
-  background: var(--tone-active-text);
-}
-
-.timeline-item .content {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.timeline-item .label {
-  font-size: 0.9rem;
-}
-
-.timeline-item .detail {
-  font-size: 0.78rem;
-  color: var(--color-text-muted);
-}
-
-.timeline-item .time {
-  font-size: 0.78rem;
-  color: var(--color-text-muted);
-}
-
-/* Needs-input panel */
-
-.needs-input-panel {
-  border: 1px solid var(--tone-attention-text);
-  background: var(--tone-attention-bg);
-  border-radius: var(--radius-lg);
-  padding: var(--space-5);
-}
-
-.needs-input-panel h2 {
-  color: var(--tone-attention-text);
-  font-size: 1.05rem;
-  margin-bottom: var(--space-2);
-}
-
-.needs-input-block {
-  margin-bottom: var(--space-4);
-}
-
-.needs-input-block h4 {
-  font-size: 0.8rem;
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
-  color: var(--color-text-muted);
-  margin-bottom: var(--space-1);
-}
-
-.option-list {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  margin-bottom: var(--space-4);
-}
-
-.option-item {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-2);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  padding: var(--space-3);
-  background: var(--color-surface);
-  cursor: pointer;
-}
-
-.option-item.selected {
-  border-color: var(--color-primary);
-  outline: 2px solid var(--color-primary);
-  outline-offset: -1px;
-}
-
-.option-item .option-label {
-  font-weight: 600;
-  font-size: 0.9rem;
-}
-
-.option-item .option-description {
-  font-size: 0.82rem;
-  color: var(--color-text-muted);
-}
-
-/* Report */
-
-.checks-list,
-.findings-list {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-}
-
-.check-row,
-.finding-row {
-  display: flex;
-  align-items: baseline;
-  gap: var(--space-2);
-  font-size: 0.9rem;
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-}
-
-.check-row.passed {
-  border-color: var(--tone-success-bg);
-}
-.check-row.failed {
-  border-color: var(--tone-danger-bg);
-}
-
-/* Agent run history */
-
-.agent-run-list {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-}
-
-.agent-run-item {
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  padding: var(--space-3);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-}
-
-.agent-run-item-header {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  flex-wrap: wrap;
-  font-size: 0.85rem;
-}
-
-.agent-run-role {
-  font-weight: 600;
-}
-
-.agent-run-timing {
-  font-size: 0.8rem;
-  margin: 0;
-}
-
-.human-review-feedback {
-  border-left: 2px solid var(--tone-info-text);
-  padding-left: var(--space-3);
-}
-
-.agent-run-error summary {
-  cursor: pointer;
-  font-size: 0.82rem;
-  color: var(--color-text-muted);
-}
-
-.agent-run-error p {
-  font-size: 0.82rem;
-  color: var(--tone-danger-text);
-  margin-top: var(--space-1);
-  white-space: pre-wrap;
-}
-
-/* Execution details */
-
-.execution-details summary {
-  cursor: pointer;
-  list-style: revert;
-}
-
-.execution-details-body {
-  margin-top: var(--space-3);
-}
-
-/* Duration stats */
-
-.duration-stats {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-4);
-}
-
-.duration-stat {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.duration-stat .value {
-  font-size: 1rem;
-  font-weight: 600;
-}
-
-.duration-stat .label {
-  font-size: 0.78rem;
-  color: var(--color-text-muted);
-}
-
-/* Markdown-rendered agent output (implementation summaries, review notes — see Markdown.tsx) */
-
-.markdown h3,
-.markdown h4,
-.markdown h5,
-.markdown h6 {
-  margin: var(--space-4) 0 var(--space-2);
-  font-size: 0.95rem;
-}
-.markdown h3:first-child,
-.markdown h4:first-child,
-.markdown p:first-child,
-.markdown ul:first-child,
-.markdown ol:first-child {
-  margin-top: 0;
-}
-.markdown p {
-  margin: 0 0 var(--space-3);
-  line-height: 1.55;
-}
-.markdown ul,
-.markdown ol {
-  margin: 0 0 var(--space-3);
-  padding-left: var(--space-5);
-  line-height: 1.55;
-}
-.markdown li {
-  margin-bottom: var(--space-1);
-}
-.markdown code {
-  background: var(--tone-neutral-bg);
-  border-radius: 4px;
-  padding: 1px 5px;
-  font-size: 0.87em;
-  font-family: ui-monospace, "SF Mono", Menlo, monospace;
-}
-.markdown pre.markdown-code {
-  background: var(--tone-neutral-bg);
-  border-radius: var(--radius-md);
-  padding: var(--space-3) var(--space-4);
-  overflow-x: auto;
-  margin: 0 0 var(--space-3);
-}
-.markdown pre.markdown-code code {
-  background: none;
-  padding: 0;
-  font-size: 0.85rem;
-}
-.markdown a {
-  color: var(--color-primary);
-}
-
-/* Utility */
-
-.text-muted {
-  color: var(--color-text-muted);
-}
-
-.stack {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-}
-
-.state-block {
-  padding: var(--space-6) var(--space-4);
-  text-align: center;
-  color: var(--color-text-muted);
-}
-
-.state-block .icon {
-  font-size: 1.6rem;
-  margin-bottom: var(--space-2);
-}
-
-.error-banner {
-  background: var(--tone-danger-bg);
-  color: var(--tone-danger-text);
-  border-radius: var(--radius-md);
-  padding: var(--space-3) var(--space-4);
-  font-size: 0.88rem;
-}
-
-/* Visually hidden but still readable by assistive tech — see ListEditor's `hideLabel` prop. */
-.sr-only {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  margin: -1px;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  white-space: nowrap;
-  border: 0;
-}
-
-/* Project header + tabs (ProjectLayout.tsx) — "Projects ≠ Tasks ≠ Workspace", so the project-level
-   IA is a distinct header/tab bar shared by all four project screens, not a page-specific one. */
-
-.project-header {
-  margin-bottom: var(--space-4);
-}
-
-.project-header h1 {
-  font-size: 1.4rem;
-}
-
-.project-header-repo {
-  display: inline-block;
-  color: var(--color-text-muted);
-  font-size: 0.88rem;
-  margin-top: 2px;
-  text-decoration: none;
-  overflow-wrap: anywhere;
-}
-
-.project-header-repo:hover {
-  text-decoration: underline;
-}
-
-.project-tabs {
-  display: flex;
-  gap: var(--space-5);
-  border-bottom: 1px solid var(--color-border);
-  margin-bottom: var(--space-5);
-  overflow-x: auto;
-  -webkit-overflow-scrolling: touch;
-}
-
-.project-tabs a {
-  display: inline-block;
-  padding: var(--space-3) 0;
-  color: var(--color-text-muted);
-  text-decoration: none;
-  font-size: 0.92rem;
-  font-weight: 600;
-  white-space: nowrap;
-  border-bottom: 2px solid transparent;
-  margin-bottom: -1px;
-}
-
-.project-tabs a.active {
-  color: var(--color-primary);
-  border-bottom-color: var(--color-primary);
-}
-
-.project-tabs a:hover {
-  color: var(--color-text);
-}
-
-/* Project Overview (ProjectOverviewPage.tsx) — a two-column engineering workspace: Chat (right, ~65%,
-   visually dominant) and compact Tasks/Workspace status (left, ~35%). Mobile stacks Chat first, then
-   Tasks, then Workspace — the DOM is already in that order, so desktop uses flex-direction: row-reverse
-   to visually swap sides without reordering markup or touching accessibility/tab order. */
-
-.overview-page { display: flex; flex-direction: column; gap: var(--space-4); }
-
-.overview-meta { display: flex; gap: var(--space-2); flex-wrap: wrap; }
-
-.overview-main { display: flex; flex-direction: column; gap: var(--space-4); }
-
-.overview-chat-col { display: flex; min-width: 0; }
-
-.overview-chat-card {
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  min-width: 0;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-lg);
-  background: var(--color-surface);
-  padding: var(--space-4);
-  box-shadow: var(--shadow-card);
-}
-
-.overview-left-col {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-4);
-  min-width: 0;
-}
-
-.overview-block {
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  padding: var(--space-3) var(--space-4);
-}
-
-/* Tasks is the more useful of the two left-column blocks — give it more room to breathe and let
-   Workspace stay small underneath it, rather than the two competing for equal space. */
-.overview-block-tasks { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-.overview-block-workspace { flex: 0 0 auto; padding: var(--space-2) var(--space-4); }
-.overview-block-workspace .overview-block-header { margin-bottom: 2px; }
-
-.overview-block-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: var(--space-2);
-}
-
-.overview-block-header h3 { margin: 0; font-size: 1rem; }
-
-.overview-workspace-label { margin: 0; font-weight: 600; font-size: 0.88rem; }
-
-.overview-attention-label {
-  margin: 0 0 var(--space-1);
-  font-size: 0.75rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
-  color: var(--color-text-muted);
-}
-
-/* The attention list scrolls internally past a handful of rows, so a project with many FAILED/REVIEW
-   tasks never pushes the Workspace block far down the page — same "card owns its own scroll" pattern
-   the Chat panel already uses. */
-.overview-attention-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  max-height: 360px;
-  overflow-y: auto;
-}
-.overview-attention-list li {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 4px 6px;
-  border-radius: var(--radius-md);
-}
-.overview-attention-list li:hover { background: var(--color-bg); }
-.overview-attention-list li a { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-/* Status pills sit above "Needs attention" and are colored by the same tone system as status-badge, so
-   Failed/Review counts actually stand out instead of reading as flat, equally-weighted gray text. */
-.overview-status-pills { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: var(--space-3); }
-.overview-status-pill {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 4px;
-  font-size: 0.78rem;
-  font-weight: 600;
-  white-space: nowrap;
-  padding: 3px 10px;
-  border-radius: 999px;
-  background: var(--tone-neutral-bg);
-  color: var(--tone-neutral-text);
-}
-.overview-status-pill strong { font-weight: 700; }
-.overview-status-pill.tone-active { background: var(--tone-active-bg); color: var(--tone-active-text); }
-.overview-status-pill.tone-attention { background: var(--tone-attention-bg); color: var(--tone-attention-text); }
-.overview-status-pill.tone-info { background: var(--tone-info-bg); color: var(--tone-info-text); }
-.overview-status-pill.tone-success { background: var(--tone-success-bg); color: var(--tone-success-text); }
-.overview-status-pill.tone-danger { background: var(--tone-danger-bg); color: var(--tone-danger-text); }
-
-@media (min-width: 900px) {
-  .overview-main { flex-direction: row-reverse; align-items: stretch; }
-  .overview-chat-col { flex: 0 0 65%; }
-  .overview-left-col { flex: 0 0 calc(35% - var(--space-4)); }
-}
-
-/* Project Workspace screen (ProjectWorkspacePage.tsx) — left section nav + main content, following
-   the reference design. Both sections stay mounted (toggled via the `hidden` attribute) so
-   switching sections never resets an in-progress Project Context edit. */
-
-.workspace-layout {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-4);
-  align-items: flex-start;
-}
-
-.workspace-nav {
-  display: flex;
-  gap: var(--space-2);
-  overflow-x: auto;
-  -webkit-overflow-scrolling: touch;
-  width: 100%;
-}
-
-.workspace-nav button {
-  flex: 0 0 auto;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 2px;
-  text-align: left;
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  padding: var(--space-2) var(--space-3);
-  cursor: pointer;
-  white-space: nowrap;
-}
-
-.workspace-nav button.active {
-  border-color: var(--color-primary);
-  background: var(--tone-active-bg);
-}
-
-.workspace-nav-label {
-  font-size: 0.88rem;
-  font-weight: 600;
-}
-
-.workspace-nav-hint {
-  font-size: 0.76rem;
-  color: var(--color-text-muted);
-}
-
-.workspace-main {
-  min-width: 0;
-  width: 100%;
-}
-
-@media (min-width: 900px) {
-  .workspace-layout {
-    flex-direction: row;
-    align-items: flex-start;
+  .markdown a {
+    @apply text-primary underline underline-offset-4;
   }
-  .workspace-nav {
-    flex-direction: column;
-    width: 220px;
-    flex: 0 0 220px;
-    position: sticky;
-    top: calc(var(--space-4) + 8px);
+  .markdown pre {
+    @apply overflow-x-auto rounded-xl bg-muted p-3 font-mono text-xs leading-relaxed;
   }
-  .workspace-nav button {
-    width: 100%;
+
+  /* Dense data tables (bulk review, issue lists) — plain <table> markup styled once here. */
+  .data-table {
+    @apply w-full border-separate border-spacing-0 overflow-hidden rounded-2xl border text-sm;
   }
-}
-
-/* Project Context — one card per field (ProjectContextPanel.tsx) */
-
-.context-section-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: var(--space-3);
-  margin-bottom: var(--space-3);
-  flex-wrap: wrap;
-}
-
-.context-section-header h4 {
-  font-size: 1rem;
-  margin-bottom: 2px;
-}
-
-.context-section-header .btn {
-  flex: 0 0 auto;
-}
-
-/* Mobile task list (MobileTaskList.tsx) — the mobile-native alternative to the desktop Kanban
-   board, not a squeezed-down copy of it. */
-
-.mobile-task-list {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-4);
-}
-
-.status-chip-row {
-  display: flex;
-  gap: var(--space-2);
-  overflow-x: auto;
-  -webkit-overflow-scrolling: touch;
-  padding-bottom: 2px;
-}
-
-.status-chip {
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  border: 1px solid var(--color-border);
-  background: var(--color-surface);
-  border-radius: 999px;
-  padding: var(--space-2) var(--space-3);
-  font-size: 0.85rem;
-  font-weight: 600;
-  color: var(--color-text-muted);
-  cursor: pointer;
-  white-space: nowrap;
-}
-
-.status-chip.active {
-  border-color: currentColor;
-  color: var(--color-text);
-  background: var(--color-bg);
-}
-
-.status-chip.tone-neutral.active { background: var(--tone-neutral-bg); color: var(--tone-neutral-text); }
-.status-chip.tone-active.active { background: var(--tone-active-bg); color: var(--tone-active-text); }
-.status-chip.tone-attention.active { background: var(--tone-attention-bg); color: var(--tone-attention-text); }
-.status-chip.tone-info.active { background: var(--tone-info-bg); color: var(--tone-info-text); }
-.status-chip.tone-success.active { background: var(--tone-success-bg); color: var(--tone-success-text); }
-.status-chip.tone-danger.active { background: var(--tone-danger-bg); color: var(--tone-danger-text); }
-
-.status-chip-count {
-  font-size: 0.76rem;
-  opacity: 0.8;
-}
-
-.mobile-task-list-items {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-}
-
-@media (min-width: 768px) {
-  /* MobileTaskList only ever renders below the 768px useIsMobile() breakpoint, but this keeps its
-     cards from stretching to an unreadable full width if it's ever reached at a wider size. */
-  .mobile-task-list-items {
-    max-width: 520px;
+  .data-table th {
+    @apply border-b bg-muted/50 px-3 py-2 text-left text-xs font-medium whitespace-nowrap text-muted-foreground;
   }
-}
-
-/* Backlog (Phase 4A) — a backlog item is not a task; see BacklogItemPage. */
-
-.backlog-list {
-  list-style: none;
-  padding: 0;
-  margin: 0;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-}
-
-.backlog-row-link {
-  display: block;
-  padding: var(--space-3) var(--space-4);
-  color: inherit;
-  text-decoration: none;
-}
-
-.backlog-row-top {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  flex-wrap: wrap;
-}
-
-.backlog-row-title {
-  font-weight: 600;
-  flex: 1 1 200px;
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-
-.backlog-row-meta {
-  display: flex;
-  gap: var(--space-3);
-  flex-wrap: wrap;
-  margin-top: var(--space-2);
-  font-size: 0.8rem;
-  color: var(--color-text-muted);
-}
-
-.backlog-indicator.danger {
-  color: var(--tone-danger-text);
-  font-weight: 600;
-}
-
-.backlog-ref {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.8rem;
-  background: var(--tone-neutral-bg);
-  color: var(--tone-neutral-text);
-  border-radius: var(--radius-md);
-  padding: 2px 8px;
-}
-
-.backlog-not-task {
-  align-self: flex-start;
-  font-size: 0.8rem;
-  font-weight: 600;
-  background: var(--tone-attention-bg);
-  color: var(--tone-attention-text);
-  border-radius: var(--radius-md);
-  padding: 3px 10px;
-}
-
-.backlog-description {
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-
-.backlog-actions {
-  display: flex;
-  gap: var(--space-3);
-  flex-wrap: wrap;
-  margin: var(--space-3) 0;
-}
-
-.backlog-success {
-  background: var(--tone-success-bg);
-  color: var(--tone-success-text);
-  border-radius: var(--radius-md);
-  padding: var(--space-3) var(--space-4);
-}
-
-.backlog-failure {
-  background: var(--tone-danger-bg);
-  border-radius: var(--radius-md);
-  padding: var(--space-3) var(--space-4);
-}
-
-.backlog-analysis h3,
-.backlog-proposal h3 {
-  font-size: 0.85rem;
-  margin: var(--space-4) 0 var(--space-2);
-}
-
-.backlog-analysis-summary {
-  font-weight: 600;
-}
-
-.backlog-facts {
-  display: grid;
-  grid-template-columns: max-content 1fr;
-  gap: var(--space-1) var(--space-4);
-  font-size: 0.88rem;
-}
-
-.backlog-facts dt {
-  color: var(--color-text-muted);
-}
-
-.backlog-facts dd {
-  margin: 0;
-  overflow-wrap: anywhere;
-}
-
-.backlog-bullets,
-.backlog-file-list {
-  margin: 0;
-  padding-left: var(--space-5);
-  font-size: 0.88rem;
-}
-
-.backlog-file-list code {
-  overflow-wrap: anywhere;
-}
-
-.backlog-blocking {
-  background: var(--tone-danger-bg);
-  color: var(--tone-danger-text);
-  font-size: 0.7rem;
-  font-weight: 700;
-  border-radius: var(--radius-md);
-  padding: 1px 6px;
-}
-
-.backlog-check {
-  font-size: 0.75rem;
-  font-weight: 600;
-}
-
-.backlog-check.ok {
-  color: var(--tone-success-text);
-}
-
-.backlog-check.missing {
-  color: var(--tone-attention-text);
-}
-
-.backlog-check.unchecked {
-  color: var(--color-text-muted);
-}
-
-.backlog-pre {
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  background: var(--color-bg);
-  border-radius: var(--radius-md);
-  padding: var(--space-3);
-  font-size: 0.8rem;
-}
-
-.backlog-relationship p {
-  margin: var(--space-1) 0 0;
-}
-
-.spinner {
-  width: 0.9em;
-  height: 0.9em;
-  border: 2px solid currentColor;
-  border-right-color: transparent;
-  border-radius: 50%;
-  display: inline-block;
-  animation: backlog-spin 0.8s linear infinite;
-}
-
-@keyframes backlog-spin {
-  to {
-    transform: rotate(360deg);
+  .data-table td {
+    @apply border-b px-3 py-2.5 align-top;
   }
-}
-
-/* Trust boundary: AI claims vs platform evidence vs deterministic assessment */
-.trust-section {
-  border-left: 3px solid var(--color-border);
-  padding-left: var(--space-3);
-  margin-bottom: var(--space-4);
-}
-
-.trust-platform {
-  border-left-color: var(--tone-info-text);
-}
-
-.trust-assessment {
-  border-left-color: var(--tone-active-text);
-}
-
-.evidence-type,
-.claim-badge {
-  display: inline-block;
-  font-size: 0.7rem;
-  font-weight: 700;
-  border-radius: var(--radius-md);
-  padding: 1px 6px;
-  background: var(--tone-info-bg);
-  color: var(--tone-info-text);
-}
-
-.claim-badge {
-  border: 1px solid currentColor;
-}
-
-.claim-supported {
-  background: var(--tone-success-bg);
-  color: var(--tone-success-text);
-}
-
-.claim-contradicted {
-  background: var(--tone-danger-bg);
-  color: var(--tone-danger-text);
-  border-width: 2px;
-}
-
-.claim-unresolved {
-  background: var(--tone-attention-bg);
-  color: var(--tone-attention-text);
-}
-
-.claim-not-checked {
-  background: var(--tone-neutral-bg);
-  color: var(--tone-neutral-text);
-}
-
-.claim-assessments {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: grid;
-  gap: var(--space-2);
-}
-
-.claim-row {
-  display: grid;
-  gap: var(--space-2);
-  padding: var(--space-3);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  background: var(--color-surface);
-}
-
-.claim-row-contradicted {
-  border: 2px solid var(--tone-danger-text);
-  background: var(--tone-danger-bg);
-}
-
-.claim-cell ul {
-  margin: var(--space-1) 0 0;
-}
-
-.evidence-excerpt {
-  margin: var(--space-1) 0 0;
-}
-
-@media (min-width: 720px) {
-  .claim-row {
-    grid-template-columns: 1fr 1fr 1fr;
+  .data-table tbody tr:last-child td {
+    @apply border-b-0;
   }
-}
-
-/* Phase 4B — bulk review */
-.bulk-toolbar, .bulk-filters, .bulk-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; align-items: center; }
-.table-scroll { overflow-x: auto; }
-.bulk-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
-.bulk-table th, .bulk-table td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border, #e5e7eb); vertical-align: top; }
-.import-preview { margin: 12px 0; }
-
-/* Phase 4B.6 — Issues & Requests compact table (mobile: rows collapse into stacked cards) */
-@media (max-width: 720px) {
-  .issues-table thead { display: none; }
-  .issues-table, .issues-table tbody, .issues-table tr, .issues-table td { display: block; width: 100%; }
-  .issues-table-row { border: 1px solid var(--border, #e5e7eb); border-radius: 8px; margin-bottom: 10px; padding: 4px 0; }
-  .issues-table-row td { border-bottom: none; padding: 4px 12px; }
-  .issues-table-row td:before { content: attr(data-label); display: block; font-size: 0.75rem; color: var(--text-muted, #6b7280); }
-}
-
-/* Phase 4C — Chat (inside Overview). The panel fills its card and the composer stays pinned at the
-   bottom: .chat-messages is the only scrolling region, so a long conversation never grows the page. */
-.chat-panel { display: flex; flex-direction: column; gap: var(--space-3); flex: 1; min-height: 0; }
-
-.chat-panel-header { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-3); }
-.chat-panel-header h3 { margin: 0 0 2px; }
-.chat-panel-header p { margin: 0; max-width: 52ch; }
-.chat-context-indicator { flex-shrink: 0; font-size: 0.78rem; color: var(--tone-success-text); white-space: nowrap; }
-
-.chat-messages { display: flex; flex-direction: column; gap: var(--space-3); flex: 1; min-height: 220px; max-height: 55vh; overflow-y: auto; padding-right: 4px; }
-.chat-message { border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 10px 12px; max-width: 90%; }
-.chat-message-user { align-self: flex-end; background: var(--tone-active-bg); border-color: transparent; }
-.chat-message-assistant { align-self: flex-start; background: var(--color-surface); }
-.chat-message-meta { display: flex; gap: 8px; align-items: baseline; margin-bottom: 4px; }
-.chat-message-content { white-space: pre-wrap; word-break: break-word; }
-
-.chat-empty-state { text-align: center; padding: var(--space-5) var(--space-3); margin: auto; }
-.chat-empty-state h4 { margin: 0 0 4px; }
-.chat-empty-state p { max-width: 44ch; margin: 0 auto var(--space-3); }
-.chat-suggestion-chips { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
-.chat-suggestion-chip {
-  border: 1px solid var(--color-border);
-  background: var(--color-surface);
-  border-radius: 999px;
-  padding: 6px 14px;
-  font-size: 0.82rem;
-  color: var(--color-text);
-  cursor: pointer;
-}
-.chat-suggestion-chip:hover { border-color: var(--color-primary); color: var(--color-primary); }
-
-.chat-suggestions { margin-top: 10px; border-top: 1px dashed var(--color-border); padding-top: 10px; }
-.chat-suggestion-list { list-style: none; margin: 8px 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
-.chat-suggestion-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--color-border); }
-.chat-suggestion-row:last-child { border-bottom: none; }
-.chat-suggestion-row label { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.chat-suggestion-row label span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.chat-suggestion-view-link { flex-shrink: 0; font-size: 0.82rem; }
-.chat-suggestion-actions { margin-top: 8px; display: flex; gap: 8px; flex-wrap: wrap; }
-
-/* A modern, pill-shaped composer — one visual unit rather than raw stacked form controls. */
-.chat-composer { border-top: 1px solid var(--color-border); padding-top: var(--space-3); }
-.chat-composer-row {
-  display: flex;
-  gap: 6px;
-  align-items: flex-end;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-lg);
-  padding: 6px 6px 6px 10px;
-  background: var(--color-surface);
-}
-.chat-composer-row:focus-within { border-color: var(--color-primary); }
-.chat-composer-row textarea {
-  flex: 1;
-  min-width: 0;
-  border: none;
-  resize: none;
-  padding: 8px 4px;
-  background: transparent;
-}
-.chat-composer-row textarea:focus { outline: none; }
-.chat-file-input-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
-.chat-attach-btn {
-  flex-shrink: 0;
-  width: 34px;
-  height: 34px;
-  border-radius: 50%;
-  border: 1px solid var(--color-border);
-  background: var(--color-bg);
-  font-size: 1.1rem;
-  line-height: 1;
-  cursor: pointer;
-  color: var(--color-text-muted);
-}
-.chat-attach-btn:hover { color: var(--color-primary); border-color: var(--color-primary); }
-.chat-send-btn { border-radius: 999px; flex-shrink: 0; }
-.chat-attachment-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 0.82rem;
-  margin-bottom: 6px;
-  background: var(--tone-neutral-bg);
-  border-radius: 999px;
-  padding: 3px 6px 3px 10px;
-}
-.chat-attachment-remove { border: none; background: none; cursor: pointer; font-size: 1rem; line-height: 1; color: var(--color-text-muted); padding: 0 4px; }
-.chat-attachment-remove:hover { color: var(--tone-danger-text); }
-.chat-attachment-thumb { width: 20px; height: 20px; object-fit: cover; border-radius: 4px; }
-.btn-sm { padding: 5px 10px; font-size: 0.82rem; }
-.chat-pending-action {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-top: 8px;
-  padding: 8px 12px;
-  background: var(--tone-neutral-bg);
-  border-radius: var(--radius-md);
-  font-size: 0.88rem;
-}
-
-@media (max-width: 720px) {
-  .chat-messages { max-height: 55vh; }
-  .chat-message { max-width: 100%; }
+  .data-table tbody tr:hover td {
+    @apply bg-muted/30;
+  }
 }

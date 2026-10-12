@@ -58,6 +58,22 @@ describe("ChatPanel", () => {
     expect(screen.getByText("OTP codes expire in 5 minutes.")).toBeInTheDocument();
   });
 
+  it("shows what each assistant reply used — reported, estimated, or no AI tokens at all", async () => {
+    mockedChatApi.listMessages.mockResolvedValue({
+      messages: [
+        { id: "a1", conversationId: "c1", role: "assistant", content: "3 tasks are in Review.", attachment: null, bulkJobId: null, createdAt: "2026-01-01T00:00:00.000Z", tokens: 0, tokensEstimated: false },
+        { id: "a2", conversationId: "c1", role: "assistant", content: "OTP expires in 5 minutes.", attachment: null, bulkJobId: null, createdAt: "2026-01-01T00:00:01.000Z", tokens: 2847, tokensEstimated: false },
+        { id: "a3", conversationId: "c1", role: "assistant", content: "Delivered by SMS.", attachment: null, bulkJobId: null, createdAt: "2026-01-01T00:00:02.000Z", tokens: 3200, tokensEstimated: true },
+      ],
+      pendingAction: null,
+    });
+    renderPanel();
+
+    expect(await screen.findByText("No AI tokens used — answered from CodeForge data")).toBeInTheDocument();
+    expect(screen.getByText("Used 2.8K tokens")).toBeInTheDocument();
+    expect(screen.getByText("Used ~3.2K tokens (est.)")).toBeInTheDocument();
+  });
+
   it("shows a 'Show suggestions' control under an assistant message that started a bulk analysis run, and none for a plain reply", async () => {
     mockedChatApi.listMessages.mockResolvedValue({
       messages: [

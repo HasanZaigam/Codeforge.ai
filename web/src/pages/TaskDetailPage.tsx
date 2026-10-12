@@ -12,6 +12,8 @@ import { CancelTaskControl } from "../components/task-detail/CancelTaskControl.j
 import { StartTaskControl } from "../components/task-detail/StartTaskControl.js";
 import { LoadingState } from "../components/common/LoadingState.js";
 import { ErrorState } from "../components/common/ErrorState.js";
+import { EmptyState } from "../components/common/EmptyState.js";
+import { ChevronLeftIcon } from "lucide-react";
 
 /** The technical-detail screen (Step 4 instructions §10) — everything the board card intentionally omits lives here. */
 export function TaskDetailPage() {
@@ -39,35 +41,44 @@ export function TaskDetailPage() {
   }
 
   return (
-    <div>
-      <Link to={`/projects/${task.projectId}/tasks`} className="breadcrumb">
-        ← Back to tasks
+    <div className="space-y-6">
+      <Link
+        to={`/projects/${task.projectId}/tasks`}
+        className="inline-flex items-center gap-1 text-sm text-muted-foreground transition-colors hover:text-foreground"
+      >
+        <ChevronLeftIcon className="size-4" />
+        Back to tasks
       </Link>
 
-      <TaskHeader task={task} branchState={branchState} />
-
-      <div style={{ marginBottom: 24 }}>
-        <StartTaskControl task={task} onStarted={() => refetchTask()} />
-        <CancelTaskControl task={task} onCancelled={() => refetchTask()} />
+      <div className="space-y-4 rounded-4xl bg-card p-6 ring-1 ring-foreground/10">
+        <TaskHeader task={task} branchState={branchState} />
+        <div className="flex flex-wrap gap-2 empty:hidden">
+          <StartTaskControl task={task} onStarted={() => refetchTask()} />
+          <CancelTaskControl task={task} onCancelled={() => refetchTask()} />
+        </div>
       </div>
 
-      {isNeedsInput && input && (
-        <div className="section">
-          <NeedsInputPanel input={input} onSubmit={handleAnswer} submitting={submitting} />
-        </div>
-      )}
+      {isNeedsInput && input && <NeedsInputPanel input={input} onSubmit={handleAnswer} submitting={submitting} />}
 
-      <div className="section">
-        <h2>Activity</h2>
-        {eventsError ? <ErrorState message="Couldn't load activity." /> : <ActivityTimeline events={events ?? []} />}
+      <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
+        <div className="min-w-0 space-y-3">
+          {hasEvidence ? (
+            <>
+              <h2 className="text-lg font-semibold">Result</h2>
+              {reportError ? <ErrorState message="Couldn't load the report." /> : <ReportPanel task={task} report={report} />}
+            </>
+          ) : (
+            <EmptyState message="Nothing has run yet — results appear here once the task starts executing." />
+          )}
+        </div>
+
+        <aside className="space-y-3 lg:sticky lg:top-6">
+          <h2 className="text-lg font-semibold">Activity</h2>
+          <div className="rounded-3xl bg-card p-5 ring-1 ring-foreground/10">
+            {eventsError ? <ErrorState message="Couldn't load activity." /> : <ActivityTimeline events={events ?? []} />}
+          </div>
+        </aside>
       </div>
-
-      {hasEvidence && (
-        <div className="section">
-          <h2>Result</h2>
-          {reportError ? <ErrorState message="Couldn't load the report." /> : <ReportPanel task={task} report={report} />}
-        </div>
-      )}
     </div>
   );
 }

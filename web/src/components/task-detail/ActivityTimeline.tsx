@@ -1,8 +1,8 @@
 import type { TaskEventDTO } from "../../api/index.js";
 import { labelForEvent } from "../../lib/eventLabels.js";
 import { detailForEvent } from "../../lib/eventDetail.js";
-import { formatAbsolute, formatRelative } from "../../lib/time.js";
 import { EmptyState } from "../common/EmptyState.js";
+import { Timeline } from "../common/Timeline.js";
 
 /**
  * Renders the event log as plain language — see /docs/UI_ARCHITECTURE.md "Activity timeline" and
@@ -15,24 +15,14 @@ export function ActivityTimeline({ events }: { events: TaskEventDTO[] }) {
     return <EmptyState message="No activity yet." />;
   }
 
-  const lastIndex = events.length - 1;
   return (
-    <div className="timeline">
-      {events.map((event, i) => {
-        const detail = detailForEvent(event);
-        return (
-          <div className={`timeline-item${i === lastIndex ? " latest" : ""}`} key={event.id}>
-            <div className="dot" />
-            <div className="content">
-              <span className="label">{labelForEvent(event.type)}</span>
-              {detail && <span className="detail">{detail}</span>}
-              <span className="time" title={formatAbsolute(event.createdAt)}>
-                {formatRelative(event.createdAt)}
-              </span>
-            </div>
-          </div>
-        );
-      })}
-    </div>
+    <Timeline
+      entries={events.map((event) => ({
+        id: event.id,
+        label: labelForEvent(event.type),
+        detail: detailForEvent(event),
+        createdAt: event.createdAt,
+      }))}
+    />
   );
 }

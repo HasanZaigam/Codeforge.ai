@@ -9,7 +9,7 @@
 
 export class NotFoundError extends Error {
   constructor(
-    public readonly kind: "Project" | "Task" | "HumanInputRequest" | "BacklogItem" | "TaskProposal" | "ClaimVerificationJob" | "ProviderConnection",
+    public readonly kind: "Project" | "ProjectRepo" | "Task" | "HumanInputRequest" | "BacklogItem" | "TaskProposal" | "ClaimVerificationJob" | "ProviderConnection",
     public readonly id: string,
   ) {
     super(`${kind} not found: ${id}`);
@@ -261,5 +261,44 @@ export class ModelGatewayResolutionError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "ModelGatewayResolutionError";
+  }
+}
+
+/**
+ * A repository can't be removed from its project while tasks or backlog items still target it (TD-62)
+ * — they'd lose the repository they execute against. Mapped to 409.
+ */
+export class RepositoryInUseError extends Error {
+  constructor(repoName: string, usage: { tasks: number; backlogItems: number }) {
+    const parts = [
+      usage.tasks > 0 ? `${usage.tasks} task${usage.tasks === 1 ? "" : "s"}` : null,
+      usage.backlogItems > 0 ? `${usage.backlogItems} backlog item${usage.backlogItems === 1 ? "" : "s"}` : null,
+    ].filter(Boolean);
+    super(`"${repoName}" is still used by ${parts.join(" and ")} — it can't be removed while anything targets it.`);
+    this.name = "RepositoryInUseError";
+  }
+}
+
+/** Two repositories in one project can't share a name — tasks and Chat refer to repositories by name. Mapped to 409. */
+export class DuplicateRepositoryNameError extends Error {
+  constructor(name: string) {
+    super(`This project already has a repository named "${name}". Choose a different name.`);
+    this.name = "DuplicateRepositoryNameError";
+  }
+}
+
+/**
+ * The work item doesn't say which repository it targets and the project gives no unambiguous default:
+ * it has no repository yet, or several (TD-62). Mapped to 400 with the available names so the caller
+ * can ask the user instead of guessing.
+ */
+export class RepositoryRequiredError extends Error {
+  constructor(public readonly available: string[]) {
+    super(
+      available.length === 0
+        ? "This project has no repository connected yet. Connect one in Project Settings → Repositories first."
+        : `This project has several repositories (${available.join(", ")}). Choose which one this work is for.`,
+    );
+    this.name = "RepositoryRequiredError";
   }
 }

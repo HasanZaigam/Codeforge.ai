@@ -1,6 +1,12 @@
 import { useState, type FormEvent } from "react";
 import type { HumanInputRequestDTO, TaskDTO } from "../../api/index.js";
 import { ErrorState } from "../common/ErrorState.js";
+import { Button } from "@/components/ui/button";
+import { MessageCircleQuestionIcon } from "lucide-react";
+import { Spinner } from "@/components/ui/spinner";
+import { cn } from "@/lib/utils";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 
 /**
  * The most important UX state in the product (Step 4 instructions §12): why
@@ -47,90 +53,105 @@ export function NeedsInputPanel({
 
   if (submitted) {
     return (
-      <div className="needs-input-panel">
-        <h2>Thanks — continuing</h2>
-        <p>The AI developer is resuming with your answer.</p>
+      <div className="flex items-center gap-3 rounded-4xl border border-tone-success/30 bg-tone-success/5 p-6">
+        <Spinner className="size-5 text-tone-success" />
+        <div>
+          <h2 className="text-base font-semibold">Thanks — continuing</h2>
+          <p className="text-sm text-muted-foreground">The AI developer is resuming with your answer.</p>
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="needs-input-panel">
-      <h2>Your decision is required</h2>
-
-      <div className="needs-input-block">
-        <h4>What was found</h4>
-        <p>{input.discovered}</p>
+    <div className="overflow-hidden rounded-4xl border border-tone-attention/40 bg-card ring-4 ring-tone-attention/10">
+      <div className="flex items-center gap-3 border-b border-tone-attention/30 bg-tone-attention/10 px-6 py-4">
+        <MessageCircleQuestionIcon className="size-5 text-tone-attention" aria-hidden="true" />
+        <h2 className="text-base font-semibold">Your decision is required</h2>
       </div>
 
-      {input.attempted.length > 0 && (
-        <div className="needs-input-block">
-          <h4>What was tried</h4>
-          <ul style={{ margin: 0, paddingLeft: 20 }}>
-            {input.attempted.map((item, i) => (
-              <li key={i}>{item}</li>
-            ))}
-          </ul>
-        </div>
-      )}
-
-      <div className="needs-input-block">
-        <h4>What's blocking progress</h4>
-        <p>{input.blocker}</p>
-      </div>
-
-      <div className="needs-input-block">
-        <h4>Question</h4>
-        <p style={{ fontWeight: 600 }}>{input.question}</p>
-      </div>
-
-      <form onSubmit={handleSubmit}>
-        {input.options.length > 0 && (
-          <div className="option-list" role="radiogroup" aria-label="Recommended options">
-            {input.options.map((option) => (
-              <label
-                key={option.label}
-                className={`option-item${selectedOption === option.label ? " selected" : ""}`}
-              >
-                <input
-                  type="radio"
-                  name="option"
-                  value={option.label}
-                  checked={selectedOption === option.label}
-                  onChange={() => setSelectedOption(option.label)}
-                  style={{ marginTop: 3 }}
-                />
-                <span>
-                  <span className="option-label">{option.label}</span>
-                  <br />
-                  <span className="option-description">{option.description}</span>
-                </span>
-              </label>
-            ))}
+      <div className="grid gap-6 p-6 lg:grid-cols-2">
+        <div className="space-y-4 text-sm">
+          <div className="space-y-1">
+            <h4 className="text-xs font-medium tracking-wide text-muted-foreground uppercase">What was found</h4>
+            <p>{input.discovered}</p>
           </div>
-        )}
 
-        <div className="field">
-          <label htmlFor="answer-text">
-            Your decision {isNoChangeNeeded && <span style={{ fontWeight: 400, color: "var(--color-text-muted)" }}>(optional)</span>}
-          </label>
-          <textarea
-            id="answer-text"
-            value={freeText}
-            onChange={(e) => setFreeText(e.target.value)}
-            placeholder="Explain your decision, or add anything the options above don't cover…"
-            rows={3}
-            required={!isNoChangeNeeded}
-            maxLength={10000}
-          />
+          {input.attempted.length > 0 && (
+            <div className="space-y-1">
+              <h4 className="text-xs font-medium tracking-wide text-muted-foreground uppercase">What was tried</h4>
+              <ul className="list-disc space-y-1 pl-5">
+                {input.attempted.map((item, i) => (
+                  <li key={i}>{item}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          <div className="space-y-1">
+            <h4 className="text-xs font-medium tracking-wide text-muted-foreground uppercase">What's blocking progress</h4>
+            <p>{input.blocker}</p>
+          </div>
         </div>
 
-        {error && <ErrorState message={error} />}
+        <div className="space-y-4">
+          <div className="space-y-1">
+            <h4 className="text-xs font-medium tracking-wide text-muted-foreground uppercase">Question</h4>
+            <p className="font-semibold">{input.question}</p>
+          </div>
 
-        <button type="submit" className="btn btn-primary btn-block" disabled={submitting || !canSubmit}>
-          {submitting ? "Submitting…" : "Continue"}
-        </button>
-      </form>
+          <form onSubmit={handleSubmit} className="space-y-4">
+            {input.options.length > 0 && (
+              <div className="space-y-2" role="radiogroup" aria-label="Recommended options">
+                {input.options.map((option) => (
+                  <label
+                    key={option.label}
+                    className={cn(
+                      "flex cursor-pointer items-start gap-3 rounded-2xl border p-3 text-sm transition-colors hover:bg-muted/50",
+                      selectedOption === option.label && "border-primary bg-primary/5 ring-1 ring-primary",
+                    )}
+                  >
+                    <input
+                      type="radio"
+                      name="option"
+                      value={option.label}
+                      checked={selectedOption === option.label}
+                      onChange={() => setSelectedOption(option.label)}
+                      className="mt-0.5 size-4 accent-primary"
+                    />
+                    <span>
+                      <span className="font-medium">{option.label}</span>
+                      <br />
+                      <span className="text-muted-foreground">{option.description}</span>
+                    </span>
+                  </label>
+                ))}
+              </div>
+            )}
+
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="answer-text">
+                Your decision {isNoChangeNeeded && <span className="font-normal text-muted-foreground">(optional)</span>}
+              </Label>
+              <Textarea
+                id="answer-text"
+                value={freeText}
+                onChange={(e) => setFreeText(e.target.value)}
+                placeholder="Explain your decision, or add anything the options above don't cover…"
+                rows={3}
+                required={!isNoChangeNeeded}
+                maxLength={10000}
+              />
+            </div>
+
+            {error && <ErrorState message={error} />}
+
+            <Button type="submit" size="lg" className="w-full" disabled={submitting || !canSubmit}>
+              {submitting ? "Submitting…" : "Continue"}
+            </Button>
+          </form>
+        </div>
+      </div>
     </div>
   );
 }

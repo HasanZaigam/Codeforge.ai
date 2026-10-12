@@ -7,7 +7,7 @@ const categoryText = (job: BacklogAnalysisJobDTO) => (job.failureCategory ? FAIL
 /** The background analysis job's state, straight from the server's job — the click only enqueues, a worker runs it. */
 export function AnalysisJobPanel({ job }: { job: BacklogAnalysisJobDTO | null }) {
   if (!job || job.status === "SUCCEEDED") return null;
-  const reason = job.failureReason ? <p className="field-hint">{job.failureReason}</p> : null;
+  const reason = job.failureReason ? <p className="text-sm text-muted-foreground">{job.failureReason}</p> : null;
   const model = [job.providerId, job.modelId].filter(Boolean).join(" / ");
 
   if (job.status === "QUEUED") {

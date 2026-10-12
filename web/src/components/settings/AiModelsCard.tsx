@@ -2,8 +2,15 @@ import { useEffect, useState } from "react";
 import { modelGatewayApi } from "../../api/index.js";
 import type { AiProviderId, GlobalAiConfigDTO, ProviderConnectionDTO, ProviderUsageTotalsDTO } from "../../api/types.js";
 import { ConnectProviderDialog } from "./ConnectProviderDialog.js";
+import { ManageProviderDialog } from "./ManageProviderDialog.js";
 import { LoadingState } from "../common/LoadingState.js";
 import { ErrorState } from "../common/ErrorState.js";
+import { Button } from "@/components/ui/button";
+import { NativeSelect } from "@/components/ui/native-select";
+import { Label } from "@/components/ui/label";
+import { Section } from "../common/Section.js";
+import { BrainCircuitIcon } from "lucide-react";
+import { cn } from "@/lib/utils";
 
 const PROVIDER_LABEL: Record<AiProviderId, string> = { google: "Google", anthropic: "Anthropic", openai: "OpenAI" };
 const ALL_PROVIDERS: AiProviderId[] = ["google", "anthropic", "openai"];
@@ -26,7 +33,8 @@ export function AiModelsCard() {
   const [config, setConfig] = useState<GlobalAiConfigDTO>();
   const [usage, setUsage] = useState<ProviderUsageTotalsDTO[]>();
   const [error, setError] = useState<string>();
-  const [connectDialogProvider, setConnectDialogProvider] = useState<AiProviderId>();
+  const [connectDialog, setConnectDialog] = useState<{ provider: AiProviderId; replacing: boolean }>();
+  const [manageConnection, setManageConnection] = useState<ProviderConnectionDTO>();
   const [testingProvider, setTestingProvider] = useState<AiProviderId>();
   const [testResult, setTestResult] = useState<{ provider: AiProviderId; valid: boolean; error: string | null }>();
   const [savingConfig, setSavingConfig] = useState(false);
@@ -122,31 +130,47 @@ export function AiModelsCard() {
   const connectedCount = connections?.filter((c) => c.connected).length ?? 0;
 
   return (
-    <div className="card card-padded stack" style={{ gap: 12 }}>
-      <h3>AI / Models</h3>
+    <Section
+      title={<span className="flex items-center gap-2"><BrainCircuitIcon className="size-4 text-muted-foreground" aria-hidden="true" />AI / Models</span>}
+      description="Which AI providers CodeForge may use, and how it chooses between them."
+    >
       {error && <ErrorState message={error} onRetry={load} />}
       {!error && !connections && <LoadingState label="Loading AI/Models settings…" />}
 
       {connections && config && (
-        <>
-          <div className="field">
-            <label>Global AI Brain</label>
-            <select value={config.mode} onChange={(e) => void handleModeChange(e.target.value as "auto" | "fixed")} disabled={savingConfig}>
-              <option value="auto">Auto — CodeForge decides</option>
-              <option value="fixed">Fixed</option>
-            </select>
-            {config.mode === "fixed" && (
-              <select value={config.fixedProvider ?? ""} onChange={(e) => void handleFixedProviderChange(e.target.value as AiProviderId)} disabled={savingConfig} style={{ marginTop: 8 }}>
-                {config.autoAllowed
-                  .filter((a) => a.connected)
-                  .map((a) => (
-                    <option key={a.provider} value={a.provider}>
-                      {PROVIDER_LABEL[a.provider]}
-                    </option>
-                  ))}
-              </select>
-            )}
-            <p className="field-hint">
+        <div className="flex flex-col gap-6 text-sm">
+          <div className="flex flex-col gap-2">
+            <Label htmlFor="ai-brain-mode">Global AI Brain</Label>
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <NativeSelect
+                className="w-full sm:w-64"
+                id="ai-brain-mode"
+                value={config.mode}
+                onChange={(e) => void handleModeChange(e.target.value as "auto" | "fixed")}
+                disabled={savingConfig}
+              >
+                <option value="auto">Auto — CodeForge decides</option>
+                <option value="fixed">Fixed</option>
+              </NativeSelect>
+              {config.mode === "fixed" && (
+                <NativeSelect
+                  className="w-full sm:w-48"
+                  aria-label="Fixed provider"
+                  value={config.fixedProvider ?? ""}
+                  onChange={(e) => void handleFixedProviderChange(e.target.value as AiProviderId)}
+                  disabled={savingConfig}
+                >
+                  {config.autoAllowed
+                    .filter((a) => a.connected)
+                    .map((a) => (
+                      <option key={a.provider} value={a.provider}>
+                        {PROVIDER_LABEL[a.provider]}
+                      </option>
+                    ))}
+                </NativeSelect>
+              )}
+            </div>
+            <p className="text-muted-foreground">
               {config.mode === "auto"
                 ? "Chat, task execution, and every other AI-powered operation use whichever allowed, connected provider is currently healthy."
                 : "Chat, task execution, and every other AI-powered operation always use this exact provider/model — if its connection breaks, executions fail with an actionable error instead of silently switching."}
@@ -154,109 +178,152 @@ export function AiModelsCard() {
             {configError && <ErrorState message={configError} />}
           </div>
 
-          <div className="stack" style={{ gap: 8 }}>
-            <strong>Connected Providers</strong>
-            {connections.map((c) => (
-              <div key={c.provider} className="page-header" style={{ marginBottom: 0 }}>
-                <div>
-                  <strong>{PROVIDER_LABEL[c.provider]}</strong>
-                  {c.connected ? (
-                    <p className="field-hint" style={{ margin: 0 }}>
-                      Model: {c.model}
-                      {c.lastVerifiedAt && ` · last verified ${c.lastVerifiedAt}`}
-                    </p>
-                  ) : c.status === "error" ? (
-                    <p className="field-hint" style={{ margin: 0 }}>
-                      {c.lastError ?? "This connection stopped working."}
-                    </p>
-                  ) : (
-                    <p className="field-hint" style={{ margin: 0 }}>
-                      Not connected.
-                    </p>
-                  )}
-                  {testResult?.provider === c.provider && (
-                    <p className={`field-hint ${testResult.valid ? "" : "danger"}`} style={{ margin: 0 }}>
-                      {testResult.valid ? "✓ Verified — this key still works." : `✕ ${testResult.error ?? "This key no longer works."}`}
-                    </p>
-                  )}
-                </div>
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                  {c.connected ? (
-                    <>
-                      <button className="btn btn-secondary btn-sm" onClick={() => void handleTest(c.provider)} disabled={testingProvider === c.provider}>
-                        {testingProvider === c.provider ? "Testing…" : "Test connection"}
-                      </button>
-                      <button className="btn btn-secondary btn-sm" onClick={() => setConnectDialogProvider(c.provider)}>
-                        Manage
-                      </button>
-                      <button className="btn btn-secondary btn-sm" onClick={() => void handleDisconnect(c.provider)}>
-                        Disconnect
-                      </button>
-                    </>
-                  ) : (
-                    <button className="btn btn-primary btn-sm" onClick={() => setConnectDialogProvider(c.provider)}>
-                      Connect
-                    </button>
-                  )}
-                </div>
-              </div>
-            ))}
+          <div className="flex flex-col gap-2">
+            <h3 className="font-medium">Connected Providers</h3>
+            <ul className="divide-y rounded-2xl border">
+              {connections.map((c) => (
+                <li key={c.provider} className="flex flex-col gap-3 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="flex min-w-0 items-start gap-3">
+                    <span
+                      className={cn(
+                        "mt-1.5 size-2 shrink-0 rounded-full",
+                        c.connected ? "bg-tone-success" : c.status === "error" ? "bg-tone-danger" : "bg-muted-foreground/30",
+                      )}
+                      aria-hidden="true"
+                    />
+                    <div className="min-w-0">
+                      <strong className="font-medium">{PROVIDER_LABEL[c.provider]}</strong>
+                      {c.connected ? (
+                        <p className="text-muted-foreground">
+                          Model: {c.model}
+                          {c.lastVerifiedAt && ` · last verified ${c.lastVerifiedAt}`}
+                        </p>
+                      ) : c.status === "error" ? (
+                        <p className="text-destructive">{c.lastError ?? "This connection stopped working."}</p>
+                      ) : (
+                        <p className="text-muted-foreground">Not connected.</p>
+                      )}
+                      {testResult?.provider === c.provider && (
+                        <p className={testResult.valid ? "text-tone-success" : "text-destructive"}>
+                          {testResult.valid ? "✓ Verified — this key still works." : `✕ ${testResult.error ?? "This key no longer works."}`}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex shrink-0 flex-wrap gap-2">
+                    {c.connected ? (
+                      <>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          type="button"
+                          onClick={() => void handleTest(c.provider)}
+                          disabled={testingProvider === c.provider}
+                        >
+                          {testingProvider === c.provider ? "Testing…" : "Test connection"}
+                        </Button>
+                        <Button variant="outline" size="sm" type="button" onClick={() => setManageConnection(c)}>
+                          Manage
+                        </Button>
+                        <Button variant="ghost" size="sm" type="button" onClick={() => void handleDisconnect(c.provider)}>
+                          Disconnect
+                        </Button>
+                      </>
+                    ) : (
+                      <Button size="sm" type="button" onClick={() => setConnectDialog({ provider: c.provider, replacing: false })}>
+                        Connect
+                      </Button>
+                    )}
+                  </div>
+                </li>
+              ))}
+            </ul>
           </div>
 
           {config.mode === "auto" && connectedCount > 0 && (
-            <div className="field">
-              <label>Allowed for Auto</label>
-              <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
+            <fieldset className="flex flex-col gap-2">
+              <legend className="mb-2 text-sm font-medium">Allowed for Auto</legend>
+              <div className="flex flex-wrap gap-2">
                 {config.autoAllowed
                   .filter((a) => a.connected)
                   .map((a) => (
-                    <label key={a.provider} style={{ display: "flex", alignItems: "center", gap: 6, fontWeight: "normal" }}>
-                      <input type="checkbox" checked={a.allowed} disabled={savingConfig} onChange={(e) => void handleToggleAutoAllowed(a.provider, e.target.checked)} />
+                    <label
+                      key={a.provider}
+                      className="flex cursor-pointer items-center gap-2 rounded-full border px-3 py-1.5 has-checked:border-primary has-checked:bg-primary/5"
+                    >
+                      <input
+                        type="checkbox"
+                        className="size-4 accent-primary"
+                        checked={a.allowed}
+                        disabled={savingConfig}
+                        onChange={(e) => void handleToggleAutoAllowed(a.provider, e.target.checked)}
+                      />
                       {PROVIDER_LABEL[a.provider]}
                     </label>
                   ))}
               </div>
-            </div>
+            </fieldset>
           )}
 
           {connectedCount === 0 && (
-            <p className="text-muted">
+            <p className="rounded-2xl bg-muted/60 p-4 text-muted-foreground">
               No provider is connected yet — connect Google, Anthropic, or OpenAI above. Until then, this deployment falls back to its own platform-configured model (unchanged).
             </p>
           )}
 
-          <div className="stack" style={{ gap: 4 }}>
-            <strong>AI Usage</strong>
+          <div className="flex flex-col gap-2">
+            <h3 className="font-medium">AI Usage</h3>
             {!usage || usage.length === 0 ? (
-              <p className="text-muted">No AI executions recorded yet.</p>
+              <p className="text-muted-foreground">No AI executions recorded yet.</p>
             ) : (
-              <dl className="info-callout" style={{ margin: 0 }}>
+              <dl className="grid gap-2 sm:grid-cols-2">
                 {usage.map((u) => (
-                  <div key={u.providerId}>
-                    <dt>{PROVIDER_LABEL[u.providerId as AiProviderId] ?? u.providerId}</dt>
-                    <dd>
+                  <div key={u.providerId} className="rounded-2xl bg-muted/60 px-4 py-3">
+                    <dt className="font-medium">{PROVIDER_LABEL[u.providerId as AiProviderId] ?? u.providerId}</dt>
+                    <dd className="text-muted-foreground">
                       Input: {formatTokens(u.inputTokens)} · Output: {formatTokens(u.outputTokens)} · Total: {formatTokens(u.totalTokens)}
-                      {u.runsWithUsage < u.runsTotal && <span className="field-hint"> ({u.runsTotal - u.runsWithUsage} of {u.runsTotal} runs reported no usage)</span>}
+                      {u.runsWithUsage < u.runsTotal && (
+                        <span className="block text-xs">
+                          ({u.runsTotal - u.runsWithUsage} of {u.runsTotal} runs reported no usage)
+                        </span>
+                      )}
                     </dd>
                   </div>
                 ))}
               </dl>
             )}
           </div>
-        </>
+        </div>
       )}
 
-      {connectDialogProvider && (
+      {connectDialog && (
         <ConnectProviderDialog
-          provider={connectDialogProvider}
-          onClose={() => setConnectDialogProvider(undefined)}
+          provider={connectDialog.provider}
+          replacing={connectDialog.replacing}
+          onClose={() => setConnectDialog(undefined)}
           onConnected={() => {
-            setConnectDialogProvider(undefined);
+            setConnectDialog(undefined);
             setTestResult(undefined);
             load();
           }}
         />
       )}
-    </div>
+
+      {manageConnection && (
+        <ManageProviderDialog
+          connection={manageConnection}
+          onClose={() => setManageConnection(undefined)}
+          onChanged={() => {
+            setManageConnection(undefined);
+            setTestResult(undefined);
+            load();
+          }}
+          onReplaceKey={() => {
+            setConnectDialog({ provider: manageConnection.provider, replacing: true });
+            setManageConnection(undefined);
+          }}
+        />
+      )}
+    </Section>
   );
 }

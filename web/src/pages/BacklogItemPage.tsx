@@ -1,5 +1,8 @@
 import { useState, type FormEvent } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useOutletContext, useParams } from "react-router-dom";
+import type { ProjectOutletContext } from "./ProjectLayout.js";
+import type { ProjectRepoDTO } from "../api/index.js";
+import { NativeSelect } from "@/components/ui/native-select";
 import { useBacklogItem } from "../hooks/useBacklogItem.js";
 import { backlogApi, ApiError, type BacklogItemDetailDTO, type TaskDTO } from "../api/index.js";
 import { EDITABLE_STATUSES } from "../lib/backlogLabels.js";
@@ -12,6 +15,16 @@ import { BacklogActivity } from "../components/backlog/BacklogActivity.js";
 import { DESCRIPTION_MAX, REF_MAX, TITLE_MAX } from "../components/backlog/CreateBacklogItemDialog.js";
 import { LoadingState } from "../components/common/LoadingState.js";
 import { ErrorState } from "../components/common/ErrorState.js";
+import { Button, buttonVariants } from "@/components/ui/button";
+import { Section } from "../components/common/Section.js";
+import { Spinner } from "@/components/ui/spinner";
+import { ChevronDownIcon, ChevronLeftIcon, CoinsIcon, FolderGit2Icon, PencilIcon, SparklesIcon } from "lucide-react";
+import { tokenLabel } from "../lib/tokens.js";
+import { cn } from "@/lib/utils";
+
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 
 const READ_ONLY_REASONS: Record<string, string> = {
   ANALYZING: "This item is being analyzed and can't be edited until the analysis finishes.",
@@ -29,6 +42,8 @@ const READ_ONLY_REASONS: Record<string, string> = {
 export function BacklogItemPage() {
   const { itemId } = useParams<{ itemId: string }>();
   const { detail, error, loading, refetch, adopt } = useBacklogItem(itemId!);
+  // Rendered inside ProjectLayout, which provides the project (and so its repositories).
+  const repositories = useOutletContext<ProjectOutletContext | undefined>()?.project.repositories ?? [];
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string>();
   const [confirmingReject, setConfirmingReject] = useState(false);
@@ -131,196 +146,252 @@ export function BacklogItemPage() {
     });
 
   return (
-    <div>
-      <Link to={`/projects/${item.projectId}/backlog`} className="breadcrumb">
-        ← Issues &amp; Requests
+    <div className="space-y-6">
+      <Link
+        to={`/projects/${item.projectId}`}
+        className="inline-flex items-center gap-1 text-sm text-muted-foreground transition-colors hover:text-foreground"
+      >
+        <ChevronLeftIcon className="size-4" />
+        Overview
       </Link>
 
       {/* a. Header */}
-      <div className="task-detail-header">
-        <div className="title-row">
-          {item.externalRef && <span className="backlog-ref">{item.externalRef}</span>}
-          <h1>{item.title}</h1>
-          <BacklogStatusBadge status={status} />
+      <div className="space-y-4 rounded-4xl bg-card p-6 ring-1 ring-foreground/10">
+        <div className="space-y-3">
+          <div className="flex flex-wrap items-start gap-3">
+            <div className="min-w-0 flex-1 space-y-1">
+              {item.externalRef && <span className="font-mono text-xs text-muted-foreground">{item.externalRef}</span>}
+              <h1 className="text-2xl font-semibold">{item.title}</h1>
+            </div>
+            <BacklogStatusBadge status={status} />
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            {repositories.length > 1 && (
+              <span className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
+                <FolderGit2Icon className="size-3" aria-hidden="true" />
+                {repositories.find((r) => r.id === item.repositoryId)?.name ?? "unknown repository"}
+              </span>
+            )}
+            <ReviewBadges review={detail.review} />
+            <span className="text-xs text-muted-foreground">Backlog item — not an executable task</span>
+          </div>
         </div>
-        <ReviewBadges review={detail.review} />
-        <span className="backlog-not-task">Backlog item — not an executable task</span>
-      </div>
 
-      {editing && canEdit ? (
-        <EditForm
-          item={item}
-          onCancel={() => setEditing(false)}
-          onSaved={(updated) => {
-            setEditing(false);
-            adopt((d) => withItem(d, updated));
-            refetch(); // editing an analyzed item resets it to NEW — show the server's state
-          }}
-        />
-      ) : (
-        <div className="section">
-          <p className="backlog-description">{item.description}</p>
-          {canEdit ? (
-            <>
-              <button type="button" className="btn btn-secondary" onClick={() => setEditing(true)}>
-                Edit
-              </button>
-              {status === "ANALYZED" && <p className="field-hint">Editing an analyzed item resets it to New so it can be analyzed again.</p>}
-            </>
-          ) : (
-            <p className="field-hint">{READ_ONLY_REASONS[status]}</p>
-          )}
-        </div>
-      )}
-
-      {/* What CodeForge understood / conclusion / next step — the plain-language summary of the technical Analysis section below */}
-      {latestAnalysis?.status === "succeeded" && latestAnalysis.result && (
-        <div className="section">
-          <h2>What CodeForge understood</h2>
-          <p className="backlog-description">{latestAnalysis.result.summary}</p>
-        </div>
-      )}
-      <div className="section">
-        <h2>AI conclusion</h2>
-        {status === "NEEDS_CLARIFICATION" && (
-          <>
-            <p>
-              <strong>Needs clarification.</strong> CodeForge needs more information before it can prepare this issue for
-              implementation.
-            </p>
-            <p className="field-hint">What happens next: edit the issue with the missing details, then re-analyze.</p>
-            <button type="button" className="btn btn-primary" onClick={() => setEditing(true)}>
-              Add clarification
-            </button>
-          </>
-        )}
-        {(status === "READY_FOR_TASK" || hasLiveProposal) && (
-          <>
-            <p>
-              <strong>Ready to build.</strong> CodeForge found enough evidence to propose a task.
-            </p>
-            <p className="field-hint">What happens next: review the proposal below and approve it to create a task.</p>
-            <a className="btn btn-primary" href="#task-proposal">
-              Review proposal
-            </a>
-          </>
-        )}
-        {status === "ANALYZED" && !hasLiveProposal && (
-          <>
-            <p>
-              <strong>Analyzed.</strong> CodeForge has reviewed this issue but hasn't proposed a task yet.
-            </p>
-            <p className="field-hint">What happens next: generate a task proposal below, or edit the issue if something needs correcting.</p>
-          </>
-        )}
-        {(status === "NEW" || status === "ANALYZING") && (
-          <p className="field-hint">
-            {status === "ANALYZING" ? "CodeForge is analyzing this issue now." : "This issue hasn't been analyzed yet."}
-          </p>
-        )}
-        {(status === "CONVERTED" || status === "REJECTED") && (
-          <p className="field-hint">{READ_ONLY_REASONS[status]}</p>
-        )}
-      </div>
-
-      {/* b. Actions */}
-      <div className="section">
-        <h2>Actions</h2>
-        <div className="backlog-actions">
-          {analyzing && (
-            <button type="button" className="btn btn-primary" disabled>
-              {/* A QUEUED job is not running anything yet — say so, instead of a spinner that implies work in progress. */}
-              {analysisJob?.status === "QUEUED" ? (
-                "Queued…"
-              ) : (
-                <>
-                  <span className="spinner" aria-hidden="true" /> Analyzing…
-                </>
-              )}
-            </button>
-          )}
-          {canAnalyze && (
-            <button type="button" className="btn btn-primary" disabled={busy} onClick={handleAnalyze}>
-              {latestAnalysis ? "Re-analyze" : "Analyze"}
-            </button>
-          )}
-          {canCancel && (
-            <button type="button" className="btn btn-secondary" disabled={busy} onClick={handleCancelAnalysis}>
-              Cancel analysis
-            </button>
-          )}
-          {canGenerate && (
-            <button type="button" className="btn btn-secondary" disabled={busy} onClick={handleGenerate}>
-              Generate task proposal
-            </button>
-          )}
-          {canReject && !confirmingReject && (
-            <button type="button" className="btn btn-secondary" disabled={busy} onClick={() => setConfirmingReject(true)}>
-              Reject item
-            </button>
-          )}
-        </div>
-        {confirmingReject && (
-          <div className="field-warning" role="alertdialog" aria-label="Confirm rejection">
-            <span>Reject this backlog item? It becomes read-only and can't be analyzed or converted.</span>
-            <button type="button" className="btn btn-danger" disabled={busy} onClick={handleReject}>
-              Confirm rejection
-            </button>
-            <button type="button" className="btn btn-secondary" disabled={busy} onClick={() => setConfirmingReject(false)}>
-              Keep item
-            </button>
+        {editing && canEdit ? (
+          <EditForm
+            item={item}
+            repositories={repositories}
+            onCancel={() => setEditing(false)}
+            onSaved={(updated) => {
+              setEditing(false);
+              adopt((d) => withItem(d, updated));
+              refetch(); // editing an analyzed item resets it to NEW — show the server's state
+            }}
+          />
+        ) : (
+          <div className="space-y-3">
+            <p className="max-w-3xl text-sm whitespace-pre-wrap text-muted-foreground">{item.description}</p>
+            {canEdit ? (
+              <div className="flex flex-wrap items-center gap-3">
+                <Button variant="outline" size="sm" type="button" onClick={() => setEditing(true)}>
+                  <PencilIcon data-icon="inline-start" />
+                  Edit
+                </Button>
+                {status === "ANALYZED" && (
+                  <p className="text-xs text-muted-foreground">Editing an analyzed item resets it to New so it can be analyzed again.</p>
+                )}
+              </div>
+            ) : (
+              <p className="text-xs text-muted-foreground">{READ_ONLY_REASONS[status]}</p>
+            )}
           </div>
         )}
-        <div aria-live="polite">
-          <AnalysisJobPanel job={analysisJob} />
-          {analyzing && !analysisJob && <p className="field-hint">Analysis is queued or running in the background — this page updates automatically.</p>}
+      </div>
+
+      <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_340px]">
+        <div className="min-w-0 space-y-4">
+          {/* What CodeForge understood / conclusion / next step — the plain-language summary of the technical Analysis section below */}
+          {latestAnalysis?.status === "succeeded" && latestAnalysis.result && (
+            <Section
+              title="What CodeForge understood"
+              actions={
+                latestAnalysis.tokenCount ? (
+                  <span className="flex items-center gap-1 text-xs text-muted-foreground">
+                    <CoinsIcon className="size-3.5" aria-hidden="true" />
+                    Analysis used {tokenLabel(latestAnalysis.tokenCount.tokens, latestAnalysis.tokenCount.estimated)}
+                  </span>
+                ) : undefined
+              }
+            >
+              <p className="text-sm whitespace-pre-wrap">{latestAnalysis.result.summary}</p>
+            </Section>
+          )}
+
+          <Section title="AI conclusion">
+            <div className="space-y-2 text-sm">
+              {status === "NEEDS_CLARIFICATION" && (
+                <>
+                  <p>
+                    <strong>Needs clarification.</strong> CodeForge needs more information before it can prepare this issue for
+                    implementation.
+                  </p>
+                  <p className="text-muted-foreground">What happens next: edit the issue with the missing details, then re-analyze.</p>
+                  <Button type="button" className="mt-1" onClick={() => setEditing(true)}>
+                    Add clarification
+                  </Button>
+                </>
+              )}
+              {(status === "READY_FOR_TASK" || hasLiveProposal) && (
+                <>
+                  <p>
+                    <strong>Ready to build.</strong> CodeForge found enough evidence to propose a task.
+                  </p>
+                  <p className="text-muted-foreground">What happens next: review the proposal below and approve it to create a task.</p>
+                  <a className={cn(buttonVariants(), "mt-1")} href="#task-proposal">
+                    Review proposal
+                  </a>
+                </>
+              )}
+              {status === "ANALYZED" && !hasLiveProposal && (
+                <>
+                  <p>
+                    <strong>Analyzed.</strong> CodeForge has reviewed this issue but hasn't proposed a task yet.
+                  </p>
+                  <p className="text-muted-foreground">
+                    What happens next: generate a task proposal below, or edit the issue if something needs correcting.
+                  </p>
+                </>
+              )}
+              {(status === "NEW" || status === "ANALYZING") && (
+                <p className="text-muted-foreground">
+                  {status === "ANALYZING" ? "CodeForge is analyzing this issue now." : "This issue hasn't been analyzed yet."}
+                </p>
+              )}
+              {(status === "CONVERTED" || status === "REJECTED") && (
+                <p className="text-muted-foreground">{READ_ONLY_REASONS[status]}</p>
+              )}
+            </div>
+          </Section>
+
+          {/* b. Actions */}
+          <Section title="Actions">
+            <div className="space-y-3 text-sm">
+              <div className="flex flex-wrap gap-2">
+                {analyzing && (
+                  <Button type="button" disabled>
+                    {/* A QUEUED job is not running anything yet — say so, instead of a spinner that implies work in progress. */}
+                    {analysisJob?.status === "QUEUED" ? (
+                      "Queued…"
+                    ) : (
+                      <>
+                        <Spinner data-icon="inline-start" /> Analyzing…
+                      </>
+                    )}
+                  </Button>
+                )}
+                {canAnalyze && (
+                  <Button type="button" disabled={busy} onClick={handleAnalyze}>
+                    <SparklesIcon data-icon="inline-start" />
+                    {latestAnalysis ? "Re-analyze" : "Analyze"}
+                  </Button>
+                )}
+                {canCancel && (
+                  <Button variant="outline" type="button" disabled={busy} onClick={handleCancelAnalysis}>
+                    Cancel analysis
+                  </Button>
+                )}
+                {canGenerate && (
+                  <Button variant="outline" type="button" disabled={busy} onClick={handleGenerate}>
+                    Generate task proposal
+                  </Button>
+                )}
+                {canReject && !confirmingReject && (
+                  <Button variant="ghost" type="button" disabled={busy} onClick={() => setConfirmingReject(true)}>
+                    Reject item
+                  </Button>
+                )}
+              </div>
+              {confirmingReject && (
+                <div
+                  className="flex flex-col gap-3 rounded-2xl border border-destructive/30 bg-destructive/5 p-4 sm:flex-row sm:items-center"
+                  role="alertdialog"
+                  aria-label="Confirm rejection"
+                >
+                  <span className="flex-1">Reject this backlog item? It becomes read-only and can't be analyzed or converted.</span>
+                  <div className="flex gap-2">
+                    <Button variant="outline" type="button" disabled={busy} onClick={() => setConfirmingReject(false)}>
+                      Keep item
+                    </Button>
+                    <Button variant="destructive" type="button" disabled={busy} onClick={handleReject}>
+                      Confirm rejection
+                    </Button>
+                  </div>
+                </div>
+              )}
+              <div aria-live="polite" className="text-muted-foreground empty:hidden">
+                <AnalysisJobPanel job={analysisJob} />
+                {analyzing && !analysisJob && <p>Analysis is queued or running in the background — this page updates automatically.</p>}
+              </div>
+              <div aria-live="assertive" className="empty:hidden">
+                {actionError && <ErrorState message={actionError} />}
+              </div>
+              {convertedTask && (
+                <p role="status" className="text-tone-success">
+                  Task created:{" "}
+                  <Link className="font-medium underline underline-offset-4" to={`/tasks/${convertedTask.id}`}>
+                    {convertedTask.title}
+                  </Link>
+                  . It is in Backlog on the Tasks tab — start it there when you're ready.
+                </p>
+              )}
+            </div>
+          </Section>
+
+          {/* e. Proposal */}
+          <div className="scroll-mt-6 space-y-3" id="task-proposal">
+            <h2 className="text-lg font-semibold">Task proposal</h2>
+            <ProposalPanel
+              proposal={proposal}
+              projectId={item.projectId}
+              busy={busy}
+              onApprove={handleApprove}
+              onReject={handleRejectProposal}
+              onConvert={handleConvert}
+            />
+          </div>
+
+          {/* c. Analysis — the full technical breakdown (claims, evidence, verification) stays available, just not front-and-center */}
+          <details className="group rounded-3xl bg-card ring-1 ring-foreground/10">
+            <summary className="flex cursor-pointer list-none items-center justify-between gap-3 p-5 text-sm font-medium [&::-webkit-details-marker]:hidden">
+              View technical details
+              <ChevronDownIcon className="size-4 text-muted-foreground transition-transform group-open:rotate-180" aria-hidden="true" />
+            </summary>
+            <div className="px-5 pb-5">
+              <AnalysisPanel
+                analysis={latestAnalysis}
+                itemStatus={status}
+                jobStatus={analysisJob?.status ?? null}
+                verifications={detail.claimVerifications ?? []}
+                controls={{ jobs: detail.verificationJobs ?? [], busy, onRun: handleRunVerification, onCancel: handleCancelVerification }}
+              />
+            </div>
+          </details>
         </div>
-        <div aria-live="assertive">{actionError && <ErrorState message={actionError} />}</div>
-        {convertedTask && (
-          <p role="status" className="backlog-success">
-            Task created: <Link to={`/tasks/${convertedTask.id}`}>{convertedTask.title}</Link>. It is in Backlog on the Tasks tab — start it there
-            when you're ready.
-          </p>
-        )}
-      </div>
 
-      {/* c. Analysis — the full technical breakdown (claims, evidence, verification) stays available, just not front-and-center */}
-      <div className="section">
-        <details>
-          <summary>View technical details</summary>
-          <AnalysisPanel analysis={latestAnalysis} itemStatus={status} jobStatus={analysisJob?.status ?? null} verifications={detail.claimVerifications ?? []} controls={{ jobs: detail.verificationJobs ?? [], busy, onRun: handleRunVerification, onCancel: handleCancelVerification }} />
-        </details>
-      </div>
+        <aside className="space-y-4">
+          {/* d. Relationships */}
+          <Section title="Possible duplicates" description="Proposals only — CodeForge never merges items or changes execution order automatically.">
+            <RelationshipList relationships={duplicates} projectId={item.projectId} emptyMessage="No possible duplicates were flagged." />
+          </Section>
+          <Section title="Dependency candidates" description="Proposals only — CodeForge never merges items or changes execution order automatically.">
+            <RelationshipList relationships={dependencies} projectId={item.projectId} emptyMessage="No dependency candidates were flagged." />
+          </Section>
 
-      {/* d. Relationships */}
-      <div className="section">
-        <h2>Possible duplicates</h2>
-        <p className="field-hint">Proposals only — CodeForge never merges items or changes execution order automatically.</p>
-        <RelationshipList relationships={duplicates} projectId={item.projectId} emptyMessage="No possible duplicates were flagged." />
-      </div>
-      <div className="section">
-        <h2>Dependency candidates</h2>
-        <p className="field-hint">Proposals only — CodeForge never merges items or changes execution order automatically.</p>
-        <RelationshipList relationships={dependencies} projectId={item.projectId} emptyMessage="No dependency candidates were flagged." />
-      </div>
-
-      {/* e. Proposal */}
-      <div className="section" id="task-proposal">
-        <h2>Task proposal</h2>
-        <ProposalPanel
-          proposal={proposal}
-          projectId={item.projectId}
-          busy={busy}
-          onApprove={handleApprove}
-          onReject={handleRejectProposal}
-          onConvert={handleConvert}
-        />
-      </div>
-
-      {/* f. Activity */}
-      <div className="section">
-        <h2>Activity</h2>
-        <BacklogActivity events={events} />
+          {/* f. Activity */}
+          <Section title="Activity">
+            <BacklogActivity events={events} />
+          </Section>
+        </aside>
       </div>
     </div>
   );
@@ -328,16 +399,19 @@ export function BacklogItemPage() {
 
 function EditForm({
   item,
+  repositories,
   onCancel,
   onSaved,
 }: {
   item: BacklogItemDetailDTO["item"];
+  repositories: ProjectRepoDTO[];
   onCancel: () => void;
   onSaved: (item: BacklogItemDetailDTO["item"]) => void;
 }) {
   const [title, setTitle] = useState(item.title);
   const [description, setDescription] = useState(item.description);
   const [externalRef, setExternalRef] = useState(item.externalRef ?? "");
+  const [repositoryId, setRepositoryId] = useState(item.repositoryId ?? "");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string>();
 
@@ -351,6 +425,7 @@ function EditForm({
           title: title.trim(),
           description: description.trim(),
           externalRef: externalRef.trim() || null,
+          ...(repositoryId && repositoryId !== item.repositoryId ? { repositoryId } : {}),
         }),
       );
     } catch (err) {
@@ -360,27 +435,40 @@ function EditForm({
   }
 
   return (
-    <form className="section" onSubmit={handleSubmit}>
-      <div className="field">
-        <label htmlFor="edit-backlog-title">Title</label>
-        <input id="edit-backlog-title" value={title} maxLength={TITLE_MAX} onChange={(e) => setTitle(e.target.value)} />
+    <form className="space-y-1" onSubmit={handleSubmit}>
+      {repositories.length > 1 && (
+        <div className="mb-4 flex flex-col gap-2">
+          <Label htmlFor="edit-backlog-repository">Repository</Label>
+          <NativeSelect className="w-full" id="edit-backlog-repository" value={repositoryId} onChange={(e) => setRepositoryId(e.target.value)}>
+            {repositories.map((r) => (
+              <option key={r.id} value={r.id}>
+                {r.name}
+              </option>
+            ))}
+          </NativeSelect>
+          <p className="text-sm text-muted-foreground">Analysis looks at this repository, and a task created from this item works in it.</p>
+        </div>
+      )}
+      <div className="mb-4 flex flex-col gap-2">
+        <Label htmlFor="edit-backlog-title">Title</Label>
+        <Input id="edit-backlog-title" value={title} maxLength={TITLE_MAX} onChange={(e) => setTitle(e.target.value)} />
       </div>
-      <div className="field">
-        <label htmlFor="edit-backlog-description">Description</label>
-        <textarea id="edit-backlog-description" rows={6} value={description} maxLength={DESCRIPTION_MAX} onChange={(e) => setDescription(e.target.value)} />
+      <div className="mb-4 flex flex-col gap-2">
+        <Label htmlFor="edit-backlog-description">Description</Label>
+        <Textarea id="edit-backlog-description" rows={6} value={description} maxLength={DESCRIPTION_MAX} onChange={(e) => setDescription(e.target.value)} />
       </div>
-      <div className="field">
-        <label htmlFor="edit-backlog-ref">Reference</label>
-        <input id="edit-backlog-ref" value={externalRef} maxLength={REF_MAX} onChange={(e) => setExternalRef(e.target.value)} />
+      <div className="mb-4 flex flex-col gap-2">
+        <Label htmlFor="edit-backlog-ref">Reference</Label>
+        <Input id="edit-backlog-ref" value={externalRef} maxLength={REF_MAX} onChange={(e) => setExternalRef(e.target.value)} />
       </div>
       {error && <ErrorState message={error} />}
-      <div className="dialog-actions">
-        <button type="button" className="btn btn-secondary" onClick={onCancel}>
+      <div className="flex flex-col-reverse gap-2 pt-2 sm:flex-row sm:justify-end">
+        <Button variant="outline" type="button" onClick={onCancel}>
           Cancel
-        </button>
-        <button type="submit" className="btn btn-primary" disabled={submitting || !title.trim() || !description.trim()}>
+        </Button>
+        <Button type="submit" disabled={submitting || !title.trim() || !description.trim()}>
           {submitting ? "Saving…" : "Save changes"}
-        </button>
+        </Button>
       </div>
     </form>
   );

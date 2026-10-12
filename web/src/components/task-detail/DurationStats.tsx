@@ -20,11 +20,11 @@ export function DurationStats({ durations }: { durations: ExecutionDurationsDTO 
   if (stats.length === 0) return null;
 
   return (
-    <div className="duration-stats">
+    <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
       {stats.map((s) => (
-        <div className="duration-stat" key={s.label}>
-          <span className="value">{s.value}</span>
-          <span className="label">{s.label}</span>
+        <div className="flex flex-col-reverse rounded-3xl bg-card px-4 py-3 ring-1 ring-foreground/10" key={s.label}>
+          <span className="font-heading text-xl font-semibold tabular-nums">{s.value}</span>
+          <span className="text-xs text-muted-foreground">{s.label}</span>
         </div>
       ))}
     </div>

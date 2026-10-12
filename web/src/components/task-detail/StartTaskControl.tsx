@@ -1,6 +1,9 @@
 import { useState } from "react";
 import { ErrorState } from "../common/ErrorState.js";
 import { tasksApi, type TaskDTO } from "../../api/index.js";
+import { PlayIcon } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Spinner } from "@/components/ui/spinner";
 
 /**
  * Renders the "Start Task" action for a BACKLOG task — the explicit human
@@ -41,11 +44,16 @@ export function StartTaskControl({ task, onStarted }: { task: TaskDTO; onStarted
   }
 
   return (
-    <div className="start-task-control">
-      <button type="button" className="btn-link" onClick={handleStart} disabled={submitting}>
-        {submitting ? "Starting…" : "▶ Start Task"}
-      </button>
-      {error && <ErrorState message={error} />}
+    <div className="contents">
+      <Button type="button" variant="ghost" size="xs" className="text-primary" onClick={handleStart} disabled={submitting}>
+        {submitting ? <Spinner data-icon="inline-start" /> : <PlayIcon data-icon="inline-start" />}
+        {submitting ? "Starting…" : "Start Task"}
+      </Button>
+      {error && (
+        <div className="w-full">
+          <ErrorState message={error} />
+        </div>
+      )}
     </div>
   );
 }

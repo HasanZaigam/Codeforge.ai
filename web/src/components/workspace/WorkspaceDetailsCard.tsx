@@ -2,6 +2,7 @@ import type { ProjectWorkspaceDTO } from "../../api/index.js";
 import { LoadingState } from "../common/LoadingState.js";
 import { ErrorState } from "../common/ErrorState.js";
 import { formatAbsolute } from "../../lib/time.js";
+import { ToneBadge } from "../common/ToneBadge.js";
 
 /**
  * Extracted verbatim from the old ProjectBoardPage's "Workspace Details" block (Phase 3 "Project
@@ -22,18 +23,30 @@ export function WorkspaceDetailsCard({
   const valid = !!workspace && typeof workspace.id === "string" && typeof workspace.createdAt === "string" && typeof workspace.updatedAt === "string";
 
   return (
-    <div>
-      <h3>Workspace Details</h3>
+    <div className="space-y-4">
+      <div className="space-y-1">
+        <h3 className="text-lg font-semibold">Workspace Details</h3>
+        <p className="text-sm text-muted-foreground">The durable workspace record CodeForge keeps for this project.</p>
+      </div>
       {loading && <LoadingState label="Loading workspace…" />}
       {!loading && (error || !valid) && <ErrorState message="Couldn't load the workspace for this project." />}
       {!loading && !error && valid && (
-        <div className="card card-padded stack" style={{ gap: 4 }}>
-          <p>
-            <span className="status-badge tone-success">Active</span>
-          </p>
-          <p className="text-muted">Workspace ID: {workspace.id}</p>
-          <p className="text-muted">Created: {formatAbsolute(workspace.createdAt)}</p>
-          <p className="text-muted">Updated: {formatAbsolute(workspace.updatedAt)}</p>
+        <div className="space-y-3 rounded-3xl bg-card p-5 text-sm ring-1 ring-foreground/10">
+          <ToneBadge tone="success">Active</ToneBadge>
+          <dl className="divide-y rounded-2xl border">
+            <div className="grid gap-1 px-4 py-2.5 sm:grid-cols-[140px_1fr]">
+              <dt className="text-muted-foreground">Workspace ID</dt>
+              <dd className="font-mono text-xs break-all">{workspace.id}</dd>
+            </div>
+            <div className="grid gap-1 px-4 py-2.5 sm:grid-cols-[140px_1fr]">
+              <dt className="text-muted-foreground">Created</dt>
+              <dd>{formatAbsolute(workspace.createdAt)}</dd>
+            </div>
+            <div className="grid gap-1 px-4 py-2.5 sm:grid-cols-[140px_1fr]">
+              <dt className="text-muted-foreground">Updated</dt>
+              <dd>{formatAbsolute(workspace.updatedAt)}</dd>
+            </div>
+          </dl>
         </div>
       )}
     </div>

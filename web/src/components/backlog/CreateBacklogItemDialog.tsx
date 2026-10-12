@@ -2,6 +2,10 @@ import { useState, type FormEvent } from "react";
 import { Dialog } from "../common/Dialog.js";
 import { ErrorState } from "../common/ErrorState.js";
 import { backlogApi, type BacklogItemDTO } from "../../api/index.js";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 
 /** Client-side limits mirror CreateBacklogItemSchema (src/api/schemas.ts) for instant feedback; the server re-validates. */
 export const TITLE_MAX = 300;
@@ -51,17 +55,17 @@ export function CreateBacklogItemDialog({
       onClose={onClose}
     >
       <form onSubmit={handleSubmit}>
-        <div className="field">
-          <label htmlFor="backlog-title">
-            Title <span className="field-required">*</span>
-          </label>
-          <input id="backlog-title" value={title} maxLength={TITLE_MAX} onChange={(e) => setTitle(e.target.value)} />
+        <div className="mb-4 flex flex-col gap-2">
+          <Label htmlFor="backlog-title">
+            Title <span className="text-destructive">*</span>
+          </Label>
+          <Input id="backlog-title" value={title} maxLength={TITLE_MAX} onChange={(e) => setTitle(e.target.value)} />
         </div>
-        <div className="field">
-          <label htmlFor="backlog-description">
-            Description <span className="field-required">*</span>
-          </label>
-          <textarea
+        <div className="mb-4 flex flex-col gap-2">
+          <Label htmlFor="backlog-description">
+            Description <span className="text-destructive">*</span>
+          </Label>
+          <Textarea
             id="backlog-description"
             rows={6}
             value={description}
@@ -69,19 +73,19 @@ export function CreateBacklogItemDialog({
             onChange={(e) => setDescription(e.target.value)}
           />
         </div>
-        <div className="field">
-          <label htmlFor="backlog-ref">Reference (optional)</label>
-          <input id="backlog-ref" value={externalRef} maxLength={REF_MAX} placeholder="e.g. BUG-002" onChange={(e) => setExternalRef(e.target.value)} />
-          <span className="field-hint">Your own identifier — must be unique within this project.</span>
+        <div className="mb-4 flex flex-col gap-2">
+          <Label htmlFor="backlog-ref">Reference (optional)</Label>
+          <Input id="backlog-ref" value={externalRef} maxLength={REF_MAX} placeholder="e.g. BUG-002" onChange={(e) => setExternalRef(e.target.value)} />
+          <span className="text-sm text-muted-foreground">Your own identifier — must be unique within this project.</span>
         </div>
         {error && <ErrorState message={error} />}
-        <div className="dialog-actions">
-          <button type="button" className="btn btn-secondary" onClick={onClose}>
+        <div className="flex flex-col-reverse gap-2 pt-2 sm:flex-row sm:justify-end">
+          <Button variant="outline" type="button" onClick={onClose}>
             Cancel
-          </button>
-          <button type="submit" className="btn btn-primary" disabled={!canSubmit}>
+          </Button>
+          <Button type="submit" disabled={!canSubmit}>
             {submitting ? "Creating…" : "Create backlog item"}
-          </button>
+          </Button>
         </div>
       </form>
     </Dialog>

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
-import type { Project, ProjectCommands, ProjectWorkspace } from "../domain/types.js";
+import { scopeProjectToRepo, type Project, type ProjectCommands, type ProjectRepo, type ProjectWorkspace } from "../domain/types.js";
 import type { ProjectRepository } from "../persistence/repositories/project-repository.js";
+import { isDuplicateRepoNameViolation, type ProjectRepoRepository } from "../persistence/repositories/project-repo-repository.js";
 import type { ProjectWorkspaceRepository } from "../persistence/repositories/project-workspace-repository.js";
 import type { TaskRepository } from "../persistence/repositories/task-repository.js";
 import type { ProjectWorkspaceFsManager } from "../project-workspace/project-workspace-fs-manager.js";
@@ -8,7 +9,16 @@ import type { ProjectContextService } from "../project-workspace/project-context
 import type { ProjectContextManifest } from "../project-workspace/project-context-manifest.js";
 import type { GitHubIntegrationService } from "./github-integration-service.js";
 import { assertProjectAccess } from "./authorization.js";
-import { InvalidRepositoryError, LocalGitProjectsDisabledError, ProjectHasActiveTasksError, ProjectWorkspaceMissingError } from "./errors.js";
+import {
+  DuplicateRepositoryNameError,
+  InvalidRepositoryError,
+  LocalGitProjectsDisabledError,
+  NotFoundError,
+  ProjectHasActiveTasksError,
+  ProjectWorkspaceMissingError,
+  RepositoryInUseError,
+} from "./errors.js";
+import { resolveRepositoryFor } from "./repository-resolution.js";
 import { GitHubNotFoundError } from "../integrations/github/github-client.js";
 import { isLocalGitProjectsAllowed } from "../config/startup-config.js";
 import { parseGitHubRepoUrl } from "../api/schemas.js";
@@ -33,7 +43,24 @@ export interface CreateLocalGitProjectInput extends CreateProjectCommon {
   defaultBranch?: string;
 }
 
-export type CreateProjectInput = CreateGitHubProjectInput | CreateLocalGitProjectInput;
+/** A project with no repository yet — repositories are connected afterwards (TD-62). */
+export interface CreateEmptyProjectInput extends CreateProjectCommon {
+  sourceControlProvider?: undefined;
+}
+
+export type CreateProjectInput = CreateGitHubProjectInput | CreateLocalGitProjectInput | CreateEmptyProjectInput;
+
+/** Connecting one repository to an existing project. `name` defaults to the repository's own name. */
+export type AddRepositoryInput =
+  | { sourceControlProvider: "github"; name?: string; owner: string; repo: string; defaultBranch?: string }
+  | { sourceControlProvider: "local-git"; name?: string; repoUrl: string; defaultBranch?: string };
+
+function defaultRepoName(input: AddRepositoryInput): string {
+  if (input.name?.trim()) return input.name.trim();
+  if (input.sourceControlProvider === "github") return input.repo;
+  const last = input.repoUrl.replace(/[\\/]+$/, "").split(/[\\/]/).pop() ?? "";
+  return last.replace(/\.git$/, "") || "repository";
+}
 
 /**
  * Thin translation layer over ProjectRepository. Project connection is
@@ -60,6 +87,7 @@ export class ProjectService {
     private readonly projectContext: ProjectContextService,
     private readonly github: GitHubIntegrationService,
     private readonly tasks: TaskRepository,
+    private readonly projectRepos: ProjectRepoRepository,
   ) {}
 
   async create(input: CreateProjectInput, ownerId: string): Promise<Project> {
@@ -75,28 +103,21 @@ export class ProjectService {
       updatedAt: now,
     };
 
-    let project: Project;
-    if (input.sourceControlProvider === "github") {
-      const { repoUrl, owner, repo, defaultBranch } = await this.verifyGitHubRepository(ownerId, input);
-      project = { ...base, sourceControlProvider: "github", repoUrl, owner, repo, defaultBranch };
-    } else {
-      // Enforced here, not just in the request schema, so it can't be bypassed by any request
-      // shape — see /docs/GITHUB_INTEGRATION.md "Local git / plain-git testing" and
-      // ALLOW_LOCAL_GIT_PROJECTS in /docs/DEPLOYMENT.md.
-      if (!isLocalGitProjectsAllowed()) {
-        throw new LocalGitProjectsDisabledError();
-      }
-      project = {
-        ...base,
-        sourceControlProvider: "local-git",
-        repoUrl: input.repoUrl,
-        owner: null,
-        repo: null,
-        defaultBranch: input.defaultBranch ?? "main",
-      };
-    }
+    // Verify the optional first repository BEFORE persisting anything, so a bad repository never
+    // leaves an orphaned, repository-less project behind (same posture as before TD-62).
+    const firstRepo = input.sourceControlProvider ? await this.prepareRepository(ownerId, input) : null;
 
+    const project: Project = {
+      ...base,
+      repositoryId: null,
+      repoUrl: "",
+      defaultBranch: "",
+      sourceControlProvider: "",
+      owner: null,
+      repo: null,
+    };
     this.projects.insert(project);
+    if (firstRepo) this.projectRepos.insert({ ...firstRepo, projectId: project.id, commands: input.commands ?? null });
 
     // Phase 3 — Project Workspace, Slice 1: eager creation, converged after the github/local-git
     // branch above so it happens exactly once regardless of provider (see
@@ -128,7 +149,103 @@ export class ProjectService {
     // call self-heals via ensureManifest's own idempotency (see ProjectContextService).
     this.projectContext.ensureManifest(workspace.id, project.name);
 
-    return project;
+    return this.projects.findById(project.id)!;
+  }
+
+  // ---------------------------------------------------------------------
+  // Repositories (TD-62)
+  // ---------------------------------------------------------------------
+
+  listRepositories(projectId: string, actorId: string): ProjectRepo[] {
+    assertProjectAccess(this.projects, projectId, actorId);
+    return this.projectRepos.listByProject(projectId);
+  }
+
+  getRepository(projectId: string, repositoryId: string, actorId: string): ProjectRepo {
+    assertProjectAccess(this.projects, projectId, actorId);
+    const repo = this.projectRepos.findById(repositoryId);
+    if (!repo || repo.projectId !== projectId) throw new NotFoundError("ProjectRepo", repositoryId);
+    return repo;
+  }
+
+  /** The project as seen from one of its repositories — what anything repository-bound must use. */
+  scopedProject(projectId: string, repositoryId: string | null | undefined, actorId: string): Project {
+    const project = assertProjectAccess(this.projects, projectId, actorId);
+    return scopeProjectToRepo(project, resolveRepositoryFor(this.projectRepos.listByProject(projectId), repositoryId));
+  }
+
+  /** Connects one more repository. GitHub repositories are verified with a real API call first, exactly like project creation. */
+  async addRepository(projectId: string, actorId: string, input: AddRepositoryInput): Promise<ProjectRepo> {
+    assertProjectAccess(this.projects, projectId, actorId);
+    const repo = { ...(await this.prepareRepository(actorId, input)), projectId };
+    const existing = this.projectRepos.listByProject(projectId);
+    if (existing.some((r) => r.name.toLowerCase() === repo.name.toLowerCase())) throw new DuplicateRepositoryNameError(repo.name);
+    if (existing.some((r) => r.repoUrl === repo.repoUrl)) {
+      throw new InvalidRepositoryError(`${repo.repoUrl} is already connected to this project.`);
+    }
+    try {
+      this.projectRepos.insert(repo);
+    } catch (err) {
+      if (isDuplicateRepoNameViolation(err)) throw new DuplicateRepositoryNameError(repo.name);
+      throw err;
+    }
+    return this.projectRepos.findById(repo.id)!;
+  }
+
+  /** Renames a repository and/or changes its default branch (a GitHub branch is checked to exist first). */
+  async updateRepository(
+    projectId: string,
+    repositoryId: string,
+    actorId: string,
+    input: { name?: string; defaultBranch?: string },
+  ): Promise<ProjectRepo> {
+    const repo = this.getRepository(projectId, repositoryId, actorId);
+    const name = input.name?.trim() || repo.name;
+    const defaultBranch = input.defaultBranch?.trim() || repo.defaultBranch;
+    if (name.toLowerCase() !== repo.name.toLowerCase() && this.projectRepos.listByProject(projectId).some((r) => r.id !== repo.id && r.name.toLowerCase() === name.toLowerCase())) {
+      throw new DuplicateRepositoryNameError(name);
+    }
+    if (defaultBranch !== repo.defaultBranch && repo.sourceControlProvider === "github" && repo.owner && repo.repo) {
+      const branch = await this.github.clientForUser(actorId).getBranch(repo.owner, repo.repo, defaultBranch);
+      if (!branch) throw new InvalidRepositoryError(`Branch "${defaultBranch}" does not exist in ${repo.owner}/${repo.repo}`);
+    }
+    try {
+      this.projectRepos.update(repo.id, { name, defaultBranch }, new Date().toISOString());
+    } catch (err) {
+      if (isDuplicateRepoNameViolation(err)) throw new DuplicateRepositoryNameError(name);
+      throw err;
+    }
+    return this.projectRepos.findById(repo.id)!;
+  }
+
+  /** Full replacement of one repository's validation commands — same semantics as the project-level updateCommands. */
+  updateRepositoryCommands(projectId: string, repositoryId: string, actorId: string, commands: ProjectCommands): ProjectRepo {
+    const repo = this.getRepository(projectId, repositoryId, actorId);
+    this.projectRepos.updateCommands(repo.id, commands, new Date().toISOString());
+    return this.projectRepos.findById(repo.id)!;
+  }
+
+  /** Disconnects a repository from the project. Refused while any task or backlog item targets it. Touches nothing on GitHub. */
+  removeRepository(projectId: string, repositoryId: string, actorId: string): void {
+    const repo = this.getRepository(projectId, repositoryId, actorId);
+    const usage = this.projectRepos.countUsage(repo.id);
+    if (usage.tasks > 0 || usage.backlogItems > 0) throw new RepositoryInUseError(repo.name, usage);
+    this.projectRepos.delete(repo.id);
+  }
+
+  /** Verifies (GitHub) or policy-checks (local-git) a repository and returns the row to insert — persists nothing. */
+  private async prepareRepository(ownerId: string, input: AddRepositoryInput): Promise<ProjectRepo> {
+    const now = new Date().toISOString();
+    const common = { id: randomUUID(), projectId: "", name: defaultRepoName(input), commands: null, createdAt: now, updatedAt: now };
+    if (input.sourceControlProvider === "github") {
+      const { repoUrl, owner, repo, defaultBranch } = await this.verifyGitHubRepository(ownerId, input);
+      return { ...common, sourceControlProvider: "github", repoUrl, owner, repo, defaultBranch };
+    }
+    // Enforced here, not just in the request schema, so it can't be bypassed by any request
+    // shape — see /docs/GITHUB_INTEGRATION.md "Local git / plain-git testing" and
+    // ALLOW_LOCAL_GIT_PROJECTS in /docs/DEPLOYMENT.md.
+    if (!isLocalGitProjectsAllowed()) throw new LocalGitProjectsDisabledError();
+    return { ...common, sourceControlProvider: "local-git", repoUrl: input.repoUrl, owner: null, repo: null, defaultBranch: input.defaultBranch ?? "main" };
   }
 
   get(id: string, actorId: string): Project {

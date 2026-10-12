@@ -1,3 +1,20 @@
+### Token usage & budgets *(TD-63)*
+- `GET /projects/:projectId/token-usage` → `{ usage }`: this calendar month (UTC) — `used`, `estimatedTokens` (the estimated part), `unreportedOperations`, `budget`, `remaining`, `percentUsed`, and `breakdown.{tasks,analyses,chat}` (`tokens`, `estimatedTokens`, `unreported`, `operations`).
+- `PUT /projects/:projectId/token-budget` — `{ monthlyTokens: number | null }` (positive integer, or null to remove). Display only; nothing is ever blocked.
+- `GET /settings/token-usage` → `{ usage }`: the same meter across every project the user owns, plus `projects[]` (`projectId`, `name`, `used`, `estimatedTokens`, `budget`). `PUT /settings/token-budget` — `{ monthlyTokens }` for the account.
+- Chat messages carry `tokens` (assistant replies: 0 = answered without a model call; null = unknown) and `tokensEstimated`. `TaskReport.usage.totalTokens` = input + output + reasoning over the runs that reported usage. `BacklogAnalysisDTO.tokenCount` = `{ tokens, estimated }` or null.
+
+### Projects & repositories *(multi-repository projects — TD-62)*
+- `POST /projects` — `{ name }` creates a project with no repository yet; the original `{ name, sourceControlProvider, owner+repo | repoUrl, defaultBranch?, commands? }` shape still creates it with its first repository. `ProjectDTO` gains `repositories: ProjectRepoDTO[]` (primary first); its top-level `repoUrl`/`defaultBranch`/`sourceControlProvider`/`owner`/`repo`/`commands` describe the primary repository (empty when there is none).
+- `GET /projects/:projectId/repositories` → `{ repositories }`.
+- `POST /projects/:projectId/repositories` — `{ sourceControlProvider: "github", name?, owner, repo, defaultBranch? }` or `{ sourceControlProvider: "local-git", name?, repoUrl, defaultBranch? }` → `201 { repository }`. GitHub repositories are verified with a real API call first. `name` (default: the repository's own name) is unique per project — `409 DUPLICATE_REPOSITORY_NAME`; the same repository URL twice is `400 INVALID_REPOSITORY`.
+- `PATCH /projects/:projectId/repositories/:repositoryId` — `{ name?, defaultBranch? }` (a GitHub branch is checked to exist).
+- `PATCH /projects/:projectId/repositories/:repositoryId/commands` — `{ commands }`, full replacement, same semantics as the project-level endpoint.
+- `DELETE /projects/:projectId/repositories/:repositoryId` → `204`, or `409 REPOSITORY_IN_USE` while any task or backlog item targets it.
+- `GET /projects/:projectId/branches?repositoryId=` — branches of one repository.
+- `POST /projects/:projectId/tasks` / `POST /tasks/:taskId/edit` accept `repositoryId`: optional with one repository, required with several (`400 REPOSITORY_REQUIRED`, `details.available` = the names). `TaskDTO` carries `repositoryId`; `GET /tasks/:taskId` also `repositoryName`.
+- Backlog: `POST /projects/:projectId/backlog` and `PATCH /backlog/:itemId` accept `repositoryId` (create: default primary; changing it resets the item to NEW); `POST /projects/:projectId/backlog/imports` accepts `repositoryId` for every imported row. `BacklogItemDTO` carries `repositoryId`.
+
 
 
 ### Run-scoped sampling *(Phase 4B.4)*

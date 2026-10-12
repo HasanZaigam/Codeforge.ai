@@ -1,8 +1,15 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { Dialog } from "../common/Dialog.js";
+import { Dialog, DialogActions } from "../common/Dialog.js";
+import { TriangleAlertIcon } from "lucide-react";
 import { ErrorState } from "../common/ErrorState.js";
 import { LoadingState } from "../common/LoadingState.js";
-import { projectsApi, tasksApi, type TaskDTO, type BranchMode } from "../../api/index.js";
+import { Link } from "react-router-dom";
+import { projectsApi, tasksApi, type TaskDTO, type BranchMode, type ProjectRepoDTO } from "../../api/index.js";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { NativeSelect } from "@/components/ui/native-select";
+import { Textarea } from "@/components/ui/textarea";
 
 /** Mirrors the backend's `isSafeBranchName` charset (see src/api/schemas.ts) closely enough for
  *  instant client-side feedback — the server remains the source of truth and re-validates. */
@@ -38,6 +45,7 @@ function slugify(text: string): string {
 export function CreateTaskDialog({
   projectId,
   defaultBranch,
+  repositories,
   task,
   allTasks,
   onClose,
@@ -45,8 +53,14 @@ export function CreateTaskDialog({
   onSaved,
 }: {
   projectId: string;
-  /** The project's own default branch — pre-fills the "new branch" base-branch field. */
+  /** The project's own default branch — pre-fills the "new branch" base-branch field when no repository list is given. */
   defaultBranch: string;
+  /**
+   * The project's repositories. A task works in exactly one: with a single repository it's chosen
+   * automatically; with several the user must pick (never guessed); with none, nothing can be created
+   * yet. Omitted only by callers that predate multi-repository projects — then no repository is sent.
+   */
+  repositories?: ProjectRepoDTO[];
   /** When present, the dialog opens in "edit" mode for this (BACKLOG) task instead of "create" mode. */
   task?: TaskDTO;
   /**
@@ -68,8 +82,15 @@ export function CreateTaskDialog({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string>();
 
+  const repoOptions = repositories ?? [];
+  const [repositoryId, setRepositoryId] = useState<string>(
+    task?.repositoryId ?? (repoOptions.length === 1 ? repoOptions[0]!.id : ""),
+  );
+  const selectedRepo = repoOptions.find((r) => r.id === repositoryId);
+  const needsRepositoryChoice = repositories !== undefined && !selectedRepo;
+
   const [branchMode, setBranchMode] = useState<BranchMode>(task?.branchMode ?? "new");
-  const [baseBranch, setBaseBranch] = useState(task?.baseBranch ?? defaultBranch);
+  const [baseBranch, setBaseBranch] = useState(task?.baseBranch ?? selectedRepo?.defaultBranch ?? defaultBranch);
   const [branchName, setBranchName] = useState(task && task.branchMode !== "existing" ? (task.workingBranch ?? "") : "");
   // In edit mode the branch name (if any) is already pre-filled from the task — never let the
   // title-derived auto-suggest effect below clobber it, same as if a user had just typed it by hand.
@@ -102,11 +123,23 @@ export function CreateTaskDialog({
     }
   }, [title, branchMode, branchNameEdited]);
 
+  // Branches, default branch and the existing-branch choice all belong to ONE repository — switching
+  // repository resets them to that repository's own.
+  function handleRepositoryChange(nextId: string) {
+    setRepositoryId(nextId);
+    const repo = repoOptions.find((r) => r.id === nextId);
+    if (repo) setBaseBranch(repo.defaultBranch);
+    setBranches(undefined);
+    setBranchesError(undefined);
+    setExistingBranch("");
+    setError(undefined);
+  }
+
   function loadBranches() {
     setBranchesLoading(true);
     setBranchesError(undefined);
     projectsApi
-      .listBranches(projectId)
+      .listBranches(projectId, selectedRepo?.id)
       .then((list) => setBranches(list))
       .catch((err) => setBranchesError(err instanceof Error ? err.message : "Could not load branches. Please try again."))
       .finally(() => setBranchesLoading(false));
@@ -117,10 +150,10 @@ export function CreateTaskDialog({
   // calls loadBranches() directly rather than relying on this effect re-running, since `branches`
   // staying `undefined` across a failed attempt would otherwise never look like a dependency change.
   useEffect(() => {
-    if (branchMode !== "existing" || branches !== undefined || branchesLoading) return;
+    if (branchMode !== "existing" || branches !== undefined || branchesLoading || needsRepositoryChoice) return;
     loadBranches();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [branchMode, branches, branchesLoading, projectId]);
+  }, [branchMode, branches, branchesLoading, projectId, repositoryId]);
 
   const branchNameLooksSafe = branchMode !== "new" || !branchName || /^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(branchName);
   const branchNameMatchesBase = branchMode === "new" && !!branchName.trim() && branchName.trim() === baseBranch.trim();
@@ -131,6 +164,7 @@ export function CreateTaskDialog({
     setError(undefined);
     try {
       const input = {
+        ...(selectedRepo ? { repositoryId: selectedRepo.id } : {}),
         title: title.trim(),
         description: description.trim(),
         branchMode,
@@ -167,6 +201,7 @@ export function CreateTaskDialog({
   }
 
   const canSubmit =
+    !needsRepositoryChoice &&
     !!title.trim() &&
     !!description.trim() &&
     branchNameLooksSafe &&
@@ -176,9 +211,9 @@ export function CreateTaskDialog({
   return (
     <Dialog title={isEdit ? "Edit task" : "Create task"} onClose={onClose}>
       <form onSubmit={handleSubmit}>
-        <div className="field">
-          <label htmlFor="task-title">Title</label>
-          <input
+        <div className="mb-4 flex flex-col gap-2">
+          <Label htmlFor="task-title">Title</Label>
+          <Input
             id="task-title"
             value={title}
             onChange={(e) => setTitle(e.target.value)}
@@ -187,9 +222,9 @@ export function CreateTaskDialog({
             maxLength={300}
           />
         </div>
-        <div className="field">
-          <label htmlFor="task-description">Description</label>
-          <textarea
+        <div className="mb-4 flex flex-col gap-2">
+          <Label htmlFor="task-description">Description</Label>
+          <Textarea
             id="task-description"
             value={description}
             onChange={(e) => setDescription(e.target.value)}
@@ -198,12 +233,38 @@ export function CreateTaskDialog({
             rows={5}
             maxLength={10000}
           />
-          <p className="field-hint">Describe the problem in plain language — no need to write instructions for the AI.</p>
+          <p className="text-sm text-muted-foreground">Describe the problem in plain language — no need to write instructions for the AI.</p>
         </div>
 
-        <div className="field">
-          <label htmlFor="task-branch-mode">Branch</label>
-          <select
+        {repositories !== undefined && repoOptions.length === 0 && (
+          <div className="mb-4 rounded-2xl bg-tone-attention/10 px-4 py-3 text-sm text-tone-attention" role="alert">
+            This project has no repository connected yet.{" "}
+            <Link className="font-medium underline underline-offset-4" to={`/projects/${projectId}/settings`}>
+              Connect one in Settings
+            </Link>{" "}
+            before creating tasks.
+          </div>
+        )}
+        {repoOptions.length > 1 && (
+          <div className="mb-4 flex flex-col gap-2">
+            <Label htmlFor="task-repository">Repository</Label>
+            <p className="text-sm text-muted-foreground">Which codebase this task changes. A task works in exactly one repository.</p>
+            <NativeSelect className="w-full" id="task-repository" value={repositoryId} onChange={(e) => handleRepositoryChange(e.target.value)} required>
+              <option value="" disabled>
+                Select a repository…
+              </option>
+              {repoOptions.map((r) => (
+                <option key={r.id} value={r.id}>
+                  {r.name}
+                </option>
+              ))}
+            </NativeSelect>
+          </div>
+        )}
+
+        <div className="mb-4 flex flex-col gap-2">
+          <Label htmlFor="task-branch-mode">Branch</Label>
+          <NativeSelect className="w-full"
             id="task-branch-mode"
             value={branchMode}
             onChange={(e) => {
@@ -213,20 +274,22 @@ export function CreateTaskDialog({
           >
             <option value="new">Create a new branch</option>
             <option value="existing">Work directly on an existing branch</option>
-          </select>
+          </NativeSelect>
         </div>
 
         {branchMode === "new" ? (
           <>
-            <div className="field">
-              <label htmlFor="task-base-branch">Base branch</label>
-              <p className="field-hint">The branch the new isolated task branch is created from. Defaults to this project's default branch.</p>
-              <input id="task-base-branch" value={baseBranch} onChange={(e) => setBaseBranch(e.target.value)} maxLength={200} />
+            <div className="mb-4 flex flex-col gap-2">
+              <Label htmlFor="task-base-branch">Base branch</Label>
+              <p className="text-sm text-muted-foreground">
+                The branch the new isolated task branch is created from. Defaults to {selectedRepo ? `${selectedRepo.name}'s` : "this project's"} default branch.
+              </p>
+              <Input id="task-base-branch" value={baseBranch} onChange={(e) => setBaseBranch(e.target.value)} maxLength={200} />
             </div>
-            <div className="field">
-              <label htmlFor="task-branch-name">New branch name</label>
-              <p className="field-hint">Auto-suggested from the title — edit it if you'd like a different name.</p>
-              <input
+            <div className="mb-4 flex flex-col gap-2">
+              <Label htmlFor="task-branch-name">New branch name</Label>
+              <p className="text-sm text-muted-foreground">Auto-suggested from the title — edit it if you'd like a different name.</p>
+              <Input
                 id="task-branch-name"
                 value={branchName}
                 onChange={(e) => {
@@ -237,33 +300,36 @@ export function CreateTaskDialog({
                 aria-invalid={!branchNameLooksSafe}
               />
               {!branchNameLooksSafe && (
-                <p className="field-warning" role="alert">
-                  <span aria-hidden="true">⚠</span>
+                <p className="flex items-start gap-2 rounded-xl bg-tone-attention/12 px-3 py-2 text-sm text-tone-attention" role="alert">
+                  <TriangleAlertIcon className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
                   <span>Branch names may only contain letters, numbers, '.', '_', '-', '/', and can't start with '-'.</span>
                 </p>
               )}
               {branchName.trim() && branchName.trim() === baseBranch.trim() && (
-                <p className="field-warning" role="alert">
-                  <span aria-hidden="true">⚠</span>
+                <p className="flex items-start gap-2 rounded-xl bg-tone-attention/12 px-3 py-2 text-sm text-tone-attention" role="alert">
+                  <TriangleAlertIcon className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
                   <span>The new branch name can't be the same as the base branch — choose a different name.</span>
                 </p>
               )}
             </div>
           </>
         ) : (
-          <div className="field">
-            <label htmlFor="task-existing-branch">Existing branch</label>
-            <p className="field-hint">
+          <div className="mb-4 flex flex-col gap-2">
+            <Label htmlFor="task-existing-branch">Existing branch</Label>
+            <p className="text-sm text-muted-foreground">
               The agent commits and pushes directly onto this branch — no new branch is created. Only one active task
               may work on a given branch at a time.
             </p>
+            {needsRepositoryChoice && repoOptions.length > 0 && (
+              <p className="text-sm text-muted-foreground">Choose a repository above to see its branches.</p>
+            )}
             {branchesLoading && <LoadingState label="Loading branches from the repository…" />}
             {branchesError && <ErrorState message={branchesError} onRetry={loadBranches} />}
             {!branchesLoading && !branchesError && branches && branches.length === 0 && (
-              <p className="field-hint">No branches were found for this repository.</p>
+              <p className="text-sm text-muted-foreground">No branches were found for this repository.</p>
             )}
             {!branchesLoading && !branchesError && branches && branches.length > 0 && (
-              <select id="task-existing-branch" value={existingBranch} onChange={(e) => setExistingBranch(e.target.value)} required>
+              <NativeSelect className="w-full" id="task-existing-branch" value={existingBranch} onChange={(e) => setExistingBranch(e.target.value)} required>
                 <option value="" disabled>
                   Select a branch…
                 </option>
@@ -272,25 +338,34 @@ export function CreateTaskDialog({
                     {b}
                   </option>
                 ))}
-              </select>
+              </NativeSelect>
             )}
           </div>
         )}
 
-        <div className="field">
-          <label htmlFor="task-dependencies">Depends on</label>
-          <p className="field-hint">
+        <div className="mb-4 flex flex-col gap-2">
+          <Label htmlFor="task-dependencies">Depends on</Label>
+          <p className="text-sm text-muted-foreground">
             {dependenciesLocked
               ? "Dependencies can no longer be changed — this task has already left Backlog."
               : "This task can only be started once every task selected here is Done."}
           </p>
           {dependencyCandidates.length === 0 ? (
-            <p className="field-hint">No other tasks in this project yet.</p>
+            <p className="text-sm text-muted-foreground">No other tasks in this project yet.</p>
           ) : (
-            <div id="task-dependencies" className="dependency-picker" role="group" aria-label="Depends on">
+            <div
+              id="task-dependencies"
+              className="max-h-44 divide-y overflow-y-auto rounded-2xl border"
+              role="group"
+              aria-label="Depends on"
+            >
               {dependencyCandidates.map((candidate) => (
-                <label key={candidate.id} className="dependency-option">
+                <label
+                  key={candidate.id}
+                  className="flex cursor-pointer items-center gap-2.5 px-3 py-2 text-sm hover:bg-muted/50 has-disabled:cursor-not-allowed has-disabled:opacity-60"
+                >
                   <input
+                    className="size-4 accent-primary"
                     type="checkbox"
                     checked={selectedDependencyIds.includes(candidate.id)}
                     disabled={dependenciesLocked}
@@ -304,14 +379,14 @@ export function CreateTaskDialog({
         </div>
 
         {error && <ErrorState message={error} />}
-        <div className="dialog-actions">
-          <button type="button" className="btn btn-secondary" onClick={onClose} disabled={submitting}>
+        <DialogActions>
+          <Button variant="outline" type="button" onClick={onClose} disabled={submitting}>
             Cancel
-          </button>
-          <button type="submit" className="btn btn-primary" disabled={submitting || !canSubmit}>
+          </Button>
+          <Button type="submit" disabled={submitting || !canSubmit}>
             {isEdit ? (submitting ? "Saving…" : "Save changes") : submitting ? "Creating…" : "Create task"}
-          </button>
-        </div>
+          </Button>
+        </DialogActions>
       </form>
     </Dialog>
   );

@@ -63,6 +63,8 @@ export const MIGRATION_FILES = [
   "025_chat_last_task_ids.sql",
   "026_chat_active_import_id.sql",
   "027_model_gateway.sql",
+  "028_project_repos.sql",
+  "029_token_usage.sql",
 ];
 
 function runMigrations(db: DatabaseSync): void {

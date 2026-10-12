@@ -413,7 +413,7 @@ export class Orchestrator {
     let task = this.requireTask(taskId);
     if (task.status !== "REVIEW" || !task.taskRecord.pullRequest) return task;
 
-    const project = this.requireProject(task.projectId);
+    const project = this.requireProjectFor(task);
     const scProvider = this.sourceControlProviders.resolve(project.sourceControlProvider);
     const pr = task.taskRecord.pullRequest;
 
@@ -863,7 +863,7 @@ export class Orchestrator {
 
   private async runWorkingEpisode(task: Task, signal: AbortSignal, generation: number): Promise<Task> {
     const now = () => new Date().toISOString();
-    const project = this.requireProject(task.projectId);
+    const project = this.requireProjectFor(task);
     const engine = this.engines.resolve(project.codingEngine);
     const scProvider = this.sourceControlProviders.resolve(project.sourceControlProvider);
 
@@ -1123,7 +1123,7 @@ export class Orchestrator {
     if (!feedback) {
       throw new Error(`Task ${taskId} has no pending human review feedback to resume`);
     }
-    const project = this.requireProject(task.projectId);
+    const project = this.requireProjectFor(task);
     const scProvider = this.sourceControlProviders.resolve(project.sourceControlProvider);
     const workspace = this.workspaceRepo.findByTaskId(taskId);
     if (!workspace) {
@@ -1789,9 +1789,13 @@ export class Orchestrator {
     return task;
   }
 
-  private requireProject(id: string): Project {
-    const project = this.projectRepo.findById(id);
-    if (!project) throw new NotFoundError("Project", id);
+  /**
+   * The task's project as seen from the task's OWN repository (TD-62): workspace clone, branch, Pull
+   * Request, validation commands and the convention pointer all come from that one repository.
+   */
+  private requireProjectFor(task: Task): Project {
+    const project = this.projectRepo.findScoped(task.projectId, task.repositoryId);
+    if (!project) throw new NotFoundError("Project", task.projectId);
     return project;
   }
 

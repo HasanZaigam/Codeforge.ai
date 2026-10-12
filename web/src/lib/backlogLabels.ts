@@ -179,7 +179,7 @@ export const USAGE_STATUS_LABELS: Record<"complete" | "partial" | "unavailable",
   unavailable: "unavailable",
 };
 
-export const REVIEW_STATE_LABELS: Record<"NEEDS_ANALYSIS" | "NEEDS_CLARIFICATION" | "POSSIBLY_ALREADY_IMPLEMENTED" | "VERIFIED_CONFLICT" | "READY_FOR_PROPOSAL", { label: string; tone: string }> = {
+export const REVIEW_STATE_LABELS: Record<"NEEDS_ANALYSIS" | "NEEDS_CLARIFICATION" | "POSSIBLY_ALREADY_IMPLEMENTED" | "VERIFIED_CONFLICT" | "READY_FOR_PROPOSAL", { label: string; tone: StatusMeta["tone"] }> = {
   NEEDS_ANALYSIS: { label: "Needs analysis", tone: "neutral" },
   NEEDS_CLARIFICATION: { label: "Needs clarification", tone: "attention" },
   POSSIBLY_ALREADY_IMPLEMENTED: { label: "Possibly already implemented", tone: "info" },

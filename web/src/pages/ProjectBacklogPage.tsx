@@ -11,6 +11,8 @@ import { CreateBacklogItemDialog } from "../components/backlog/CreateBacklogItem
 import { LoadingState } from "../components/common/LoadingState.js";
 import { ErrorState } from "../components/common/ErrorState.js";
 import { EmptyState } from "../components/common/EmptyState.js";
+import { Button, buttonVariants } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 
 type QuickFilter = "ALL" | "NEEDS_CLARIFICATION" | "READY_FOR_TASK" | "ANALYZED";
 
@@ -71,51 +73,52 @@ export function ProjectBacklogPage() {
 
   return (
     <div>
-      <div className="page-header">
+      <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h2>Issues &amp; Requests</h2>
-          <p className="page-subtitle">Give CodeForge issues, bugs, or requests to understand and prepare for implementation.</p>
+          <h2 className="text-xl font-semibold">Issues &amp; Requests</h2>
+          <p className="mt-1 text-sm text-muted-foreground">Give CodeForge issues, bugs, or requests to understand and prepare for implementation.</p>
         </div>
         <div>
-          <button className="btn btn-secondary" onClick={() => setImporting(true)}>
+          <Button variant="outline" type="submit" onClick={() => setImporting(true)}>
             Import
-          </button>{" "}
-          <button className="btn btn-primary" onClick={() => setCreating(true)}>
+          </Button>{" "}
+          <Button type="submit" onClick={() => setCreating(true)}>
             + Add issue
-          </button>
+          </Button>
         </div>
       </div>
 
-      <div className="backlog-filter" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12 }}>
-        <div role="tablist" aria-label="Filter issues">
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <div className="flex gap-1 overflow-x-auto rounded-full bg-muted p-1" role="tablist" aria-label="Filter issues">
           {QUICK_FILTERS.map((f) => (
             <button
               key={f.key}
+              type="button"
               role="tab"
               aria-selected={filter === f.key}
-              className={`btn ${filter === f.key ? "btn-primary" : "btn-secondary"}`}
+              className="shrink-0 rounded-full px-3 py-1.5 text-sm whitespace-nowrap text-muted-foreground transition-colors hover:text-foreground aria-selected:bg-background aria-selected:text-foreground aria-selected:shadow-sm"
               onClick={() => setFilter(f.key)}
             >
               {f.label} ({counts[f.key]})
             </button>
           ))}
         </div>
-        <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
-          <input
+        <div className="flex items-center gap-3">
+          <Input
             type="search"
             placeholder="Search issues…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             aria-label="Search issues"
           />
-          <button className="btn btn-secondary" onClick={() => setReviewingMultiple((v) => !v)}>
+          <Button variant="outline" type="submit" onClick={() => setReviewingMultiple((v) => !v)}>
             {reviewingMultiple ? "Hide bulk review" : "Review multiple"}
-          </button>
+          </Button>
         </div>
       </div>
 
       {reviewingMultiple && (
-        <div className="section">
+        <div className="mb-6">
           <BulkReviewPanel projectId={project.id} onOpenImport={() => setImporting(true)} />
         </div>
       )}
@@ -138,8 +141,8 @@ export function ProjectBacklogPage() {
       )}
       {!loading && !error && all.length > 0 && visible.length === 0 && <EmptyState message="No issues match this filter." />}
       {!loading && !error && visible.length > 0 && (
-        <div className="table-scroll">
-          <table className="bulk-table issues-table">
+        <div className="overflow-x-auto">
+          <table className="data-table">
             <thead>
               <tr>
                 <th>Issue</th>
@@ -152,9 +155,9 @@ export function ProjectBacklogPage() {
             </thead>
             <tbody>
               {visible.map((item) => (
-                <tr key={item.id} className="issues-table-row">
+                <tr key={item.id}>
                   <td data-label="Issue">
-                    {item.externalRef && <span className="backlog-ref">{item.externalRef}</span>}
+                    {item.externalRef && <span className="font-mono text-xs text-muted-foreground">{item.externalRef}</span>}
                     <div>{item.title}</div>
                   </td>
                   <td data-label="Source">{item.source === "import" ? "Imported" : "Manual"}</td>
@@ -162,7 +165,7 @@ export function ProjectBacklogPage() {
                   <td data-label="AI understanding">{understanding(item)}</td>
                   <td data-label="Updated">{formatRelative(item.updatedAt)}</td>
                   <td data-label="Action">
-                    <Link className="btn btn-secondary" to={item.id}>
+                    <Link className={buttonVariants({ variant: "outline", size: "sm" })} to={item.id}>
                       {actionLabel(item)}
                     </Link>
                   </td>

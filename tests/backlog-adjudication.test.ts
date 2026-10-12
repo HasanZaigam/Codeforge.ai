@@ -527,7 +527,7 @@ test("REAL GIT: a genuine repository revision survives sample -> baseline persis
   const realProvider = new GitRepositoryStructureProvider(registry);
 
   await withHarness("adj-realgit", { structure: realProvider, respond: () => json(validAnalysis()) }, async (h) => {
-    h.platform.db.prepare("UPDATE projects SET repo_url = ?, default_branch = 'main', source_control_provider = 'local-git' WHERE id = ?").run(dir, h.project.id);
+    h.platform.db.prepare("UPDATE project_repos SET repo_url = ?, default_branch = 'main', source_control_provider = 'local-git' WHERE project_id = ?").run(dir, h.project.id);
     const item = h.item("Item", "B-1");
     await h.analyze(item.id);
     const a = h.platform.backlogAnalyses.findLatestSucceededForItem(item.id)!;
@@ -840,7 +840,7 @@ test("CROSS-RUN CONTAMINATION: a judgment made against an earlier NO-REPOSITORY-
     assert.equal(h.services.adjudication.metrics(h.project.id, h.owner.id).proposalReadiness.reviewed, 1);
 
     // switch this project to a REAL repository and re-analyse — the "corrected, repository-aware" run
-    h.platform.db.prepare("UPDATE projects SET repo_url = ?, default_branch = 'main', source_control_provider = 'local-git' WHERE id = ?").run(dir, h.project.id);
+    h.platform.db.prepare("UPDATE project_repos SET repo_url = ?, default_branch = 'main', source_control_provider = 'local-git' WHERE project_id = ?").run(dir, h.project.id);
 
     // the harness's own structureProvider is fixed at platform-build time (fakeStructure with failOpen), so directly simulate
     // the CORRECTED analysis the way the executor itself would have recorded it: a second, real, repository-aware succeeded

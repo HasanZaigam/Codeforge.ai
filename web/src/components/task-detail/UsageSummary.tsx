@@ -1,5 +1,6 @@
 import type { TaskUsageRollup, UsageNumbers } from "../../api/index.js";
 import { USAGE_STATUS_LABELS } from "../../lib/backlogLabels.js";
+import { Section } from "../common/Section.js";
 
 const ROWS: Array<[keyof UsageNumbers, string]> = [
   ["inputTokens", "Input tokens"],
@@ -29,21 +30,25 @@ export function UsageSummary({ usage }: { usage: TaskUsageRollup | undefined }) 
   const est = usage.providerReportedEstimate;
   const shown = ROWS.filter(([key]) => usage.totals[key] !== null);
   return (
-    <div className="section">
-      <h2>Usage</h2>
-      <p className="text-muted">
-        Reported by the coding engine for {usage.runsWithUsage} of {usage.runsCounted} agent run{usage.runsCounted === 1 ? "" : "s"}.
-      </p>
+    <Section
+      title="Usage"
+      description={
+        <>
+          Reported by the coding engine for {usage.runsWithUsage} of {usage.runsCounted} agent run{usage.runsCounted === 1 ? "" : "s"}.
+        </>
+      }
+    >
+      <div className="space-y-3 text-sm">
       {usage.usageStatus && usage.usageStatus !== "complete" && (
-        <p className="field-hint" role="status">
+        <p className="text-sm text-muted-foreground" role="status">
           Usage status: {USAGE_STATUS_LABELS[usage.usageStatus]}.
         </p>
       )}
-      <dl className="backlog-facts">
+      <dl className="grid grid-cols-2 gap-2 sm:grid-cols-3">
         {shown.map(([key, label]) => (
-          <div key={key} className="usage-row">
-            <dt>{label}</dt>
-            <dd>{usage.totals[key]!.toLocaleString("en-US")}</dd>
+          <div key={key} className="rounded-2xl bg-muted/60 px-3 py-2">
+            <dt className="text-xs text-muted-foreground">{label}</dt>
+            <dd className="font-semibold tabular-nums">{usage.totals[key]!.toLocaleString("en-US")}</dd>
           </div>
         ))}
       </dl>
@@ -53,11 +58,11 @@ export function UsageSummary({ usage }: { usage: TaskUsageRollup | undefined }) 
           {est.runsWithoutEstimate > 0 ? `; ${est.runsWithoutEstimate} run${est.runsWithoutEstimate === 1 ? "" : "s"} reported no estimate` : ""}
         </p>
       ) : (
-        <p className="text-muted">No cost estimate was reported.</p>
+        <p className="text-muted-foreground">No cost estimate was reported.</p>
       )}
       <details>
-        <summary>Per run</summary>
-        <ul className="backlog-file-list">
+        <summary className="cursor-pointer text-sm font-medium">Per run</summary>
+        <ul className="mt-2 list-disc space-y-1 pl-5 font-mono text-xs">
           {usage.runs
             .filter((r) => r.usage !== null)
             .map((r) => (
@@ -65,7 +70,7 @@ export function UsageSummary({ usage }: { usage: TaskUsageRollup | undefined }) 
                 {PHASE_LABEL[r.phase]} · {r.role} attempt {r.attemptNumber}
                 {r.usageStatus === "partial" ? " · partial (run did not finish)" : ""}
                 {r.modelId ? ` · ${r.providerId ?? "unknown"}/${r.modelId}` : ""}
-                <span className="field-hint">
+                <span className="text-muted-foreground">
                   {" "}
                   {ROWS.filter(([key]) => r.usage![key] !== null)
                     .map(([key, label]) => `${label.replace(" tokens", "")} ${r.usage![key]!.toLocaleString("en-US")}`)
@@ -76,6 +81,7 @@ export function UsageSummary({ usage }: { usage: TaskUsageRollup | undefined }) 
             ))}
         </ul>
       </details>
-    </div>
+      </div>
+    </Section>
   );
 }

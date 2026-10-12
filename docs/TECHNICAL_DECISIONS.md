@@ -1,3 +1,31 @@
+## TD-63: Token usage on every operation, with monthly budgets that inform but never block
+
+Every model-using operation now says roughly how many tokens it used: each Chat reply (footer), each task's outcome (Completed / Awaiting review / Cancelled / Failed callout), each backlog analysis; the project Overview shows a monthly meter, Project Settings a per-project budget, and Settings an account-wide meter with a per-project breakdown.
+
+**One formula, one module.** `src/usage/token-usage.ts`: tokens used = input + output + reasoning, as reported by the engine (cache reads/writes are part of input, not added again). The task rollup's new `totalTokens`, the project/account meters and the Settings per-provider total all use it — the provider total previously excluded reasoning.
+
+**Reported vs estimated, never blended silently** (chosen with the user). When the engine reports nothing, CodeForge estimates ~4 characters per token over text it actually exchanged — but only where it has that text: a Chat reply (prompt + reply) and a backlog analysis (`promptChars` + result). Agent-run prompts aren't stored, so an unreported task run is counted as "reported no usage" and the UI says the real total is higher — never a guessed number. Every count carries `estimated`; the UI labels estimates "~… (est.)". A Chat reply answered from CodeForge's own data (no model call) records 0 tokens and says so.
+
+**Budgets are display-only** (chosen with the user over "block at the limit"). Providers don't expose remaining balance via their APIs, so "tokens left" is against a budget the user sets: `projects.monthly_token_budget` and `users.monthly_token_budget` (migration 029), per calendar month in UTC. At 75% the meter turns amber, at 100% red ("Over budget"); no task, analysis or Chat call is ever refused because of it.
+
+Limits: Chat replies stored before migration 029 have no recorded usage and aren't counted; a Chat reply whose model call failed and reported nothing records null (unknown); usage is attributed to the month an operation started (agent runs) or completed (analyses, Chat).
+
+## TD-62: Multi-repository projects — a project holds repositories, a task targets exactly one
+
+A real project is often split across repositories (frontend, backend, admin) rather than one monorepo. A project used to BE one repository (`projects.repo_url`/`owner`/`repo`/`default_branch`/`commands_json`). Now `project_repos` (migration 028) holds a project's repositories — each with its own name, provider, default branch and validation commands — and `tasks.repository_id` / `backlog_items.repository_id` say which one a work item targets. Existing data is backfilled: every project becomes a project with one repository, and its tasks/items point at it.
+
+**One task = one repository** (chosen with the user over "one task spanning several repositories"). Cross-repository work is several tasks linked with the existing dependencies. This keeps the whole execution engine unchanged: everything repository-bound — workspace clone, branch, Pull Request, merge detection, validation commands, backlog analysis, claim checks — consumes a `Project` *scoped to one repository* (`scopeProjectToRepo` / `ProjectRepository.findScoped`), which has exactly the shape a single-repository Project always had. `Project`'s own repository fields now describe its PRIMARY (earliest-connected, ties broken by insertion order) repository, kept only for the project-level views and older clients; no execution path reads them.
+
+**Never guess the repository.** `resolveRepositoryFor` uses the explicitly named repository (it must belong to the project), else the project's only one; zero repositories, or several with no choice, is `RepositoryRequiredError` (400 `REPOSITORY_REQUIRED`, with the names). Chat resolves a repository only from a name written in the message (`repositoryNamedIn`, deterministic whole-word match — no model call) and otherwise asks. Backlog items are the one lenient case: without a choice they default to the primary repository, because analysis changes nothing; the repository is shown on the item and can be changed (which resets the item to NEW for re-analysis).
+
+Other consequences: the "existing branch" uniqueness index is now per repository (`main` in two repositories is two branches); a repository can't be removed while any task or backlog item targets it (409 `REPOSITORY_IN_USE`); `POST /projects` accepts a name only (connect repositories afterwards) and still accepts the original project-plus-one-repository shape; `PATCH /projects/:id/commands` still edits the primary repository's commands. Not done: one backlog analysis investigating several repositories at once, and per-row repository mapping in CSV imports (an import targets one repository; Chat picks it from the message text, else the primary).
+
+## TD-61: shadcn/ui on the existing Vite app, not a Next.js migration
+
+The redesign was requested as `npx shadcn@latest init --preset b1ZOMFeHQ --template next`. The `--template next` flag scaffolds a Next.js app, but the frontend is a Vite + React Router SPA (TD-20/TD-21) whose dev proxy, routing, hooks and ~290 tests all assume that stack. We confirmed with the user before changing anything, and chose to apply the same preset with `--template vite` inside `web/`: the visual system is identical, while routing, the API client, the hooks and the test suite stay as they were. Tailwind v4 (`@tailwindcss/vite`) and an `@/` import alias were added to support it.
+
+Consequences: the hand-written `index.css` vocabulary (`.btn`, `.field`, `.card`, …) was removed and every screen now uses shadcn components and Tailwind utilities. Runtime dependencies grew (Base UI, `cn`, class-variance-authority, lucide-react, Inter), which reverses the earlier "react/react-dom/react-router-dom only" stance for UI chrome. The Markdown renderer stays hand-written. The preset targets React 19, but the app is on React 18, so any shadcn component composed through Base UI's `render` prop must forward refs (`Button` does). Tests that asserted on legacy class names or Unicode glyphs (`▶`, `✎`, `✓`) were updated to query by role or by text label instead.
+
 
 
 ## TD-60: Model Gateway — a narrow interface keeps the Orchestrator from depending on the application layer

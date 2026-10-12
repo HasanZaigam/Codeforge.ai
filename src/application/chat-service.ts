@@ -14,6 +14,8 @@ import type { ContextLayerService } from "./context-layer.js";
 import type { ActionLayerService } from "./action-layer.js";
 import { answerDeterministically, formatBulkActionResult, formatHumanCompletionResult } from "./chat-intent.js";
 import ExcelJS from "exceljs";
+import { repositoryNamedIn } from "./repository-resolution.js";
+import { tokenCountFor, type TokenCount } from "../usage/token-usage.js";
 
 const now = () => new Date().toISOString();
 
@@ -172,6 +174,9 @@ export class ChatService {
 
     let attachmentMeta: ChatMessageRecord["attachment"] = null;
     let assistantContent: string;
+    // What this reply cost (TD-63). Every branch answered from CodeForge's own data — deterministic
+    // reads, confirmations, imports — makes no model call: 0 tokens. Only answerText calls a model.
+    let turnUsage: TokenCount | null = { tokens: 0, estimated: false };
     let bulkJobId: string | null = null;
 
     if (input.attachment) {
@@ -198,7 +203,14 @@ export class ChatService {
           }
         }
 
-        const { import: imp, rows } = this.d.bulk.confirmImport(project.id, parsed.csvText, { sourceName: parsed.filename }, actorId);
+        // A multi-repository project: the bug sheet goes to the repository the message names, else the primary one.
+        const namedRepository = repositoryNamedIn(this.d.projects.listRepos(project.id), text);
+        const { import: imp, rows } = this.d.bulk.confirmImport(
+          project.id,
+          parsed.csvText,
+          { sourceName: parsed.filename, repositoryId: namedRepository?.id ?? null },
+          actorId,
+        );
         const validRows = imp.acceptedRows + imp.alreadyImportedRows;
         if (validRows > 0) {
           this.d.chatMessages.setActiveImportId(convo.id, imp.id, now());
@@ -236,7 +248,7 @@ export class ChatService {
           `I've received "${parsed.filename}" (${parsed.format.toUpperCase()}, ${(parsed.byteSize / 1024).toFixed(0)} KB), but the currently configured model/provider for this project doesn't support image analysis — ` +
           `I can't read or describe what's in the screenshot. If you can describe the issue in text (or attach a .csv/.xlsx of the affected items), I can help from there.`;
       } else {
-        assistantContent = await this.answerText(project, convo.id, text, parsed.text);
+        ({ content: assistantContent, usage: turnUsage } = await this.answerText(project, convo.id, text, parsed.text));
       }
     } else if (convo.pendingAction && AFFIRMATIVE_REPLY_PATTERN.test(text)) {
       // A mutation Chat proposed earlier is now explicitly confirmed — execute against the EXACT
@@ -274,7 +286,7 @@ export class ChatService {
           this.d.chatMessages.setPendingAction(convo.id, deterministic.pendingAction, now());
         }
       } else {
-        assistantContent = await this.answerText(project, convo.id, text);
+        ({ content: assistantContent, usage: turnUsage } = await this.answerText(project, convo.id, text));
       }
     }
 
@@ -294,6 +306,8 @@ export class ChatService {
       attachment: null,
       bulkJobId,
       createdAt: now(),
+      tokens: turnUsage ? turnUsage.tokens : null,
+      tokensEstimated: turnUsage?.estimated ?? false,
     });
     this.d.chatMessages.touchConversation(convo.id, now());
     // Re-read the conversation's own pending-action field rather than tracking a local variable through
@@ -332,7 +346,7 @@ export class ChatService {
         const title = pending.titles[i] ?? "Task";
         const item = itemMap.get(itemId);
         const description = item ? (item.description || item.title) : title;
-        const res = await this.d.actionLayer.createTask(projectId, actorId, { title, description });
+        const res = await this.d.actionLayer.createTask(projectId, actorId, { title, description, repositoryId: item?.repositoryId ?? null });
         if (res.succeeded && res.targetTaskId) {
           createdTaskIds.push(res.targetTaskId);
           results.push({ title, ok: true, taskId: res.targetTaskId });
@@ -361,7 +375,12 @@ export class ChatService {
   }
 
   /** Reuses the EXISTING BacklogAnalyzer call path — same engine/model registry, retries and cost tracking as backlog analysis, never a second model-call mechanism. Untrusted attachment text is clearly labeled as data, never as instructions. */
-  private async answerText(project: Project, conversationId: string, userText: string, attachedDocText?: string): Promise<string> {
+  private async answerText(
+    project: Project,
+    conversationId: string,
+    userText: string,
+    attachedDocText?: string,
+  ): Promise<{ content: string; usage: TokenCount | null }> {
     let contextSection = "";
     try {
       const manifest = this.d.projectService.getContext(project.id, project.ownerId);
@@ -385,8 +404,15 @@ export class ChatService {
       .map((m) => `${m.role}: ${m.content}`)
       .join("\n");
 
+    const repos = this.d.projects.listRepos(project.id);
+    const repositoryLine =
+      repos.length === 0
+        ? "The project has no repository connected yet."
+        : repos.length === 1
+          ? `(repository: ${repos[0]!.repoUrl})`
+          : `It spans ${repos.length} repositories — ${repos.map((r) => `"${r.name}" (${r.repoUrl})`).join(", ")}. Every task and issue targets exactly one of them.`;
     const prompt = [
-      `You are CodeForge, a project-aware engineering assistant for the project "${project.name}" (repository: ${project.repoUrl}).`,
+      `You are CodeForge, a project-aware engineering assistant for the project "${project.name}" ${repositoryLine}`,
       taskSummaryLine,
       contextSection,
       history ? `Recent conversation:\n${history}` : "",
@@ -399,15 +425,24 @@ export class ChatService {
 
     const outcome = await this.d.analyzer.run(project, prompt, AbortSignal.timeout(60_000));
     if (!outcome.ok) {
-      return `Sorry, I couldn't process that right now (${outcome.category === "no_model_available" ? "no model is currently available" : "a temporary issue"}). Please try again.`;
+      return {
+        content: `Sorry, I couldn't process that right now (${outcome.category === "no_model_available" ? "no model is currently available" : "a temporary issue"}). Please try again.`,
+        // A failed call may still have consumed tokens — count only what the engine reported, never a guess.
+        usage: tokenCountFor(outcome.cost ?? null),
+      };
     }
     const raw = outcome.rawOutput.trim();
+    const usage = tokenCountFor(outcome.cost, prompt.length + outcome.rawOutput.length);
     // Defense in depth (see FALSE_ACTION_CLAIM_PATTERN's own doc comment) — this path has no mutation
     // capability at all, so a first-person "I updated/marked/..." claim here is always false.
     if (FALSE_ACTION_CLAIM_PATTERN.test(raw)) {
-      return "I can't make changes to tasks through general conversation. Try an explicit request like \"start <task>\", \"cancel <task>\", or \"rename <task> title to ...\" — or use the Tasks page directly.";
+      return {
+        content:
+          "I can't make changes to tasks through general conversation. Try an explicit request like \"start <task>\", \"cancel <task>\", or \"rename <task> title to ...\" — or use the Tasks page directly.",
+        usage,
+      };
     }
-    return raw;
+    return { content: raw, usage };
   }
 
   /**

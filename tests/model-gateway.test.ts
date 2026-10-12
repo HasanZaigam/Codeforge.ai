@@ -147,6 +147,78 @@ describe("ModelGatewayService — provider connections", () => {
   });
 });
 
+describe("ModelGatewayService — changing an existing connection's model", () => {
+  function recordingAdapter() {
+    const seen: Array<{ apiKey: string; model?: string }> = [];
+    let accept = (_model: string) => true;
+    const adapter: ProviderAdapter = {
+      id: "openai",
+      envVar: "OPENAI_API_KEY",
+      validateCredentials: async (apiKey: string, model: string) => {
+        seen.push({ apiKey, model });
+        return accept(model) ? { valid: true, error: null } : { valid: false, error: `"${model}" isn't a chat model` };
+      },
+      listModels: async (apiKey: string) => {
+        seen.push({ apiKey });
+        return { models: ["gpt-4.1", "gpt-4o"], error: null };
+      },
+    };
+    return { adapter, seen, setAccept: (fn: (model: string) => boolean) => (accept = fn) };
+  }
+
+  test("listModelsForConnection() uses the STORED key — the caller never re-sends it", async () => {
+    const { adapter, seen } = recordingAdapter();
+    const { gateway, userId } = await setupGatewayOnly({ openai: adapter });
+    await gateway.connectProvider(userId, "openai", "sk-stored", "gpt-4o");
+
+    const result = await gateway.listModelsForConnection(userId, "openai");
+    assert.deepEqual(result, { models: ["gpt-4.1", "gpt-4o"], error: null });
+    assert.equal(seen.at(-1)!.apiKey, "sk-stored");
+  });
+
+  test("changeConnectionModel() validates the new model with the stored key, then switches the model the gateway resolves", async () => {
+    const { adapter, seen } = recordingAdapter();
+    const { gateway, userId } = await setupGatewayOnly({ openai: adapter });
+    await gateway.connectProvider(userId, "openai", "sk-stored", "gpt-4o");
+
+    const dto = await gateway.changeConnectionModel(userId, "openai", "gpt-4.1");
+    assert.equal(dto.model, "gpt-4.1");
+    assert.equal(dto.status, "connected");
+    assert.deepEqual(seen.at(-1), { apiKey: "sk-stored", model: "gpt-4.1" });
+    assert.ok(!JSON.stringify(dto).includes("sk-stored"), "the stored key must never be returned");
+
+    const { selection } = gateway.resolveModelSelection(userId, "opencode", "implementation", 0, new Date().toISOString(), null);
+    assert.equal(selection?.modelId, "openai/gpt-4.1");
+  });
+
+  test("changeConnectionModel() leaves everything unchanged when the provider rejects the new model", async () => {
+    const { adapter, setAccept } = recordingAdapter();
+    const { gateway, userId } = await setupGatewayOnly({ openai: adapter });
+    await gateway.connectProvider(userId, "openai", "sk-stored", "gpt-4o");
+
+    setAccept((model) => model !== "babbage-002");
+    await assert.rejects(() => gateway.changeConnectionModel(userId, "openai", "babbage-002"), InvalidRequestError);
+    const dto = gateway.listConnections(userId).find((c) => c.provider === "openai")!;
+    assert.equal(dto.model, "gpt-4o");
+  });
+
+  test("changeConnectionModel() keeps a Fixed global AI brain's model in sync", async () => {
+    const { adapter } = recordingAdapter();
+    const { gateway, userId } = await setupGatewayOnly({ openai: adapter });
+    await gateway.connectProvider(userId, "openai", "sk-stored", "gpt-4o");
+    gateway.setGlobalConfig(userId, { mode: "fixed", fixedProvider: "openai" });
+
+    await gateway.changeConnectionModel(userId, "openai", "gpt-4.1");
+    assert.equal(gateway.getGlobalConfig(userId).fixedModel, "gpt-4.1");
+  });
+
+  test("both operations on a never-connected provider throw NotFoundError", async () => {
+    const { gateway, userId } = await setupGatewayOnly();
+    await assert.rejects(() => gateway.listModelsForConnection(userId, "anthropic"), NotFoundError);
+    await assert.rejects(() => gateway.changeConnectionModel(userId, "anthropic", "claude-x"), NotFoundError);
+  });
+});
+
 describe("ModelGatewayService — Global AI Brain configuration", () => {
   test("setGlobalConfig(fixed) rejects a provider that isn't connected yet — never silently accepted", async () => {
     const { gateway, userId } = await setupGatewayOnly();

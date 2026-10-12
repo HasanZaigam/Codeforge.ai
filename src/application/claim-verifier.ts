@@ -35,7 +35,7 @@ export class ClaimVerifier {
     if (!analysis?.result) throw new InvalidOperationError("This backlog item has no successful analysis to verify claims of.");
     const revision = analysis.platformChecks?.assessment?.reconciliation?.revision;
     if (!revision) throw new InvalidOperationError("This analysis did not record the repository revision it examined, so a check cannot be bound to it.");
-    const project = this.deps.projects.findById(item.projectId);
+    const project = this.deps.projects.findScoped(item.projectId, item.repositoryId);
     if (!project) throw new InvalidOperationError("The item's project no longer exists.");
 
     const requirements = planVerification(analysis.result.claims, project).filter(

@@ -4,6 +4,11 @@ import { chatApi } from "../../api/index.js";
 import { formatRelative } from "../../lib/time.js";
 import { ErrorState } from "../common/ErrorState.js";
 import { TaskSuggestions } from "./TaskSuggestions.js";
+import { CoinsIcon, PaperclipIcon, SendHorizontalIcon, SparklesIcon, UserIcon, XIcon } from "lucide-react";
+import { tokenLabel } from "../../lib/tokens.js";
+import { Button } from "@/components/ui/button";
+import { Spinner } from "@/components/ui/spinner";
+import { cn } from "@/lib/utils";
 
 /** Phase 4D.2 — screenshots/images are accepted and uploaded, but see the empty-state note below: the
  * currently configured model/provider has no image-analysis path, so ChatService responds truthfully
@@ -43,7 +48,7 @@ function readFileAsBase64(file: File): Promise<string> {
  * suggestions render inline under the message that started an analysis run (see TaskSuggestions) and
  * are never auto-created — see /docs/CHAT.md.
  */
-export function ChatPanel({ projectId }: { projectId: string }) {
+export function ChatPanel({ projectId, onReply }: { projectId: string; /** Called after each answered message (e.g. to refresh the token meter). */ onReply?: () => void }) {
   const { messages, pendingAction, loading, error, send, sending, sendError, confirmPendingAction, declinePendingAction } = useChat(projectId);
   const [text, setText] = useState("");
   const [file, setFile] = useState<File>();
@@ -124,6 +129,7 @@ export function ChatPanel({ projectId }: { projectId: string }) {
       }
 
       await send(currentText, undefined, uploadId, { filename: currentFile.name, mimeType: currentFile.type || "application/octet-stream" });
+      onReply?.();
       return;
     }
 
@@ -156,101 +162,164 @@ export function ChatPanel({ projectId }: { projectId: string }) {
     setFile(undefined);
     if (fileInputRef.current) fileInputRef.current.value = "";
     await send(currentText, attachment);
+    onReply?.();
   }
 
   return (
-    <div className="chat-panel">
-      <div className="chat-panel-header">
-        <div>
-          <h3>Project Chat</h3>
-          <p className="field-hint">Ask CodeForge about this project, analyse work, understand the codebase, or prepare tasks.</p>
+    <div className="flex h-full min-h-[560px] flex-col">
+      <div className="flex flex-wrap items-start justify-between gap-3 border-b px-5 py-4">
+        <div className="flex min-w-0 items-start gap-3">
+          <span className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
+            <SparklesIcon className="size-4" aria-hidden="true" />
+          </span>
+          <div className="min-w-0">
+            <h3 className="font-semibold">Project Chat</h3>
+            <p className="text-sm text-muted-foreground">
+              Ask CodeForge about this project, analyse work, understand the codebase, or prepare tasks.
+            </p>
+          </div>
         </div>
-        <span className="chat-context-indicator">● Using project context</span>
+        <span className="inline-flex items-center gap-1.5 rounded-full bg-tone-success/12 px-2.5 py-1 text-xs font-medium text-tone-success">
+          <span className="size-1.5 rounded-full bg-tone-success" aria-hidden="true" />
+          Using project context
+        </span>
       </div>
 
-      <div className="chat-messages" aria-live="polite">
-        {loading && <p className="field-hint">Loading conversation…</p>}
+      <div className="flex-1 space-y-5 overflow-y-auto px-5 py-5" aria-live="polite">
+        {loading && <p className="text-sm text-muted-foreground">Loading conversation…</p>}
         {error && <ErrorState message="Couldn't load the conversation." />}
         {!loading && !error && (messages ?? []).length === 0 && (
-          <div className="chat-empty-state">
-            <h4>What can I help with?</h4>
-            <div className="chat-suggestion-chips">
+          <div className="flex flex-col items-center justify-center gap-5 py-12 text-center">
+            <span className="flex size-12 items-center justify-center rounded-2xl bg-primary/10 text-primary">
+              <SparklesIcon className="size-5" aria-hidden="true" />
+            </span>
+            <h4 className="text-lg font-semibold">What can I help with?</h4>
+            <div className="flex max-w-lg flex-wrap justify-center gap-2">
               {SUGGESTION_CHIPS.map((chip) => (
-                <button key={chip} type="button" className="chat-suggestion-chip" onClick={() => setText(chip)}>
+                <Button key={chip} type="button" variant="outline" size="sm" onClick={() => setText(chip)}>
                   {chip}
-                </button>
+                </Button>
               ))}
             </div>
           </div>
         )}
-        {(messages ?? []).map((m) => (
-          <div key={m.id} className={`chat-message chat-message-${m.role}`}>
-            <div className="chat-message-meta">
-              <strong>{m.role === "user" ? "You" : "CodeForge"}</strong> <span className="field-hint">{formatRelative(m.createdAt)}</span>
+        {(messages ?? []).map((m) => {
+          const isUser = m.role === "user";
+          return (
+            <div key={m.id} className={cn("flex gap-3", isUser && "flex-row-reverse")}>
+              <span
+                className={cn(
+                  "flex size-7 shrink-0 items-center justify-center rounded-full text-xs font-semibold",
+                  isUser ? "bg-muted text-muted-foreground" : "bg-primary text-primary-foreground",
+                )}
+                aria-hidden="true"
+              >
+                {isUser ? <UserIcon className="size-3.5" /> : <SparklesIcon className="size-3.5" />}
+              </span>
+              <div className={cn("flex max-w-[85%] min-w-0 flex-col gap-1", isUser && "items-end")}>
+                <div className="flex items-baseline gap-2 text-xs text-muted-foreground">
+                  <strong className="font-medium text-foreground">{isUser ? "You" : "CodeForge"}</strong>
+                  <span>{formatRelative(m.createdAt)}</span>
+                </div>
+                {m.attachment && (
+                  <div className="rounded-lg border bg-muted/40 px-2.5 py-1 text-xs text-muted-foreground">
+                    📎 {m.attachment.filename}
+                  </div>
+                )}
+                <div
+                  className={cn(
+                    "rounded-2xl px-4 py-2.5 text-sm leading-relaxed break-words whitespace-pre-wrap",
+                    isUser ? "rounded-tr-sm bg-primary text-primary-foreground" : "rounded-tl-sm bg-muted",
+                  )}
+                >
+                  {m.content}
+                </div>
+                {m.role === "assistant" && m.bulkJobId && <TaskSuggestions projectId={projectId} bulkJobId={m.bulkJobId} />}
+                {m.role === "assistant" && typeof m.tokens === "number" && (
+                  <span className="flex items-center gap-1 text-[11px] text-muted-foreground">
+                    <CoinsIcon className="size-3" aria-hidden="true" />
+                    {m.tokens === 0 ? "No AI tokens used — answered from CodeForge data" : `Used ${tokenLabel(m.tokens, !!m.tokensEstimated)}`}
+                  </span>
+                )}
+              </div>
             </div>
-            {m.attachment && <div className="field-hint">📎 {m.attachment.filename}</div>}
-            <div className="chat-message-content">{m.content}</div>
-            {m.role === "assistant" && m.bulkJobId && <TaskSuggestions projectId={projectId} bulkJobId={m.bulkJobId} />}
-          </div>
-        ))}
-        {sending && <p className="field-hint">CodeForge is thinking…</p>}
+          );
+        })}
+        {sending && (
+          <p className="flex items-center gap-2 text-sm text-muted-foreground">
+            <Spinner /> CodeForge is thinking…
+          </p>
+        )}
         {/* Phase 4D.3 — a proposed bulk mutation ("cancel all failed tasks"), or (Phase 4D.4) a single
             task's human-confirmed Review -> Done completion, waits here for an explicit yes/no; the
             buttons send that same plain text through the SAME sendMessage path a typed reply would use —
             never a second mutation endpoint. */}
         {pendingAction && !sending && (
-          <div className="chat-pending-action">
-            <span>
+          <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-tone-attention/40 bg-tone-attention/10 px-4 py-3 text-sm">
+            <span className="flex-1 font-medium">
               {pendingAction.kind === "HUMAN_MARK_DONE"
                 ? `Mark "${pendingAction.taskTitle}" as Done?`
                 : pendingAction.kind === "UPLOAD_TASK_CREATION"
                 ? `Create ${pendingAction.itemIds.length} task${pendingAction.itemIds.length === 1 ? "" : "s"} (${pendingAction.filterDescription})?`
                 : `${pendingAction.kind === "BULK_CANCEL" ? "Cancel" : "Start"} ${pendingAction.taskIds?.length ?? 0} task${pendingAction.taskIds?.length === 1 ? "" : "s"}?`}
             </span>
-            <button type="button" className="btn btn-primary btn-sm" onClick={() => void confirmPendingAction()}>
-              {pendingAction.kind === "HUMAN_MARK_DONE"
-                ? "Mark as Done"
-                : pendingAction.kind === "UPLOAD_TASK_CREATION"
-                ? "Create Tasks"
-                : "Confirm"}
-            </button>
-            <button type="button" className="btn btn-secondary btn-sm" onClick={() => void declinePendingAction()}>
-              {pendingAction.kind === "HUMAN_MARK_DONE" || pendingAction.kind === "UPLOAD_TASK_CREATION" ? "Cancel" : "Decline"}
-            </button>
+            <div className="flex gap-2">
+              <Button type="button" variant="outline" size="sm" onClick={() => void declinePendingAction().then(() => onReply?.())}>
+                {pendingAction.kind === "HUMAN_MARK_DONE" || pendingAction.kind === "UPLOAD_TASK_CREATION" ? "Cancel" : "Decline"}
+              </Button>
+              <Button type="button" size="sm" onClick={() => void confirmPendingAction().then(() => onReply?.())}>
+                {pendingAction.kind === "HUMAN_MARK_DONE"
+                  ? "Mark as Done"
+                  : pendingAction.kind === "UPLOAD_TASK_CREATION"
+                  ? "Create Tasks"
+                  : "Confirm"}
+              </Button>
+            </div>
           </div>
         )}
         <div ref={messagesEndRef} />
       </div>
 
-      {sendError && <ErrorState message={sendError} />}
+      {sendError && (
+        <div className="px-5 pb-3">
+          <ErrorState message={sendError} />
+        </div>
+      )}
 
-      <form className="chat-composer" onSubmit={handleSubmit}>
-        {file && (
-          <div className="chat-attachment-chip">
-            {previewUrl ? <img src={previewUrl} alt="" className="chat-attachment-thumb" /> : <span>📎</span>}
-            <span>{file.name}</span>
-            <button type="button" className="chat-attachment-remove" onClick={() => handleFileChange(undefined)} aria-label="Remove attachment">
-              ×
-            </button>
-          </div>
-        )}
-        {fileError && <p className="field-hint danger">{fileError}</p>}
-        <div className="chat-composer-row">
+      <form className="border-t p-3" onSubmit={handleSubmit}>
+        <div className="rounded-3xl border bg-input/20 p-2 transition-colors focus-within:border-ring focus-within:ring-[3px] focus-within:ring-ring/50">
+          {file && (
+            <div className="mb-2 inline-flex max-w-full items-center gap-2 rounded-xl border bg-background py-1 pr-1 pl-2 text-xs">
+              {previewUrl ? (
+                <img src={previewUrl} alt="" className="size-8 rounded-md object-cover" />
+              ) : (
+                <PaperclipIcon className="size-3.5 text-muted-foreground" aria-hidden="true" />
+              )}
+              <span className="truncate">{file.name}</span>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-xs"
+                onClick={() => handleFileChange(undefined)}
+                aria-label="Remove attachment"
+              >
+                <XIcon />
+              </Button>
+            </div>
+          )}
           <input
             ref={fileInputRef}
             type="file"
             accept={ACCEPTED_EXTENSIONS.join(",")}
             onChange={(e) => handleFileChange(e.target.files?.[0])}
             aria-label="Attach a file"
-            className="chat-file-input-hidden"
+            className="sr-only"
           />
-          <button type="button" className="chat-attach-btn" onClick={() => fileInputRef.current?.click()} aria-label="Add attachment" title="Attach a file">
-            ＋
-          </button>
           <textarea
-            rows={1}
+            rows={2}
             placeholder="Ask CodeForge…"
             value={text}
+            className="block max-h-48 min-h-12 w-full resize-none bg-transparent px-2 py-1 text-sm outline-none placeholder:text-muted-foreground"
             onChange={(e) => setText(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey) {
@@ -259,10 +328,24 @@ export function ChatPanel({ projectId }: { projectId: string }) {
               }
             }}
           />
-          <button type="submit" className="btn btn-primary chat-send-btn" disabled={sending || (!text.trim() && !file)}>
-            {sending ? "Sending…" : "Send"}
-          </button>
+          <div className="flex items-center justify-between gap-2">
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              onClick={() => fileInputRef.current?.click()}
+              aria-label="Add attachment"
+              title="Attach a file"
+            >
+              <PaperclipIcon />
+            </Button>
+            <Button type="submit" size="sm" disabled={sending || (!text.trim() && !file)}>
+              {sending ? "Sending…" : "Send"}
+              {!sending && <SendHorizontalIcon data-icon="inline-end" />}
+            </Button>
+          </div>
         </div>
+        {fileError && <p className="mt-2 px-2 text-sm text-destructive">{fileError}</p>}
       </form>
     </div>
   );
